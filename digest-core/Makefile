@@ -42,7 +42,10 @@ docker-run:
 package:
 	uv build
 
-ci: lint test
+eval-replay:
+	PYTHONPATH=src uv run python -m digest_core.cli eval-replay
+
+ci: lint test eval-replay
 
 smoke:
 	python -m digest_core.cli run --dry-run --window calendar_day

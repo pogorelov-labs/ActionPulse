@@ -382,5 +382,50 @@ def eval_prompt(
         raise typer.Exit(1)
 
 
+@app.command("eval-replay")
+def eval_replay(
+    corpus_dir: str = typer.Option(
+        None, "--corpus-dir", help="Corpus dir (default: digest_core/eval/corpus)"
+    ),
+    out_dir: str = typer.Option(
+        None, "--out-dir", help="Working dir for produced digests (default: a temp dir)"
+    ),
+    update_baseline: bool = typer.Option(
+        False, "--update-baseline", help="Write current metrics as the new committed baseline"
+    ),
+):
+    """Replay the synthetic corpus and assert digest metrics vs the committed baseline.
+
+    Offline and deterministic (no EWS/LLM). Exit code 0 (within tolerance / baseline
+    updated) or 2 (a metric regressed). Wire into CI via `make eval-replay`.
+    """
+    import tempfile
+
+    from digest_core.eval.corpus import CORPUS_DIR, load_corpus
+    from digest_core.eval.replay_harness import evaluate_corpus
+
+    cases = load_corpus(Path(corpus_dir) if corpus_dir else CORPUS_DIR)
+    if not cases:
+        typer.echo("No corpus cases found.", err=True)
+        raise typer.Exit(1)
+
+    work_dir = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="eval-replay-"))
+    ok, reports = evaluate_corpus(cases, work_dir, update_baseline=update_baseline)
+
+    for report in reports:
+        typer.echo(f"\n[{report['case']}] {json.dumps(report['metrics'], ensure_ascii=False)}")
+        if report.get("updated_baseline"):
+            typer.echo("  baseline updated")
+        elif report.get("ok"):
+            typer.echo("  OK")
+        else:
+            for regression in report.get("regressions", []):
+                typer.echo(f"  REGRESSION: {regression}", err=True)
+
+    if update_baseline:
+        raise typer.Exit(0)
+    raise typer.Exit(0 if ok else 2)
+
+
 if __name__ == "__main__":
     app()

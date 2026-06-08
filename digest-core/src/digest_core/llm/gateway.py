@@ -518,7 +518,9 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
 
         # Store the request hash so replay can match by request, not just position
         # (positional remains the fallback for legacy recordings / quality retries).
-        entry = {"request_hash": self._request_hash(messages), **result}
+        # Input messages are recorded alongside the response (PR7) so the eval
+        # harness can recover the evidence ids the extractor actually saw.
+        entry = {"request_hash": self._request_hash(messages), "messages": messages, **result}
         existing["responses"].append(entry)
 
         self._record_path.parent.mkdir(parents=True, exist_ok=True)
