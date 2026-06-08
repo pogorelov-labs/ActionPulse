@@ -5,11 +5,13 @@ Test LLM gateway against the current retry and response contract.
 import json
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from digest_core.config import LLMConfig
 from digest_core.evidence.split import EvidenceChunk
-from digest_core.llm.gateway import LLMGateway, TokenBudgetExceeded
+from digest_core.llm.gateway import LLMGateway, RetryableLLMError, TokenBudgetExceeded
+from digest_core.llm.rate_broker import RateBroker, StageCallBudgetExceeded
 
 
 def _mock_response(
@@ -382,3 +384,83 @@ class TestLLMReplayMode:
 
         result = gw._replay_by_request([{"role": "user", "content": "anything"}], "t")
         assert result["data"]["k"] == "legacy"
+
+
+class TestGatewayRateBroker:
+    """Gateway integrates with the shared RateBroker (PR2)."""
+
+    @staticmethod
+    def _evidence():
+        return [
+            EvidenceChunk(
+                evidence_id="ev-1",
+                content="test",
+                message_metadata={"from": "a@b", "subject": "X"},
+                source_ref={"msg_id": "m-1"},
+                msg_id="m-1",
+            ),
+        ]
+
+    @staticmethod
+    def _config():
+        return LLMConfig(
+            endpoint="https://api.example.com/v1/chat", model="qwen35-397b-a17b", timeout_s=30
+        )
+
+    def test_acquire_called_on_network_attempt(self, monkeypatch):
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        broker = Mock()
+        broker.acquire = Mock(return_value=0.0)
+        broker.note_call = Mock(return_value=1)
+        gw = LLMGateway(self._config(), rate_broker=broker)
+        gw.client.post = Mock(return_value=_mock_response('{"sections":[]}'))
+
+        gw.extract_actions(self._evidence(), "prompt", "t1")
+
+        assert broker.acquire.call_count == 1  # one HTTP attempt -> one permit
+        assert broker.note_call.call_count == 1  # one logical extractor call
+        broker.note_call.assert_called_with("extractor")
+
+    def test_acquire_not_called_in_replay(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        replay_file = tmp_path / "rec.json"
+        replay_file.write_text(
+            json.dumps({"meta": {}, "responses": [{"data": {"sections": []}, "meta": {}}]})
+        )
+        broker = Mock()
+        broker.acquire = Mock()
+        broker.note_call = Mock(return_value=1)
+        gw = LLMGateway(self._config(), replay_llm=str(replay_file), rate_broker=broker)
+        gw.client.post = Mock(side_effect=RuntimeError("no network in replay"))
+
+        gw.extract_actions(self._evidence(), "prompt", "t2")
+
+        broker.acquire.assert_not_called()  # replay path never reaches the network
+
+    def test_429_penalizes_broker(self, monkeypatch):
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        broker = Mock()
+        broker.acquire = Mock(return_value=0.0)
+        gw = LLMGateway(self._config(), rate_broker=broker)
+
+        err_response = Mock(status_code=429, headers={"Retry-After": "42"})
+        response = Mock()
+        response.raise_for_status = Mock(
+            side_effect=httpx.HTTPStatusError("429", request=Mock(), response=err_response)
+        )
+        gw.client.post = Mock(return_value=response)
+
+        # _make_request_once raises RetryableLLMError after penalizing (no retry loop).
+        with pytest.raises(RetryableLLMError):
+            gw._make_request_once([{"role": "user", "content": "x"}], "t3")
+
+        broker.penalize.assert_called_once_with("qwen35-397b-a17b", 42.0)
+
+    def test_stage_budget_exceeded_propagates(self, monkeypatch):
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        broker = RateBroker(fleet_rpm={}, stage_call_budgets={"extractor": 0})
+        gw = LLMGateway(self._config(), rate_broker=broker)
+        gw.client.post = Mock(return_value=_mock_response('{"sections":[]}'))
+
+        with pytest.raises(StageCallBudgetExceeded):
+            gw.extract_actions(self._evidence(), "prompt", "t4")
