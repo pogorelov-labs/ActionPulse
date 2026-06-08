@@ -921,9 +921,21 @@ def _normalize_messages(
     return normalized_messages
 
 
+# Instruction-language prompt per model. Output is RU in BOTH prompts (enforced by
+# the prompt rules); only the *instruction* language differs. This explicit map
+# replaces a fragile `"qwen" in name` substring and covers the fleet reasoners,
+# while preserving the current default (qwen35-397b-a17b -> EN instructions).
+_EXTRACT_PROMPT_BY_MODEL = {
+    "qwen35-397b-a17b": "extract_actions.en.v1",
+    "qwen3-next-80b-a3b": "extract_actions.en.v1",
+    "qwen35-35b-a3b": "extract_actions.en.v1",
+    "glm-4.7-flash": "extract_actions.v1",
+}
+_DEFAULT_EXTRACT_PROMPT = "extract_actions.v1"
+
+
 def _load_extract_prompt(model_name: str) -> tuple[str, str]:
-    model_lower = (model_name or "").lower()
-    prompt_version = "extract_actions.en.v1" if "qwen" in model_lower else "extract_actions.v1"
+    prompt_version = _EXTRACT_PROMPT_BY_MODEL.get(model_name or "", _DEFAULT_EXTRACT_PROMPT)
     template_path = get_prompt_template_path(prompt_version)
     prompt_path = PROMPTS_DIR / template_path
     return prompt_version, prompt_path.read_text(encoding="utf-8")

@@ -83,11 +83,15 @@ class LLMGateway:
         replay_llm: Optional[str] = None,
         rate_broker: Optional[RateBroker] = None,
         stage: str = "extractor",
+        require_evidence_spans: bool = False,
     ):
         self.config = config
         self.enable_degrade = enable_degrade
         self.degrade_mode = degrade_mode
         self.metrics = metrics
+        # R3: degrade-not-drop. Stays False through PR11 — items with no verbatim
+        # span are annotated, not dropped (the gate handles weak_evidence).
+        self.require_evidence_spans = require_evidence_spans
         self.last_latency_ms = 0
         self.last_request_meta: Dict[str, Any] = {}
         self._rate_broker = rate_broker
@@ -613,6 +617,13 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             logger.warning("Invalid source_ref structure")
             return None
 
+        # Validate verbatim evidence spans (R2): keep only quotes that are an exact
+        # substring of the cited chunk body. require_evidence_spans stays False (R3).
+        spans = self._validate_spans(item.get("evidence_spans"), evidence_id, evidence)
+        if self.require_evidence_spans and not spans:
+            logger.warning(f"Item has no verbatim evidence span: {evidence_id}")
+            return None
+
         out: Dict[str, Any] = {
             "title": item["title"],
             "due": item.get("due"),
@@ -620,6 +631,8 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             "confidence": confidence,
             "source_ref": source_ref,
         }
+        if spans:
+            out["evidence_spans"] = spans
         if item.get("email_subject") is not None:
             out["email_subject"] = item["email_subject"]
         raw_citations = item.get("citations")
@@ -635,6 +648,33 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             if parsed:
                 out["citations"] = [cit.model_dump() for cit in parsed]
         return out
+
+    def _validate_spans(
+        self, raw_spans: Any, evidence_id: str, evidence: List[EvidenceChunk]
+    ) -> List[Dict[str, str]]:
+        """Keep only spans whose `quote` is a verbatim substring of a cited chunk.
+
+        Offsets are NOT taken from the model (R2): the surviving quote text is what
+        downstream (PR8 gate) resolves into the normalized body via CitationBuilder.
+        """
+        if not isinstance(raw_spans, list):
+            return []
+        primary = next((c for c in evidence if c.evidence_id == evidence_id), None)
+        valid: List[Dict[str, str]] = []
+        for span in raw_spans:
+            if not isinstance(span, dict):
+                continue
+            quote = (span.get("quote") or "").strip()
+            if not quote:
+                continue
+            msg_id = span.get("msg_id") or (primary.msg_id if primary else "")
+            candidates = [primary] if primary else []
+            candidates += [c for c in evidence if c.msg_id == msg_id and c is not primary]
+            if any(chunk is not None and quote in chunk.content for chunk in candidates):
+                valid.append({"msg_id": msg_id, "quote": quote})
+            else:
+                logger.debug(f"Dropping non-verbatim evidence span for {evidence_id}")
+        return valid
 
     def summarize_digest(self, digest_data: Digest, prompt_template: str, trace_id: str) -> str:
         """Generate markdown summary of digest."""

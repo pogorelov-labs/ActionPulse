@@ -19,7 +19,13 @@
           "source_ref": {
             "type": "email",
             "msg_id": "точно msg_id из того же evidence"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "точно msg_id из того же evidence",
+              "quote": "дословная подстрока из тела evidence (на языке оригинала, НЕ русский title)"
+            }
+          ]
         }
       ]
     }
@@ -34,6 +40,8 @@
 - Используй только evidence_id, которые реально есть во входных данных.
 - Для source_ref всегда используй ровно объект вида {"type":"email","msg_id":"<msg_id from evidence>"}.
 - Если item опирается на один evidence block, то evidence_id и msg_id должны ссылаться именно на этот block.
+- Каждый item ОБЯЗАН содержать хотя бы один evidence_span, чей "quote" скопирован ДОСЛОВНО (символ в символ) из тела цитируемого evidence block.
+- Quote остается на языке оригинала письма: НЕ переводи его и НЕ копируй русский title. Бери самую короткую фразу или предложение, которое прямо подтверждает item.
 - Если evidence неоднозначен, лучше пропусти item, чем придумай.
 - Если во входе нет релевантного evidence, верни {"sections": []}.
 
@@ -73,6 +81,7 @@ Edge cases:
 Проверка перед ответом:
 - Все evidence_id существуют?
 - Каждый msg_id взят из того же evidence block?
+- У каждого item есть evidence_span, чей quote присутствует дословно в теле evidence?
 - Все titles на русском?
 - Нет пустых секций?
 - Нет item с confidence < 0.5?
@@ -104,7 +113,13 @@ Signals: action_verbs=[approve, send]; dates=[2026-03-30]; contains_question=Fal
           "source_ref": {
             "type": "email",
             "msg_id": "msg-101"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-101",
+              "quote": "пришли комментарии и финальное согласование до 30.03"
+            }
+          ]
         }
       ]
     }
@@ -136,7 +151,13 @@ Signals: action_verbs=[prepare, update]; dates=[none]; contains_question=False; 
           "source_ref": {
             "type": "email",
             "msg_id": "msg-202"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-202",
+              "quote": "обнови, пожалуйста, слайд по рискам проекта"
+            }
+          ]
         },
         {
           "title": "Подготовить короткий статус по бюджету для steering committee",
@@ -146,7 +167,13 @@ Signals: action_verbs=[prepare, update]; dates=[none]; contains_question=False; 
           "source_ref": {
             "type": "email",
             "msg_id": "msg-202"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-202",
+              "quote": "подготовь короткий статус по бюджету"
+            }
+          ]
         }
       ]
     }
@@ -178,7 +205,13 @@ Signals: action_verbs=[none]; dates=[2026-03-31]; contains_question=False; sende
           "source_ref": {
             "type": "email",
             "msg_id": "msg-303"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-303",
+              "quote": "еженедельный stand-up переносится на 11:00"
+            }
+          ]
         }
       ]
     }

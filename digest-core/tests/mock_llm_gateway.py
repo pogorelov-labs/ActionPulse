@@ -112,6 +112,13 @@ class MockLLMGatewayHandler(BaseHTTPRequestHandler):
         evidence_id = evidence_match.group(1) if evidence_match else "ev-mock-001"
         msg_id = msg_match.group(1) if msg_match else "msg-mock-001"
 
+        # Emit a verbatim evidence_span (PR6): copy a prefix of the chunk body
+        # (the text after the "---" separator) so it survives substring validation.
+        span_quote = ""
+        body_parts = content.split("---", 1)
+        if len(body_parts) == 2:
+            span_quote = body_parts[1].strip().split("\n", 1)[0].strip()[:80]
+
         has_actions = any(word in content.lower() for word in action_words)
 
         if has_actions:
@@ -130,6 +137,9 @@ class MockLLMGatewayHandler(BaseHTTPRequestHandler):
                                     "msg_id": msg_id,
                                     "conversation_id": "conv-mock-001",
                                 },
+                                "evidence_spans": (
+                                    [{"msg_id": msg_id, "quote": span_quote}] if span_quote else []
+                                ),
                             }
                         ],
                     }

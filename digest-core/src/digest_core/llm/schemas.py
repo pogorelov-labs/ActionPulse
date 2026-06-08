@@ -23,6 +23,18 @@ class Citation(BaseModel):
     )
 
 
+class EvidenceSpan(BaseModel):
+    """Verbatim pointer-to-support for a digest item (R2).
+
+    The extractor returns the exact quote *text* in the source language; numeric
+    offsets are derived server-side via CitationBuilder.find() into the normalized
+    body, so the model never counts characters (one coordinate system).
+    """
+
+    msg_id: str = Field(description="Message ID the quote is taken from")
+    quote: str = Field(description="Verbatim substring of the cited chunk body")
+
+
 # Legacy v1 models
 class Item(BaseModel):
     title: str
@@ -31,6 +43,9 @@ class Item(BaseModel):
     confidence: float
     source_ref: Dict[str, Any]
     email_subject: Optional[str] = Field(default=None)
+    evidence_spans: List[EvidenceSpan] = Field(
+        default_factory=list, description="Verbatim source-language spans supporting the item"
+    )
     citations: List[Citation] = Field(
         default_factory=list, description="Evidence citations with validated offsets"
     )
