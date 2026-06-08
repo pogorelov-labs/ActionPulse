@@ -70,7 +70,7 @@ class _FakeDeliverer:
     def __init__(self, config):
         pass
 
-    def deliver_digest(self, digest):
+    def deliver_digest(self, digest, json_path=None):
         _FakeDeliverer.sent.append(digest)
         return {"status": "sent", "parts": 1}
 

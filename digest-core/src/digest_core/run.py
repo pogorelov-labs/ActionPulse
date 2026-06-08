@@ -550,7 +550,7 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
         deliver_start = time.perf_counter()
         try:
             delivery_receipt = MattermostDeliverer(ctx.config.deliver.mattermost).deliver_digest(
-                digest
+                digest, json_path=str(ctx.json_path)
             )
         except Exception as exc:
             delivery_receipt = {"status": "warning", "error": str(exc)}
