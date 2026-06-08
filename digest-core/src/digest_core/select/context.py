@@ -72,11 +72,15 @@ class ContextSelector:
         weights_config: SelectionWeightsConfig = None,
         context_budget_config: ContextBudgetConfig = None,
         shrink_config: ShrinkConfig = None,
+        relevance_scorer=None,
     ):
         self.buckets_config = buckets_config or SelectionBucketsConfig()
         self.weights_config = weights_config or SelectionWeightsConfig()
         self.context_budget_config = context_budget_config or ContextBudgetConfig()
         self.shrink_config = shrink_config or ShrinkConfig()
+        # Optional fleet-backed relevance scorer (PR9). None offline/tests -> the
+        # fused score falls back to metadata-only. Used only when enable_relevance.
+        self.relevance_scorer = relevance_scorer
 
         # Negative patterns (noreply, unsubscribe, etc.)
         self.negative_patterns = [
@@ -155,63 +159,29 @@ class ContextSelector:
         return selected_chunks
 
     def _calculate_enhanced_scores(self, chunks: List[EvidenceChunk]) -> List[EvidenceChunk]:
-        """Calculate enhanced scores for all chunks using configured weights."""
+        """Score all chunks.
+
+        Default (``enable_relevance=False``): the legacy enhanced score, byte-identical
+        to pre-PR9. When enabled: a fused ``w_meta*metadata + w_rerank*relevance`` score,
+        falling back to metadata-only when no relevance scorer/query is available.
+        """
+        relevance: Dict[str, float] = {}
+        if self.weights_config.enable_relevance and self.relevance_scorer is not None:
+            try:
+                relevance = self.relevance_scorer.score_chunks(chunks) or {}
+            except Exception as exc:  # offline / fleet error -> metadata-only
+                logger.warning("Relevance scoring failed; metadata-only fallback", error=str(exc))
+                relevance = {}
+
         scored_chunks = []
-
         for chunk in chunks:
-            score = 0.0
-            signals = getattr(chunk, "signals", {}) or {}
-            metadata = getattr(chunk, "message_metadata", {}) or {}
+            if self.weights_config.enable_relevance:
+                score = self.weights_config.w_meta * self._metadata_score(chunk) + (
+                    self.weights_config.w_rerank * float(relevance.get(chunk.evidence_id, 0.0))
+                )
+            else:
+                score = self._legacy_enhanced_score(chunk)
 
-            # 1. Recency (затухание по времени)
-            recency_score = self._calculate_recency_score(chunk)
-            score += recency_score * self.weights_config.recency
-
-            # 2. AddressedToMe
-            if getattr(chunk, "addressed_to_me", False):
-                score += self.weights_config.addressed_to_me
-
-            # 3. Action verbs
-            action_verbs = signals.get("action_verbs", [])
-            score += len(action_verbs) * self.weights_config.action_verbs
-
-            # 4. Question mark
-            if signals.get("contains_question", False):
-                score += self.weights_config.question_mark
-
-            # 5. Dates found
-            dates = signals.get("dates", [])
-            score += len(dates) * self.weights_config.dates_found
-
-            # 6. Importance
-            importance = metadata.get("importance", "Normal")
-            if importance == "High":
-                score += self.weights_config.importance_high
-
-            # 7. Flagged
-            if metadata.get("is_flagged", False):
-                score += self.weights_config.is_flagged
-
-            # 8. Document attachments
-            if self._has_doc_attachments(chunk):
-                score += self.weights_config.has_doc_attachments
-
-            # 9. Sender rank
-            sender_rank = signals.get("sender_rank", 1)
-            score += sender_rank * self.weights_config.sender_rank
-
-            # 10. Thread activity (from priority_score - includes recency and other signals)
-            # Use as baseline but don't double-count
-            base_priority = getattr(chunk, "priority_score", 0.0)
-            if not isinstance(base_priority, (int, float)):
-                base_priority = 0.0
-            score += base_priority * 0.1  # Small contribution to not lose original scoring
-
-            # 11. Negative priors (penalty)
-            if self._has_negative_prior(chunk):
-                score += self.weights_config.negative_prior  # This is negative
-
-            # Update chunk with new score
             if callable(getattr(chunk, "_replace", None)) and not hasattr(chunk, "_mock_methods"):
                 updated_chunk = chunk._replace(priority_score=score)
             else:
@@ -220,6 +190,57 @@ class ContextSelector:
             scored_chunks.append(updated_chunk)
 
         return scored_chunks
+
+    def _legacy_enhanced_score(self, chunk: EvidenceChunk) -> float:
+        """Pre-PR9 enhanced score (all 11 terms). Active when enable_relevance is off."""
+        score = 0.0
+        signals = getattr(chunk, "signals", {}) or {}
+        metadata = getattr(chunk, "message_metadata", {}) or {}
+
+        score += self._calculate_recency_score(chunk) * self.weights_config.recency
+        if getattr(chunk, "addressed_to_me", False):
+            score += self.weights_config.addressed_to_me
+        score += len(signals.get("action_verbs", [])) * self.weights_config.action_verbs
+        if signals.get("contains_question", False):
+            score += self.weights_config.question_mark
+        score += len(signals.get("dates", [])) * self.weights_config.dates_found
+        if metadata.get("importance", "Normal") == "High":
+            score += self.weights_config.importance_high
+        if metadata.get("is_flagged", False):
+            score += self.weights_config.is_flagged
+        if self._has_doc_attachments(chunk):
+            score += self.weights_config.has_doc_attachments
+        score += signals.get("sender_rank", 1) * self.weights_config.sender_rank
+        base_priority = getattr(chunk, "priority_score", 0.0)
+        if not isinstance(base_priority, (int, float)):
+            base_priority = 0.0
+        score += base_priority * 0.1
+        if self._has_negative_prior(chunk):
+            score += self.weights_config.negative_prior
+        return score
+
+    def _metadata_score(self, chunk: EvidenceChunk) -> float:
+        """Non-textual metadata component of the fused score (PR9).
+
+        recency + addressed_to_me + importance + flagged + sender_rank + negative_prior.
+        The textual terms (action verbs, dates, questions, attachments) are intentionally
+        dropped here — the relevance component subsumes them when enabled.
+        """
+        score = 0.0
+        signals = getattr(chunk, "signals", {}) or {}
+        metadata = getattr(chunk, "message_metadata", {}) or {}
+
+        score += self._calculate_recency_score(chunk) * self.weights_config.recency
+        if getattr(chunk, "addressed_to_me", False):
+            score += self.weights_config.addressed_to_me
+        if metadata.get("importance", "Normal") == "High":
+            score += self.weights_config.importance_high
+        if metadata.get("is_flagged", False):
+            score += self.weights_config.is_flagged
+        score += signals.get("sender_rank", 1) * self.weights_config.sender_rank
+        if self._has_negative_prior(chunk):
+            score += self.weights_config.negative_prior
+        return score
 
     def _calculate_recency_score(self, chunk: EvidenceChunk) -> float:
         """
