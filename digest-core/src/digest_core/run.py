@@ -628,41 +628,50 @@ def _run_pipeline(
     )
 
     try:
-        # Stages 1-2: INGEST + NORMALIZE
-        normalized_messages = _stage_ingest(ctx)
+        try:
+            # Stages 1-2: INGEST + NORMALIZE
+            normalized_messages = _guard(ctx, "ingest", lambda: _stage_ingest(ctx))
 
-        # Post-ingest idempotency: if the ingested content is byte-identical to the
-        # last successful build (same config + pipeline version), skip the expensive
-        # LLM/assemble/deliver rather than re-running. --force / dry-run bypass.
-        content_sha = _content_sha256(normalized_messages)
-        if (
-            not ctx.force
-            and not ctx.dry_run
-            and _idem_content_skip(
-                ctx.json_path, ctx.md_path, idem_sidecar, config_sha, content_sha
+            # Post-ingest idempotency: if the ingested content is byte-identical to the
+            # last successful build (same config + pipeline version), skip the expensive
+            # LLM/assemble/deliver rather than re-running. --force / dry-run bypass.
+            content_sha = _content_sha256(normalized_messages)
+            if (
+                not ctx.force
+                and not ctx.dry_run
+                and _idem_content_skip(
+                    ctx.json_path, ctx.md_path, idem_sidecar, config_sha, content_sha
+                )
+            ):
+                logger.info(
+                    "Ingested content unchanged since last build, skipping rebuild (post-ingest)",
+                    digest_date=ctx.digest_date,
+                    trace_id=ctx.trace_id,
+                    emails_processed=len(normalized_messages),
+                )
+                ctx.metrics.record_run_total("ok")
+                ctx.run_meta["status"] = "skipped"
+                ctx.run_meta["skip_reason"] = "content_match"
+                ctx.run_meta["pipeline_metrics"] = {"emails_processed": len(normalized_messages)}
+                _write_json(ctx.metadata_path, ctx.run_meta)
+                return RunDigestResult(True, True)
+
+            # Stage 3: THREADS
+            threads = _guard(ctx, "threads", lambda: _stage_threads(ctx, normalized_messages))
+
+            # Stage 4: EVIDENCE
+            evidence_chunks = _guard(
+                ctx,
+                "evidence",
+                lambda: _stage_evidence(ctx, threads, total_emails=len(normalized_messages)),
             )
-        ):
-            logger.info(
-                "Ingested content unchanged since last build, skipping rebuild (post-ingest)",
-                digest_date=ctx.digest_date,
-                trace_id=ctx.trace_id,
-                emails_processed=len(normalized_messages),
+
+            # Stage 5: SELECT
+            selected_evidence, selection_metrics = _guard(
+                ctx, "select", lambda: _stage_select(ctx, evidence_chunks)
             )
-            ctx.metrics.record_run_total("ok")
-            ctx.run_meta["status"] = "skipped"
-            ctx.run_meta["skip_reason"] = "content_match"
-            ctx.run_meta["pipeline_metrics"] = {"emails_processed": len(normalized_messages)}
-            _write_json(ctx.metadata_path, ctx.run_meta)
-            return RunDigestResult(True, True)
-
-        # Stage 3: THREADS
-        threads = _stage_threads(ctx, normalized_messages)
-
-        # Stage 4: EVIDENCE
-        evidence_chunks = _stage_evidence(ctx, threads, total_emails=len(normalized_messages))
-
-        # Stage 5: SELECT
-        selected_evidence, selection_metrics = _stage_select(ctx, evidence_chunks)
+        except _StageDegraded as degraded:
+            return _finish_degraded(ctx, degraded.digest)
 
         ctx.run_meta["evidence_summary"] = _build_evidence_summary(
             threads=threads,
@@ -920,6 +929,116 @@ def _load_extract_prompt(model_name: str) -> tuple[str, str]:
     return prompt_version, prompt_path.read_text(encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Per-stage graceful degradation (PR4): a failed early stage degrades to an
+# empty/partial digest instead of crashing the run. degradation_policy is pure
+# and unit-testable. The LLM and deliver stages already self-degrade.
+# ---------------------------------------------------------------------------
+
+STAGE_BANNERS_RU = {
+    "threads": "Сбой при группировке писем. Дайджест неполный.",
+    "evidence": "Сбой при подготовке доказательств. Дайджест неполный.",
+    "select": "Сбой при отборе контекста. Дайджест неполный.",
+}
+
+_DEGRADE_ACTIONS = {
+    "ingest": "empty",
+    "normalize": "empty",
+    "threads": "partial",
+    "evidence": "partial",
+    "select": "partial",
+    "assemble": "crash",
+}
+
+
+class _StageDegraded(Exception):
+    """Internal signal carrying a degraded digest from a failed early stage."""
+
+    def __init__(self, digest: Digest):
+        super().__init__("stage degraded")
+        self.digest = digest
+
+
+def _is_operational_error(exc: Exception) -> bool:
+    """Operational (vs config/precondition) failure: network/IO, not a bad setup."""
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+
+
+def degradation_policy(stage: str, exc: Exception, config: Config) -> str:
+    """Pure policy: how a failed `stage` degrades -> 'crash' | 'partial' | 'empty'."""
+    if not config.degrade.enable:
+        return "crash"
+    action = _DEGRADE_ACTIONS.get(stage, "crash")
+    # Ingest/normalize is the source boundary: a config/precondition error
+    # (missing credentials, bad endpoint) must fail fast rather than silently
+    # produce an empty digest. Only operational failures (EWS unreachable,
+    # missing replay snapshot) degrade.
+    if action == "empty" and not _is_operational_error(exc):
+        return "crash"
+    return action
+
+
+def _degrade_stage(ctx: RunContext, stage: str, exc: Exception) -> Digest:
+    """Apply the degradation policy for a failed stage; return a digest or re-raise."""
+    action = degradation_policy(stage, exc, ctx.config)
+    logger.error(
+        "Pipeline stage failed",
+        stage=stage,
+        action=action,
+        trace_id=ctx.trace_id,
+        error=str(exc),
+        exc_info=True,
+    )
+    if action == "crash":
+        raise exc
+    ctx.metrics.record_degradation(f"{stage}_failed")
+    ctx.run_meta["partial"] = True
+    ctx.run_meta["status"] = "partial"
+    ctx.run_meta.setdefault("degraded_stages", []).append(stage)
+    if action == "empty":
+        return _build_empty_digest(ctx.digest_date, ctx.trace_id, prompt_version="degraded")
+    banner = STAGE_BANNERS_RU.get(stage, "Сбой пайплайна. Дайджест неполный.")
+    return _build_partial_digest(ctx.digest_date, ctx.trace_id, str(exc), title=banner)
+
+
+def _guard(ctx: RunContext, stage: str, thunk):
+    """Run a stage thunk; on a degradable failure raise _StageDegraded(digest)."""
+    try:
+        return thunk()
+    except Exception as exc:
+        raise _StageDegraded(_degrade_stage(ctx, stage, exc)) from exc
+
+
+def _finish_degraded(ctx: RunContext, digest: Digest) -> RunDigestResult:
+    """Deliver a degraded digest (full run) or just record it (dry-run)."""
+    if ctx.dry_run:
+        ctx.metrics.record_run_total("ok")
+        ctx.run_meta["status"] = "partial"
+        ctx.run_meta["pipeline_metrics"] = {"partial": True}
+        _write_json(ctx.metadata_path, ctx.run_meta)
+        return RunDigestResult(True, True)
+
+    # A degraded digest has no verifiable citations: fail the gate only when the
+    # caller asked for it (--validate-citations), so default runs stay exit 0.
+    citation_ok = not ctx.validate_citations
+    ctx.run_meta["citation_validation_ok"] = citation_ok
+    _stage_assemble(ctx, digest)  # assemble failure -> crash (per policy)
+    ctx.run_meta["delivery_receipt"] = _stage_deliver(ctx, digest)
+    ctx.metrics.record_run_total("ok")
+    ctx.metrics.record_digest_build_time()
+    ctx.run_meta["pipeline_metrics"] = {
+        "total_items": _count_digest_items(digest),
+        "partial": True,
+    }
+    _write_json(ctx.metadata_path, ctx.run_meta)
+    logger.warning(
+        "Digest delivered in degraded mode",
+        trace_id=ctx.trace_id,
+        degraded_stages=ctx.run_meta.get("degraded_stages"),
+    )
+    return RunDigestResult(True, citation_ok)
+
+
 def _build_empty_digest(digest_date: str, trace_id: str, prompt_version: str) -> Digest:
     return Digest(
         schema_version="1.0",
@@ -930,10 +1049,13 @@ def _build_empty_digest(digest_date: str, trace_id: str, prompt_version: str) ->
     )
 
 
-def _build_partial_digest(digest_date: str, trace_id: str, error_message: str) -> Digest:
-    title = "LLM Gateway недоступен. Дайджест неполный."
-    if "timed out" in error_message.lower() or "timeout" in error_message.lower():
-        title = "LLM Gateway превысил таймаут. Дайджест неполный."
+def _build_partial_digest(
+    digest_date: str, trace_id: str, error_message: str, title: str | None = None
+) -> Digest:
+    if title is None:
+        title = "LLM Gateway недоступен. Дайджест неполный."
+        if "timed out" in error_message.lower() or "timeout" in error_message.lower():
+            title = "LLM Gateway превысил таймаут. Дайджест неполный."
     return Digest(
         schema_version="1.0",
         prompt_version="none",
