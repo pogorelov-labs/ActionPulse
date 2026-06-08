@@ -166,6 +166,24 @@ class MetricsCollector:
             registry=self.registry,
         )
 
+        # P2 shadow gate metrics (PR8)
+        self.citation_support_score_histogram = Histogram(
+            "citation_support_score_histogram",
+            "Reranker support score per gated digest item",
+            buckets=[0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0],
+            registry=self.registry,
+        )
+        self.citation_weak_evidence_total = Counter(
+            "citation_weak_evidence_total",
+            "Total items annotated weak_evidence by the P2 gate",
+            registry=self.registry,
+        )
+        self.reranker_calls_total = Counter(
+            "reranker_calls_total",
+            "Total reranker (/v1/score) calls made by the P2 gate",
+            registry=self.registry,
+        )
+
         # Action/mention extraction metrics
         self.actions_found_total = Counter(
             "actions_found_total",
@@ -428,6 +446,18 @@ class MetricsCollector:
         """Record citation validation failure."""
         self.citation_validation_failures_total.labels(failure_type=failure_type).inc()
         logger.debug("Recorded citation validation failure", failure_type=failure_type)
+
+    def record_citation_support_score(self, score: float):
+        """Record a P2-gate reranker support score."""
+        self.citation_support_score_histogram.observe(score)
+
+    def record_citation_weak_evidence(self):
+        """Record an item annotated weak_evidence by the P2 gate."""
+        self.citation_weak_evidence_total.inc()
+
+    def record_reranker_call(self):
+        """Record a reranker (/v1/score) call from the P2 gate."""
+        self.reranker_calls_total.inc()
 
     def record_action_found(self, action_type: str):
         """Record action found by type (action/question/mention)."""

@@ -452,6 +452,22 @@ class DegradeConfig(BaseModel):
     mode: str = Field(default="extractive", description="Degradation mode: extractive | empty")
 
 
+class RerankerConfig(BaseModel):
+    """Cross-encoder reranker support scoring for the P2 gate (PR8).
+
+    enabled stays False until PC-2 (per-endpoint data-handling ADR). The reranker
+    is the scarce fleet resource (non-batchable), so it is budgeted per run and
+    only spent on low-confidence items.
+    """
+
+    enabled: bool = Field(default=False, description="Use the reranker for support scores")
+    tau: float = Field(default=0.0, description="Support-score threshold for weak_evidence")
+    budget_per_run: int = Field(default=10, description="Max reranker calls per run")
+    low_confidence_threshold: float = Field(
+        default=0.7, description="Only items below this confidence spend the reranker"
+    )
+
+
 class Config(BaseSettings):
     """Main configuration class."""
 
@@ -471,6 +487,7 @@ class Config(BaseSettings):
     nlp: NLPConfig = Field(default_factory=NLPConfig)
     ranker: RankerConfig = Field(default_factory=RankerConfig)
     degrade: DegradeConfig = Field(default_factory=DegradeConfig)
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
