@@ -212,8 +212,14 @@ class ThreadBuilder:
                 self.stats["subjects_normalized"] += 1
 
                 if normalized_subject:
-                    # Check if we have existing thread with this subject
-                    subject_thread_id = f"subj_{hash(normalized_subject)}"
+                    # Check if we have existing thread with this subject.
+                    # Content-hash (not builtin hash()) so the id is stable across
+                    # runs — PYTHONHASHSEED randomization would otherwise leak into
+                    # conversation_id -> source_ref -> evidence_id (PR1). Mirrors :128.
+                    subject_thread_id = (
+                        "subj_"
+                        + hashlib.sha256(normalized_subject.encode("utf-8")).hexdigest()[:16]
+                    )
 
                     # Look for existing thread with same normalized subject
                     found_existing = False

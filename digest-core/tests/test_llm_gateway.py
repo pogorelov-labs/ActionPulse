@@ -323,3 +323,62 @@ class TestLLMReplayMode:
 
         with pytest.raises(RuntimeError, match="replay exhausted"):
             gw.extract_actions(self._make_evidence(), "Return strict JSON", "trace-empty")
+
+    def test_record_stores_request_hash(self, monkeypatch, tmp_path):
+        """Recorded entries carry a request_hash for request-keyed replay (PR1)."""
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        record_file = tmp_path / "llm-recording.json"
+        config = LLMConfig(
+            endpoint="https://api.example.com/v1/chat",
+            model="qwen35-397b-a17b",
+            timeout_s=30,
+        )
+        gw = LLMGateway(config, record_llm=str(record_file))
+        gw.client.post = Mock(return_value=_mock_response('{"sections":[]}'))
+
+        gw.extract_actions(self._make_evidence(), "Return strict JSON", "trace-rec")
+
+        entry = json.loads(record_file.read_text())["responses"][0]
+        assert len(entry["request_hash"]) == 16
+        assert entry["data"] == {"sections": []}  # original payload still present
+
+    def test_replay_matches_request_hash_over_position(self, monkeypatch, tmp_path):
+        """Replay returns the entry matching the request, regardless of order."""
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        config = LLMConfig(
+            endpoint="https://api.example.com/v1/chat",
+            model="qwen35-397b-a17b",
+            timeout_s=30,
+        )
+        msgs_a = [{"role": "user", "content": "AAA"}]
+        msgs_b = [{"role": "user", "content": "BBB"}]
+        recorded = {
+            "meta": {},
+            "responses": [
+                {"request_hash": LLMGateway._request_hash(msgs_a), "data": {"k": "A"}, "meta": {}},
+                {"request_hash": LLMGateway._request_hash(msgs_b), "data": {"k": "B"}, "meta": {}},
+            ],
+        }
+        replay_file = tmp_path / "rec.json"
+        replay_file.write_text(json.dumps(recorded))
+        gw = LLMGateway(config, replay_llm=str(replay_file))
+
+        # Request B first (stored at position 1) — must match by hash, not position.
+        assert gw._replay_by_request(msgs_b, "t")["data"]["k"] == "B"
+        assert gw._replay_by_request(msgs_a, "t")["data"]["k"] == "A"
+
+    def test_replay_legacy_entries_fall_back_to_position(self, monkeypatch, tmp_path):
+        """Legacy recordings without request_hash replay positionally (back-compat)."""
+        monkeypatch.setenv("LLM_TOKEN", "test-token")
+        config = LLMConfig(
+            endpoint="https://api.example.com/v1/chat",
+            model="qwen35-397b-a17b",
+            timeout_s=30,
+        )
+        recorded = {"meta": {}, "responses": [{"data": {"k": "legacy"}, "meta": {}}]}
+        replay_file = tmp_path / "rec.json"
+        replay_file.write_text(json.dumps(recorded))
+        gw = LLMGateway(config, replay_llm=str(replay_file))
+
+        result = gw._replay_by_request([{"role": "user", "content": "anything"}], "t")
+        assert result["data"]["k"] == "legacy"

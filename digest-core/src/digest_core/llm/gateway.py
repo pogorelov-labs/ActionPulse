@@ -2,6 +2,7 @@
 LLM Gateway client for processing evidence chunks with retry logic.
 """
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -89,6 +90,7 @@ class LLMGateway:
         self._record_path = Path(record_llm) if record_llm else None
         self._replay_data: Optional[Dict[str, Any]] = None
         self._replay_cursor = 0
+        self._replay_consumed: set[int] = set()
         if replay_llm:
             replay_path = Path(replay_llm)
             self._replay_data = json.loads(replay_path.read_text(encoding="utf-8"))
@@ -272,7 +274,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         """Perform a single HTTP request to the LLM gateway (or replay from file)."""
         # ── REPLAY MODE ──────────────────────────────────────────────
         if self._replay_data is not None:
-            return self._replay_next(trace_id)
+            return self._replay_by_request(messages, trace_id)
 
         start_time = time.time()
         tokens_in = None
@@ -445,27 +447,56 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         if remaining > 0:
             time.sleep(remaining)
 
-    def _replay_next(self, trace_id: str) -> Dict[str, Any]:
-        """Return the next recorded LLM response from the replay file."""
+    @staticmethod
+    def _request_hash(messages: List[Dict[str, str]]) -> str:
+        """Stable hash of the request messages for request-keyed replay (PR1)."""
+        canonical = json.dumps(messages, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+    def _replay_by_request(self, messages: List[Dict[str, str]], trace_id: str) -> Dict[str, Any]:
+        """Replay the recorded response whose request_hash matches these messages.
+
+        Falls back to positional order for legacy recordings (no request_hash) or
+        when the exact request was not recorded (e.g. a quality retry).
+        """
         entries = self._replay_data.get("responses", [])
+        req_hash = self._request_hash(messages)
+        for idx, entry in enumerate(entries):
+            if idx in self._replay_consumed:
+                continue
+            if entry.get("request_hash") == req_hash:
+                self._replay_consumed.add(idx)
+                return self._finalize_replay_entry(entry, trace_id, idx)
+        return self._replay_next(trace_id)
+
+    def _replay_next(self, trace_id: str) -> Dict[str, Any]:
+        """Return the next not-yet-consumed recorded response (positional fallback)."""
+        entries = self._replay_data.get("responses", [])
+        while self._replay_cursor < len(entries) and self._replay_cursor in self._replay_consumed:
+            self._replay_cursor += 1
         if self._replay_cursor >= len(entries):
             raise RuntimeError(
                 f"LLM replay exhausted: only {len(entries)} responses recorded, "
                 f"but call #{self._replay_cursor + 1} was requested"
             )
-        entry = entries[self._replay_cursor]
+        idx = self._replay_cursor
         self._replay_cursor += 1
+        self._replay_consumed.add(idx)
+        return self._finalize_replay_entry(entries[idx], trace_id, idx)
+
+    def _finalize_replay_entry(
+        self, entry: Dict[str, Any], trace_id: str, index: int
+    ) -> Dict[str, Any]:
+        """Apply latency/token bookkeeping for a replayed entry and return it."""
         logger.info(
             "Replaying recorded LLM response",
-            replay_index=self._replay_cursor - 1,
+            replay_index=index,
             trace_id=trace_id,
         )
         self.last_latency_ms = entry.get("meta", {}).get("latency_ms", 0)
-
         tokens_in = entry.get("meta", {}).get("tokens_in", 0)
         tokens_out = entry.get("meta", {}).get("tokens_out", 0)
         self._run_tokens_used += tokens_in + tokens_out
-
         return entry
 
     def _record_response(self, messages: List[Dict[str, str]], result: Dict[str, Any]) -> None:
@@ -475,7 +506,10 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         else:
             existing = {"meta": {"model": self.config.model}, "responses": []}
 
-        existing["responses"].append(result)
+        # Store the request hash so replay can match by request, not just position
+        # (positional remains the fallback for legacy recordings / quality retries).
+        entry = {"request_hash": self._request_hash(messages), **result}
+        existing["responses"].append(entry)
 
         self._record_path.parent.mkdir(parents=True, exist_ok=True)
         self._record_path.write_text(
