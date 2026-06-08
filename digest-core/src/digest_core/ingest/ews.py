@@ -130,10 +130,6 @@ class NormalizedMessage:
 class EWSIngest:
     """EWS email ingestion with NTLM authentication."""
 
-    # Class-level flags to track global SSL patching (thread-safety consideration)
-    _ssl_verification_disabled = False
-    _original_request = None
-
     def __init__(self, config: EWSConfig, time_config: TimeConfig = None, metrics=None):
         self.config = config
         self.time_config = time_config or TimeConfig()
@@ -196,12 +192,10 @@ class EWSIngest:
 
         logger.debug("Using NTLM authentication", username=ntlm_username)
 
-        # Set SSL context (thread-safe assignment)
+        # Apply the per-instance SSL context to exchangelib (EWS connections only).
+        # Scoped to exchangelib's protocol — it does NOT touch the LLM gateway or
+        # Mattermost httpx clients (PR3: no process-global verify=False monkeypatch).
         BaseProtocol.SSL_CONTEXT = self.ssl_context
-
-        # Handle SSL verification disabling (with proper guards)
-        if not self.config.verify_ssl and not self.__class__._ssl_verification_disabled:
-            self._disable_ssl_verification()
 
         # Create configuration with NTLM auth and explicit service endpoint
         config_obj = Configuration(
@@ -225,106 +219,6 @@ class EWSIngest:
             auth_type="NTLM",
         )
         return self.account
-
-    @classmethod
-    def _disable_ssl_verification(cls):
-        """Disable SSL verification globally (use with caution!).
-
-        Warning:
-            This method monkey-patches requests and httpx libraries globally
-            for all HTTP/HTTPS requests. It should only be called once per process.
-
-        Side effects:
-            - Disables urllib3 SSL warnings globally
-            - Patches requests.Session.request to use verify=False
-            - Patches httpx.Client to use verify=False
-            - Sets class-level flag _ssl_verification_disabled
-        """
-        if cls._ssl_verification_disabled:
-            logger.debug("SSL verification already disabled, skipping")
-            return
-
-        # Suppress SSL warnings globally
-        import urllib3
-        import requests
-
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-        # Monkey-patch requests.Session.request (for exchangelib)
-        if cls._original_request is None:
-            cls._original_request = requests.Session.request
-
-        def patched_request(self, method, url, **kwargs):
-            """Patched version of Session.request that disables SSL verification."""
-            kwargs["verify"] = False
-            return cls._original_request(self, method, url, **kwargs)
-
-        requests.Session.request = patched_request
-
-        # Also monkey-patch httpx.Client (for LLM Gateway)
-        try:
-            import httpx
-            import ssl as ssl_module
-
-            # Create a custom SSL context that doesn't verify
-            unverified_ssl_context = ssl_module.create_default_context()
-            unverified_ssl_context.check_hostname = False
-            unverified_ssl_context.verify_mode = ssl_module.CERT_NONE
-
-            # Monkey-patch httpx.Client.__init__ to use unverified SSL context
-            if not hasattr(cls, "_original_httpx_init"):
-                cls._original_httpx_init = httpx.Client.__init__
-
-            def patched_httpx_init(self, *args, **kwargs):
-                """Patched version of httpx.Client.__init__ that disables SSL verification."""
-                kwargs["verify"] = False
-                return cls._original_httpx_init(self, *args, **kwargs)
-
-            httpx.Client.__init__ = patched_httpx_init
-
-            logger.debug("httpx SSL verification also disabled")
-        except ImportError:
-            logger.debug("httpx not installed, skipping httpx patch")
-
-        cls._ssl_verification_disabled = True
-
-        logger.critical(
-            "SSL verification disabled globally for all HTTP/HTTPS libraries (requests, httpx)",
-            extra={"security_risk": "HIGH", "testing_only": True},
-        )
-
-    @classmethod
-    def restore_ssl_verification(cls):
-        """Restore original SSL verification (cleanup method).
-
-        This method should be called when SSL verification needs to be re-enabled,
-        typically in test cleanup or when transitioning from testing to production.
-        """
-        if not cls._ssl_verification_disabled:
-            logger.debug("SSL verification not disabled, nothing to restore")
-            return
-
-        # Restore requests.Session.request
-        if cls._original_request is not None:
-            import requests
-
-            requests.Session.request = cls._original_request
-            logger.debug("requests SSL verification restored")
-        else:
-            logger.warning("Cannot restore requests SSL verification: original method not saved")
-
-        # Restore httpx.Client.__init__ if it was patched
-        if hasattr(cls, "_original_httpx_init") and cls._original_httpx_init is not None:
-            try:
-                import httpx
-
-                httpx.Client.__init__ = cls._original_httpx_init
-                logger.debug("httpx SSL verification restored")
-            except ImportError:
-                pass
-
-        cls._ssl_verification_disabled = False
-        logger.info("SSL verification restored to original state for all libraries")
 
     def _get_time_window(
         self, digest_date: str, time_config: TimeConfig
