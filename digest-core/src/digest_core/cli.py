@@ -50,9 +50,9 @@ def run(
         None, "--replay-llm", help="Replay LLM responses from a recorded JSON file"
     ),
     validate_citations: bool = typer.Option(
-        False,
-        "--validate-citations",
-        help="Enforce citation validation; exit with code 2 on failures",
+        True,
+        "--validate-citations/--no-validate-citations",
+        help="Build+validate citations (default on, PR11); exit 2 only when support recall < floor",
     ),
     collect_logs: bool = typer.Option(
         False,
