@@ -108,8 +108,8 @@ make test    # All tests use mocks, run anywhere
 - **Stale LLM recordings (pre-PR1)**: any `--record-llm` capture made before PR1 is unusable — it stored `uuid4()` `evidence_id`s that won't match the new deterministic content-hash ids, so every item is dropped on replay (empty digest). **Re-record inside the corp network** after PR1. Recordings are now request-keyed (`request_hash` per entry); legacy files without it still replay positionally.
 - **Token estimation**: `words * 1.3` approximation, NOT tiktoken. Off by ~10% but fine for typical `context_budget.max_total_tokens` (default 7000).
 - **LLM timeout**: Default `timeout_s` is 120s for qwen35-397b-a17b (see `LLMConfig`).
-- **Extraction prompts**: `extract_actions*.txt` are plain text (ADR-009). Other flows may still reference `.j2` paths via `llm/prompt_registry.py` (e.g. hierarchical summarize).
-- **`hierarchical/` is EXPERIMENTAL** and not called by `run.py`. It implements a multi-step LLM pipeline (per-thread summarize → aggregate) for high-volume use cases. It violates ADR-002 (single LLM call) and would exhaust the 15 RPM gateway limit. Do not integrate without explicit design approval. See `hierarchical/__init__.py` for full context.
+- **Extraction prompts**: `extract_actions*.txt` are plain text (ADR-009). Some `.j2` summarize paths remain registered in `llm/prompt_registry.py` but are unused by `run.py`.
+- **`hierarchical/` was deleted** (cleanup PR): the dormant per-thread-summarize→aggregate processor violated ADR-002 and would exhaust the 15 RPM cap. Its good ideas (must-include chunks, merge-with-citations, skip-if-empty) live in the P2 gate (PR8) and fused scoring (PR9). The dormant `HierarchicalConfig` in `config.py` is now dead config (left as a harmless no-op; safe to remove later).
 
 ## Environment Variables
 
