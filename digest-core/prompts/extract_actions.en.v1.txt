@@ -19,7 +19,13 @@ Required response shape:
           "source_ref": {
             "type": "email",
             "msg_id": "exact msg_id from the same evidence block"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "exact msg_id from the same evidence block",
+              "quote": "verbatim substring copied from the evidence body (source language, NOT the Russian title)"
+            }
+          ]
         }
       ]
     }
@@ -34,6 +40,8 @@ Hard rules:
 - Every evidence_id must match one of the input evidence blocks exactly.
 - source_ref must always be exactly {"type":"email","msg_id":"<msg_id from evidence>"}.
 - The msg_id must come from the same evidence block as the chosen evidence_id.
+- Every item MUST include at least one evidence_span whose "quote" is copied VERBATIM (character-for-character) from the body of the cited evidence block.
+- Quotes stay in the source language of the email: do NOT translate them and do NOT reuse the Russian title. Prefer the shortest phrase or sentence that directly supports the item.
 - If the evidence is ambiguous, skip the item instead of guessing.
 - If there is no relevant evidence, return {"sections": []}.
 
@@ -73,6 +81,7 @@ Edge cases:
 Checklist before responding:
 - Every evidence_id exists.
 - Every msg_id matches the same evidence block.
+- Every item has at least one evidence_span whose quote appears verbatim in the evidence body.
 - All titles are in Russian.
 - No empty sections.
 - No item with confidence below 0.5.
@@ -104,7 +113,13 @@ Correct output:
           "source_ref": {
             "type": "email",
             "msg_id": "msg-101"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-101",
+              "quote": "пришли комментарии и финальное согласование до 30.03"
+            }
+          ]
         }
       ]
     }
@@ -136,7 +151,13 @@ Correct output:
           "source_ref": {
             "type": "email",
             "msg_id": "msg-202"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-202",
+              "quote": "обнови, пожалуйста, слайд по рискам проекта"
+            }
+          ]
         },
         {
           "title": "Подготовить короткий статус по бюджету для steering committee",
@@ -146,7 +167,13 @@ Correct output:
           "source_ref": {
             "type": "email",
             "msg_id": "msg-202"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-202",
+              "quote": "подготовь короткий статус по бюджету"
+            }
+          ]
         }
       ]
     }
@@ -178,7 +205,13 @@ Correct output:
           "source_ref": {
             "type": "email",
             "msg_id": "msg-303"
-          }
+          },
+          "evidence_spans": [
+            {
+              "msg_id": "msg-303",
+              "quote": "еженедельный stand-up переносится на 11:00"
+            }
+          ]
         }
       ]
     }
