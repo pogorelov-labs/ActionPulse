@@ -135,6 +135,7 @@ class EvidenceSplitter:
         user_timezone: str = "Europe/Moscow",
         context_budget_config: ContextBudgetConfig = None,
         chunking_config: ChunkingConfig = None,
+        important_senders: List[str] = None,
     ):
         self.max_tokens_per_chunk = 512
         self.min_tokens_per_chunk = 64
@@ -143,6 +144,7 @@ class EvidenceSplitter:
         self.max_total_tokens = self.context_budget_config.max_total_tokens
         self.user_aliases = user_aliases or []
         self.user_timezone = user_timezone
+        self.important_senders = important_senders or []
 
     def split_evidence(
         self,
@@ -454,7 +456,7 @@ class EvidenceSplitter:
         action_verbs = signals.extract_action_verbs(content)
         dates = signals.extract_dates(content)
         has_question = signals.contains_question(content)
-        sender_rank = signals.calculate_sender_rank(message.sender_email)
+        sender_rank = signals.calculate_sender_rank(message.sender_email, self.important_senders)
 
         chunk_signals = {
             "action_verbs": action_verbs,

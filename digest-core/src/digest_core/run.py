@@ -314,6 +314,7 @@ def _stage_evidence(ctx: RunContext, threads: list, total_emails: int) -> List[E
         user_timezone=ctx.config.time.user_timezone,
         context_budget_config=ctx.config.context_budget,
         chunking_config=ctx.config.chunking,
+        important_senders=ctx.config.ranker.important_senders,
     )
     evidence_chunks = evidence_splitter.split_evidence(
         threads,

@@ -218,6 +218,13 @@ class SelectionWeightsConfig(BaseModel):
     negative_prior: float = Field(
         default=-2.0, description="Penalty for noreply/unsubscribe patterns"
     )
+    # Fused relevance score (PR9). enable_relevance stays False until PC-2; when off,
+    # scoring is byte-identical to the legacy enhanced score.
+    enable_relevance: bool = Field(
+        default=False, description="Fuse embeddings/reranker relevance into the chunk score"
+    )
+    w_meta: float = Field(default=1.0, description="Weight on the metadata component (fused)")
+    w_rerank: float = Field(default=1.0, description="Weight on the relevance component (fused)")
 
 
 class ContextBudgetConfig(BaseModel):

@@ -263,20 +263,22 @@ def normalize_datetime_to_tz(dt: datetime, tz_name: str) -> str:
         return dt.isoformat()
 
 
-def calculate_sender_rank(sender_email: str) -> int:
+def calculate_sender_rank(sender_email: str, important_senders=None) -> int:
     """
-    Calculate sender rank (placeholder implementation).
+    Calculate sender rank.
 
     Args:
         sender_email: Sender email address
+        important_senders: optional list of important addresses or substrings
+            (e.g. "ceo@", "example.com"). A match promotes the sender to rank 2,
+            which makes the `critical_senders` selection bucket live (PR9).
 
     Returns:
-        Rank from 0 to 3 (currently always returns 1)
+        2 if the sender matches an important_senders pattern, else 1 (internal).
+        With no important_senders configured this is the legacy constant 1.
     """
-    # Placeholder: always return 1 (internal sender)
-    # Future implementations could:
-    # - 0 = external sender
-    # - 1 = internal sender
-    # - 2 = manager/important
-    # - 3 = system/automated
+    if important_senders:
+        sender = (sender_email or "").lower()
+        if any(pattern and pattern.lower() in sender for pattern in important_senders):
+            return 2
     return 1
