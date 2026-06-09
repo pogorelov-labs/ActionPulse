@@ -26,6 +26,7 @@ from digest_core.config import Config, RankerConfig
 from digest_core.deliver.mattermost import MattermostDeliverer
 from digest_core.evidence.citation_gate import CitationGate
 from digest_core.evidence.citations import CitationBuilder, CitationValidator
+from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
 from digest_core.llm.gateway import LLMGateway
@@ -60,6 +61,11 @@ class RunDigestResult:
 
     pipeline_succeeded: bool = True
     citation_validation_ok: bool = True
+    # PR11: support-recall gate. citation_validation_ok = support_recall >= recall_floor.
+    support_recall: float = 1.0
+    recall_floor: float = 0.0
+    items_weak: int = 0
+    items_repaired: int = 0
 
     def __bool__(self) -> bool:
         """Truthiness matches pipeline success (use ``assert run_digest(...)``, not ``is True``)."""
@@ -525,17 +531,50 @@ def _post_llm_digest_enrichment(
     digest: Digest,
     normalized_messages: List[NormalizedMessage],
     selected_evidence: List[EvidenceChunk],
-) -> tuple[Digest, bool]:
-    citation_ok = True
+) -> tuple[Digest, bool, float, float, int, int]:
+    """Build citations, rank, run the P2 gate, repair weak items, apply the floor.
+
+    Returns (digest, citation_ok, support_recall, recall_floor, items_weak,
+    items_repaired). PR11: a single bad offset no longer flips the gate — exit 2
+    fires only when support_recall < recall_floor (default 0.0 -> never).
+    """
     if ctx.validate_citations:
-        digest, citation_ok = _apply_citation_validation(
+        digest, offsets_ok = _apply_citation_validation(
             digest, normalized_messages, selected_evidence
         )
-        if not citation_ok:
+        if not offsets_ok:
             ctx.metrics.record_citation_validation_failure("post_llm_offsets")
+
     digest = _maybe_rank_digest(ctx, digest, selected_evidence)
     digest = _apply_shadow_citation_gate(ctx, digest, normalized_messages)
-    return digest, citation_ok
+
+    # PR11: non-generative repair. Judge OFF by default -> no-op; weak items keep
+    # their badge and are delivered (degrade-not-drop), never dropped.
+    msg_map = {m.msg_id: m.text_body for m in normalized_messages if m.msg_id}
+    gate = CitationGate(msg_map, config=ctx.config.reranker)
+    outcome = repair_weak_items(
+        digest, msg_map, gate=gate, tau_repair=ctx.config.reranker.tau_repair, judge=None
+    )
+
+    support_recall, items_weak = _support_recall(digest)
+    recall_floor = ctx.config.reranker.recall_floor
+    citation_ok = (support_recall >= recall_floor) if ctx.validate_citations else True
+    return digest, citation_ok, support_recall, recall_floor, items_weak, outcome.items_repaired
+
+
+def _support_recall(digest: Digest) -> tuple[float, int]:
+    """Fraction of evidence-backed items that are offset-verifiable; plus weak count."""
+    backed = [
+        item
+        for section in digest.sections
+        for item in section.items
+        if item.evidence_id != "system"
+    ]
+    if not backed:
+        return 1.0, 0
+    verified = sum(1 for item in backed if getattr(item, "citation_fidelity_ok", False))
+    weak = sum(1 for item in backed if getattr(item, "weak_evidence", False))
+    return verified / len(backed), weak
 
 
 def _apply_shadow_citation_gate(
@@ -722,10 +761,18 @@ def _run_pipeline(
         # Stage 6: LLM
         digest, llm_error = _stage_llm(ctx, selected_evidence)
 
-        digest, citation_ok = _post_llm_digest_enrichment(
-            ctx, digest, normalized_messages, selected_evidence
-        )
+        (
+            digest,
+            citation_ok,
+            support_recall,
+            recall_floor,
+            items_weak,
+            items_repaired,
+        ) = _post_llm_digest_enrichment(ctx, digest, normalized_messages, selected_evidence)
         ctx.run_meta["citation_validation_ok"] = citation_ok
+        ctx.run_meta["support_recall"] = round(support_recall, 4)
+        ctx.run_meta["items_weak"] = items_weak
+        ctx.run_meta["items_repaired"] = items_repaired
 
         # Stage 7: ASSEMBLE
         _stage_assemble(ctx, digest)
@@ -754,7 +801,9 @@ def _run_pipeline(
             total_items=_count_digest_items(digest),
             partial=ctx.run_meta["partial"],
         )
-        return RunDigestResult(True, citation_ok)
+        return RunDigestResult(
+            True, citation_ok, support_recall, recall_floor, items_weak, items_repaired
+        )
     except Exception as exc:
         ctx.metrics.record_run_total("failed")
         ctx.run_meta["status"] = "failed"

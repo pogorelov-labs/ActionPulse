@@ -8,6 +8,7 @@ Responsibilities:
 """
 
 import hashlib
+import re
 import structlog
 from typing import List, Dict, Optional, Tuple
 from digest_core.llm.schemas import Citation
@@ -324,3 +325,32 @@ def enrich_item_with_citations(
 
     if not item.citations:
         logger.warning("Failed to build any citations for item", evidence_id=item.evidence_id)
+
+
+def reselect_span(title: str, body: str) -> str:
+    """Non-generative span re-selection (PR11).
+
+    Pick the verbatim sentence of ``body`` with the most token overlap with ``title``.
+    The result is guaranteed to be a substring of ``body`` (no generation), so repair
+    stays replay-safe and offset-verifiable. Returns "" when nothing overlaps.
+    """
+    if not title or not body:
+        return ""
+    title_tokens = set(_word_tokens(title))
+    if not title_tokens:
+        return ""
+    best_span, best_overlap = "", 0
+    for sentence in _split_sentences(body):
+        overlap = len(title_tokens & set(_word_tokens(sentence)))
+        if overlap > best_overlap:
+            best_span, best_overlap = sentence.strip(), overlap
+    return best_span if best_overlap > 0 else ""
+
+
+def _word_tokens(text: str) -> List[str]:
+    return re.findall(r"\w+", (text or "").lower())
+
+
+def _split_sentences(text: str) -> List[str]:
+    parts = re.split(r"(?<=[.!?\n])\s+", text or "")
+    return [part for part in parts if part.strip()]

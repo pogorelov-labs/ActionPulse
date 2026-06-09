@@ -473,6 +473,14 @@ class RerankerConfig(BaseModel):
     low_confidence_threshold: float = Field(
         default=0.7, description="Only items below this confidence spend the reranker"
     )
+    # PR11 flip. recall_floor 0.0 keeps exit codes neutral until a real floor is
+    # set from PR10 calibration; exit 2 fires only when support_recall < recall_floor.
+    recall_floor: float = Field(
+        default=0.0, description="Min support recall before --validate-citations exits 2"
+    )
+    tau_repair: float = Field(
+        default=0.0, description="Higher support bar a re-selected span must clear (PR11)"
+    )
 
 
 class JudgeConfig(BaseModel):

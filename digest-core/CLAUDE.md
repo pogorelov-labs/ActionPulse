@@ -91,7 +91,7 @@ make test    # All tests use mocks, run anywhere
 |------|---------|
 | `0` | Success — full run or `--dry-run` completed without errors |
 | `1` | Error — unhandled exception, missing required ENV, pipeline crash, `KeyboardInterrupt` |
-| `2` | Citation validation failed — only when **`--validate-citations`** is set and post-LLM citation build/validate fails (`RunDigestResult.citation_validation_ok` is false). Pipeline still writes artifacts; CI should treat `2` as a quality gate failure. |
+| `2` | Citation gate failed — **`--validate-citations` is default ON (PR11)**; exit 2 fires only when **measured support recall < `reranker.recall_floor`** (default `0.0` → never, until a real floor is set from PR10 calibration). A single bad citation or a `weak_evidence` item no longer trips exit 2 (degrade-not-drop). Use `--no-validate-citations` to opt out. `RunDigestResult` exposes `support_recall`/`recall_floor`/`items_weak`/`items_repaired`. |
 
 `--dry-run` exits `0` (not `2`) — it is a complete success for its stated purpose (ingest + normalize only).
 
