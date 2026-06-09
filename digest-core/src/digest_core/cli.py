@@ -427,5 +427,69 @@ def eval_replay(
     raise typer.Exit(0 if ok else 2)
 
 
+@app.command("eval-gold")
+def eval_gold(
+    reactions: str = typer.Option(..., "--reactions", help="Exported MM reactions JSONL"),
+):
+    """Ingest an exported Mattermost reactions JSONL into a gold-set and print stats."""
+    from digest_core.eval.gold_set import load_gold_jsonl
+
+    path = Path(reactions)
+    if not path.exists():
+        typer.echo(f"Reactions file not found: {path}", err=True)
+        raise typer.Exit(1)
+    gold = load_gold_jsonl(path)
+    typer.echo(json.dumps(gold.stats(), ensure_ascii=False))
+
+
+@app.command("eval-judge")
+def eval_judge(
+    records: str = typer.Option(
+        ..., "--records", help="Judged records JSONL (predicted/gold/prob/lang)"
+    ),
+):
+    """Compute per-stratum judge P/R/F1, hallucination rate, and Brier from records."""
+    from digest_core.eval.judge import compute_judge_metrics
+
+    path = Path(records)
+    if not path.exists():
+        typer.echo(f"Records file not found: {path}", err=True)
+        raise typer.Exit(1)
+    rows = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    typer.echo(json.dumps(compute_judge_metrics(rows), ensure_ascii=False, indent=2))
+
+
+@app.command("eval-calibrate")
+def eval_calibrate(
+    scored: str = typer.Option(..., "--scored", help="JSONL of {score, gold, lang} rows"),
+    output_json: str = typer.Option(None, "--out", help="Write calibration.json here"),
+    target_recall: float = typer.Option(0.90, "--target-recall"),
+    min_samples: int = typer.Option(20, "--min-samples"),
+):
+    """Calibrate per-stratum tau at the target recall and emit calibration.json."""
+    from digest_core.eval.calibrate import calibrate
+
+    path = Path(scored)
+    if not path.exists():
+        typer.echo(f"Scored file not found: {path}", err=True)
+        raise typer.Exit(1)
+    strata: dict = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        strata.setdefault((row.get("lang") or "ru").lower(), []).append(
+            (float(row["score"]), bool(row["gold"]))
+        )
+    result = calibrate(strata, target_recall=target_recall, min_samples=min_samples)
+    payload = json.dumps(result, ensure_ascii=False, indent=2)
+    if output_json:
+        Path(output_json).write_text(payload, encoding="utf-8")
+        typer.echo(f"Calibration written to {output_json}")
+    typer.echo(payload)
+
+
 if __name__ == "__main__":
     app()

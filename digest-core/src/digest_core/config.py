@@ -475,6 +475,17 @@ class RerankerConfig(BaseModel):
     )
 
 
+class JudgeConfig(BaseModel):
+    """LLM-judge + calibration config (PR10). Off until PC-2; live run untouched."""
+
+    enabled: bool = Field(default=False, description="Run the LLM judge over digest items")
+    model: str = Field(default="qwen35-35b-a3b", description="Judge model (own RPM bucket)")
+    target_recall: float = Field(default=0.90, description="Calibrate tau at recall >= this")
+    min_samples_per_stratum: int = Field(
+        default=20, description="Min gold samples/stratum to trust a calibrated tau"
+    )
+
+
 class Config(BaseSettings):
     """Main configuration class."""
 
@@ -495,6 +506,7 @@ class Config(BaseSettings):
     ranker: RankerConfig = Field(default_factory=RankerConfig)
     degrade: DegradeConfig = Field(default_factory=DegradeConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
