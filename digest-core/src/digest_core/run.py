@@ -24,6 +24,7 @@ import structlog
 from digest_core.assemble.markdown import MarkdownAssembler
 from digest_core.config import Config, RankerConfig
 from digest_core.deliver.mattermost import MattermostDeliverer
+from digest_core.evidence.citation_gate import CitationGate
 from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
@@ -532,7 +533,22 @@ def _post_llm_digest_enrichment(
         if not citation_ok:
             ctx.metrics.record_citation_validation_failure("post_llm_offsets")
     digest = _maybe_rank_digest(ctx, digest, selected_evidence)
+    digest = _apply_shadow_citation_gate(ctx, digest, normalized_messages)
     return digest, citation_ok
+
+
+def _apply_shadow_citation_gate(
+    ctx: RunContext, digest: Digest, normalized_messages: Sequence[NormalizedMessage]
+) -> Digest:
+    """P2 gate in SHADOW mode (PR8): annotate offset-fidelity + weak_evidence always.
+
+    Default-on but shadow — it never changes citation_validation_ok, exit codes, or
+    delivery (those stay as-is until PR11). The reranker is off (PC-2), so the gate
+    is offset-only and makes zero network calls.
+    """
+    msg_map = {m.msg_id: m.text_body for m in normalized_messages if m.msg_id}
+    gate = CitationGate(msg_map, reranker=None, config=ctx.config.reranker)
+    return gate.annotate(digest, metrics=ctx.metrics)
 
 
 def _stage_assemble(ctx: RunContext, digest: Digest) -> None:

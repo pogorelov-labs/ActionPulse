@@ -49,6 +49,17 @@ class Item(BaseModel):
     citations: List[Citation] = Field(
         default_factory=list, description="Evidence citations with validated offsets"
     )
+    # P2 gate annotations (PR8). Optional so exclude_none keeps un-gated artifacts
+    # byte-compatible; the shadow gate populates them on every evidence-backed item.
+    citation_fidelity_ok: Optional[bool] = Field(
+        default=None, description="Spans resolve to offsets in the immutable normalized body"
+    )
+    support_score: Optional[float] = Field(
+        default=None, description="Reranker(span, claim) support score, when scored"
+    )
+    weak_evidence: Optional[bool] = Field(
+        default=None, description="Item lacks offset-verifiable or above-threshold support"
+    )
     rank_score: Optional[float] = Field(
         default=None,
         description="Rule-based actionability score from DigestRanker (0..1)",
