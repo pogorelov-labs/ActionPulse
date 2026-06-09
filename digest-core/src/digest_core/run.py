@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -583,16 +584,22 @@ def _run_pipeline(
         replay_llm=replay_llm,
     )
 
-    if not ctx.force and _should_skip_existing_artifacts(ctx.json_path, ctx.md_path):
+    config_sha = _config_sha256(ctx.config)
+    idem_sidecar = _read_idem_sidecar(ctx.json_path)
+
+    if not ctx.force and _idem_pre_ingest_skip(
+        ctx.json_path, ctx.md_path, idem_sidecar, config_sha
+    ):
         artifact_age_hours = _artifact_age_hours(ctx.json_path)
         logger.info(
-            "Existing artifacts found within T-48h window, skipping rebuild",
+            "Fresh artifacts with matching config, skipping rebuild (pre-ingest)",
             digest_date=ctx.digest_date,
             artifact_age_hours=artifact_age_hours,
             trace_id=ctx.trace_id,
         )
         ctx.metrics.record_run_total("ok")
         ctx.run_meta["status"] = "skipped"
+        ctx.run_meta["skip_reason"] = "config_mtime_match"
         ctx.run_meta["pipeline_metrics"] = {"artifact_age_hours": artifact_age_hours}
         _write_json(ctx.metadata_path, ctx.run_meta)
         return RunDigestResult(True, True)
@@ -611,6 +618,30 @@ def _run_pipeline(
     try:
         # Stages 1-2: INGEST + NORMALIZE
         normalized_messages = _stage_ingest(ctx)
+
+        # Post-ingest idempotency: if the ingested content is byte-identical to the
+        # last successful build (same config + pipeline version), skip the expensive
+        # LLM/assemble/deliver rather than re-running. --force / dry-run bypass.
+        content_sha = _content_sha256(normalized_messages)
+        if (
+            not ctx.force
+            and not ctx.dry_run
+            and _idem_content_skip(
+                ctx.json_path, ctx.md_path, idem_sidecar, config_sha, content_sha
+            )
+        ):
+            logger.info(
+                "Ingested content unchanged since last build, skipping rebuild (post-ingest)",
+                digest_date=ctx.digest_date,
+                trace_id=ctx.trace_id,
+                emails_processed=len(normalized_messages),
+            )
+            ctx.metrics.record_run_total("ok")
+            ctx.run_meta["status"] = "skipped"
+            ctx.run_meta["skip_reason"] = "content_match"
+            ctx.run_meta["pipeline_metrics"] = {"emails_processed": len(normalized_messages)}
+            _write_json(ctx.metadata_path, ctx.run_meta)
+            return RunDigestResult(True, True)
 
         # Stage 3: THREADS
         threads = _stage_threads(ctx, normalized_messages)
@@ -675,6 +706,7 @@ def _run_pipeline(
             "evidence_chunks": len(evidence_chunks),
             "selected_evidence": len(selected_evidence),
         }
+        _write_idem_sidecar(ctx.json_path, config_sha=config_sha, content_sha=content_sha)
         _write_json(ctx.metadata_path, ctx.run_meta)
 
         logger.info(
@@ -714,6 +746,112 @@ def _should_skip_existing_artifacts(json_path: Path, md_path: Path) -> bool:
     if not json_path.exists() or not md_path.exists():
         return False
     return _artifact_age_hours(json_path) < 48
+
+
+# ---------------------------------------------------------------------------
+# Idempotency sidecar (PR1): digest-{date}.idem.json carries
+# {config_sha256, content_sha256, pipeline_version}. A skip never fires when the
+# config or pipeline version changed. Two complementary skip paths:
+#   - pre-ingest  : fresh artifacts (T-48h) + matching config — cheap, no EWS;
+#                   the freshness window stands in for content stability.
+#   - post-ingest : config + content + version all unchanged — verifies content
+#                   exactly and protects the scarce extractor LLM call.
+# --force bypasses both.
+# ---------------------------------------------------------------------------
+
+
+def _idem_sidecar_path(json_path: Path) -> Path:
+    """Sidecar path next to the JSON artifact: digest-{date}.idem.json."""
+    return json_path.with_suffix(".idem.json")
+
+
+def _config_sha256(config: Config) -> str:
+    """Stable hash of the secret-free effective config (reuses _sanitize_config)."""
+    canonical = json.dumps(
+        _sanitize_config(config), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _content_sha256(messages: Sequence[NormalizedMessage]) -> str:
+    """Order-independent hash of the ingested message set (msg_id|subject|body)."""
+    projection = sorted(
+        "\x01".join(
+            [
+                m.msg_id or "",
+                getattr(m, "subject", "") or "",
+                getattr(m, "text_body", "") or "",
+            ]
+        )
+        for m in messages
+    )
+    return hashlib.sha256("\x02".join(projection).encode("utf-8")).hexdigest()
+
+
+def _read_idem_sidecar(json_path: Path) -> Optional[Dict[str, Any]]:
+    """Load the idempotency sidecar, or None if missing/unreadable."""
+    path = _idem_sidecar_path(json_path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_idem_sidecar(json_path: Path, *, config_sha: str, content_sha: str) -> None:
+    """Persist {config_sha256, content_sha256, pipeline_version} next to artifacts."""
+    path = _idem_sidecar_path(json_path)
+    path.write_text(
+        json.dumps(
+            {
+                "config_sha256": config_sha,
+                "content_sha256": content_sha,
+                "pipeline_version": PIPELINE_VERSION,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _idem_pre_ingest_skip(
+    json_path: Path, md_path: Path, sidecar: Optional[Dict[str, Any]], config_sha: str
+) -> bool:
+    """Cheap pre-ingest skip: fresh artifacts (T-48h) + matching config + version."""
+    if not _should_skip_existing_artifacts(json_path, md_path):
+        return False
+    if not sidecar:
+        return False
+    return (
+        sidecar.get("pipeline_version") == PIPELINE_VERSION
+        and sidecar.get("config_sha256") == config_sha
+    )
+
+
+def _idem_content_skip(
+    json_path: Path,
+    md_path: Path,
+    sidecar: Optional[Dict[str, Any]],
+    config_sha: str,
+    content_sha: str,
+) -> bool:
+    """Post-ingest skip: artifacts exist + config + version + content all unchanged.
+
+    Independent of the T-48h window — its job is to avoid re-running the scarce
+    extractor LLM when nothing has actually changed since the last build.
+    """
+    if not (json_path.exists() and md_path.exists()):
+        return False
+    if not sidecar:
+        return False
+    return (
+        sidecar.get("pipeline_version") == PIPELINE_VERSION
+        and sidecar.get("config_sha256") == config_sha
+        and sidecar.get("content_sha256") == content_sha
+    )
 
 
 def _normalize_messages(

@@ -2,8 +2,8 @@
 Evidence splitting for LLM processing.
 """
 
+import hashlib
 import re as _stdre
-import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 import structlog
@@ -390,7 +390,23 @@ class EvidenceSplitter:
         chunk_index: int,
     ) -> EvidenceChunk:
         """Create an evidence chunk from content."""
-        evidence_id = str(uuid.uuid4())
+        # Deterministic content-hash id (NOT uuid4) so identical input → identical
+        # evidence_id across runs. This is the keystone for byte-stable digests,
+        # working record/replay, and content-aware idempotency (PR1).
+        evidence_id = (
+            "ev_"
+            + hashlib.sha256(
+                "\x01".join(
+                    [
+                        message.msg_id or "",
+                        conversation_id or "",
+                        str(message_index),
+                        str(chunk_index),
+                        content,
+                    ]
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+        )
         token_count = int(len(content.split()) * 1.3)  # Token estimation: 1.3 tokens per word
 
         # Calculate priority score based on content characteristics
