@@ -17,6 +17,7 @@ from digest_core.llm.schemas import Citation, Digest, EnhancedDigest, EnhancedDi
 from digest_core.llm.date_utils import get_current_datetime_in_tz
 from digest_core.llm.degrade import extractive_fallback
 from digest_core.llm.prompt_registry import get_prompt_template_path
+from digest_core.llm.rate_broker import RateBroker
 from digest_core.observability.metrics import MetricsCollector
 
 
@@ -52,7 +53,9 @@ except ImportError:
     validate = None
 
 logger = structlog.get_logger()
-MIN_LLM_INTERVAL_SECONDS = 4.0
+# Floor for retry backoff on transient LLM errors. Request rate limiting now
+# lives in the RateBroker (llm/rate_broker.py); this constant only paces retries.
+MIN_RETRY_BACKOFF_SECONDS = 4.0
 
 
 class RetryableLLMError(Exception):
@@ -60,7 +63,7 @@ class RetryableLLMError(Exception):
 
     def __init__(self, message: str, wait_seconds: float):
         super().__init__(message)
-        self.wait_seconds = max(wait_seconds, MIN_LLM_INTERVAL_SECONDS)
+        self.wait_seconds = max(wait_seconds, MIN_RETRY_BACKOFF_SECONDS)
 
 
 class TokenBudgetExceeded(Exception):
@@ -78,6 +81,8 @@ class LLMGateway:
         metrics: MetricsCollector = None,
         record_llm: Optional[str] = None,
         replay_llm: Optional[str] = None,
+        rate_broker: Optional[RateBroker] = None,
+        stage: str = "extractor",
     ):
         self.config = config
         self.enable_degrade = enable_degrade
@@ -85,7 +90,8 @@ class LLMGateway:
         self.metrics = metrics
         self.last_latency_ms = 0
         self.last_request_meta: Dict[str, Any] = {}
-        self._last_call_started_at = 0.0
+        self._rate_broker = rate_broker
+        self._stage = stage
         self._run_tokens_used = 0
         self._record_path = Path(record_llm) if record_llm else None
         self._replay_data: Optional[Dict[str, Any]] = None
@@ -137,7 +143,6 @@ class LLMGateway:
                     "return items accordingly. Return strict JSON per schema only."
                 )
                 messages[0]["content"] = messages[0]["content"] + quality_hint
-                self._wait_for_rate_limit()
                 response_data = self._make_request_with_retry(messages, trace_id, None)
                 validated_response = self._validate_response(
                     response_data.get("data", {}), evidence
@@ -235,6 +240,11 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         self, messages: List[Dict[str, str]], trace_id: str, digest_date: str = None
     ) -> Dict[str, Any]:
         """Make an LLM request with a single retry budget for retriable failures."""
+        # Charge one logical call against the stage budget (transient retries below
+        # are attempts, not logical calls). extractor budget=2 == ADR-008 "max 2".
+        if self._rate_broker is not None:
+            self._rate_broker.note_call(self._stage)
+
         call_count = 0
         last_status = None
 
@@ -242,7 +252,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             exception = retry_state.outcome.exception()
             if isinstance(exception, RetryableLLMError):
                 return exception.wait_seconds
-            return MIN_LLM_INTERVAL_SECONDS
+            return MIN_RETRY_BACKOFF_SECONDS
 
         retrying = tenacity.Retrying(
             stop=tenacity.stop_after_attempt(2),
@@ -255,7 +265,6 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             for attempt in retrying:
                 with attempt:
                     call_count += 1
-                    self._wait_for_rate_limit()
                     response_data = self._make_request_once(messages, trace_id)
                     last_status = response_data["meta"].get("http_status")
                     response_data["meta"]["call_count"] = call_count
@@ -276,6 +285,11 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         if self._replay_data is not None:
             return self._replay_by_request(messages, trace_id)
 
+        # Rate-limit this network attempt on the model's RPM bucket. No-op when no
+        # broker is wired (unit tests); never reached in replay (returned above).
+        if self._rate_broker is not None:
+            self._rate_broker.acquire(self.config.model)
+
         start_time = time.time()
         tokens_in = None
         tokens_out = None
@@ -293,7 +307,6 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
 
         response = self.client.post(self.config.endpoint, json=payload, headers=headers)
         self.last_latency_ms = int((time.time() - start_time) * 1000)
-        self._last_call_started_at = time.time()
 
         try:
             response.raise_for_status()
@@ -314,6 +327,8 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             )
             if status_code == 429:
                 retry_after = self._retry_after_seconds(exc.response.headers.get("Retry-After"))
+                if self._rate_broker is not None:
+                    self._rate_broker.penalize(self.config.model, retry_after)
                 raise RetryableLLMError(str(exc), retry_after) from exc
             if 500 <= status_code < 600:
                 raise RetryableLLMError(str(exc), 5.0) from exc
@@ -364,7 +379,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 trace_id=trace_id,
             )
             raise RetryableLLMError(
-                f"Invalid JSON from LLM: {parse_err}", MIN_LLM_INTERVAL_SECONDS
+                f"Invalid JSON from LLM: {parse_err}", MIN_RETRY_BACKOFF_SECONDS
             ) from parse_err
 
         header_keys_in = ["x-llm-tokens-in", "x-tokens-in", "x-usage-tokens-in"]
@@ -437,15 +452,6 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             self._record_response(messages, result)
 
         return result
-
-    def _wait_for_rate_limit(self) -> None:
-        """Enforce the minimum spacing between LLM calls."""
-        if not self._last_call_started_at:
-            return
-        elapsed = time.time() - self._last_call_started_at
-        remaining = MIN_LLM_INTERVAL_SECONDS - elapsed
-        if remaining > 0:
-            time.sleep(remaining)
 
     @staticmethod
     def _request_hash(messages: List[Dict[str, str]]) -> str:

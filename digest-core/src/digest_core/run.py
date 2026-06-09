@@ -29,6 +29,7 @@ from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
 from digest_core.llm.gateway import LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
+from digest_core.llm.rate_broker import RateBroker
 from digest_core.llm.schemas import Digest, Section
 from digest_core.select.ranker import DigestRanker
 from digest_core.normalize.html import HTMLNormalizer
@@ -88,6 +89,7 @@ class RunContext:
     replay_ingest: str | None
     record_llm: str | None
     replay_llm: str | None
+    rate_broker: Optional[RateBroker] = None
     log_file: Any = None
     run_meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -225,6 +227,14 @@ def _init_context(
         "partial": False,
     }
 
+    # One RateBroker per run, shared by the LLM gateway and (later) fleet clients (R1).
+    rate_broker = RateBroker(
+        fleet_rpm=config.llm.fleet_rpm,
+        burst=config.llm.fleet_burst,
+        default_rpm=config.llm.rate_limit_rpm,
+        stage_call_budgets=config.llm.stage_call_budgets,
+    )
+
     return RunContext(
         trace_id=trace_id,
         config=config,
@@ -241,6 +251,7 @@ def _init_context(
         replay_ingest=replay_ingest,
         record_llm=record_llm,
         replay_llm=replay_llm,
+        rate_broker=rate_broker,
         log_file=log_file,
         run_meta=run_meta,
     )
@@ -342,6 +353,7 @@ def _stage_llm(
         metrics=ctx.metrics,
         record_llm=ctx.record_llm,
         replay_llm=ctx.replay_llm,
+        rate_broker=ctx.rate_broker,
     )
     llm_stage_start = time.perf_counter()
 

@@ -106,7 +106,32 @@ class LLMConfig(BaseModel):
     headers: Dict[str, str] = Field(default_factory=dict, description="Additional headers")
     max_tokens_per_run: int = Field(default=30000, description="Max tokens per run")
     cost_limit_per_run: float = Field(default=5.0, description="Cost limit per run in USD")
-    rate_limit_rpm: int = Field(default=15, description="Gateway rate limit in requests per minute")
+    rate_limit_rpm: int = Field(
+        default=15, description="Default per-model RPM when a model is absent from fleet_rpm"
+    )
+    fleet_rpm: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "qwen35-397b-a17b": 15,
+            "qwen3-next-80b-a3b": 45,
+            "glm-4.7-flash": 60,
+            "qwen35-35b-a3b": 30,
+            "bge-m3": 30,
+            "qwen3-embedding": 30,
+            "bge-reranker-v2-m3": 10,
+        },
+        description="Per-model request-per-minute buckets for the gateway fleet (RateBroker)",
+    )
+    fleet_burst: int = Field(default=3, description="Token-bucket burst size per model")
+    stage_call_budgets: Dict[str, int] = Field(
+        default_factory=lambda: {
+            "extractor": 2,
+            "reranker": 10,
+            "embeddings": 30,
+            "judge": 8,
+            "tokenize": 20,
+        },
+        description="Hard per-stage call budgets enforced per run by the RateBroker",
+    )
     strict_json: bool = Field(
         default=True, description="Enforce strict JSON validation with Pydantic"
     )

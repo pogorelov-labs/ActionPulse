@@ -1,0 +1,200 @@
+"""Shared client for the corp gateway *fleet* endpoints (PR2, R1).
+
+One boundary, one Bearer, tokens unmetered — only the per-model RPM bucket caps
+throughput. This module adds the non-chat endpoints used by later PRs:
+
+  * :class:`EmbeddingsClient` -> ``/v1/embeddings`` (relevance/threading, PR9/PR12)
+  * :class:`RerankerClient`   -> ``/v1/score``      (cross-encoder support, PR8/PR9)
+  * :class:`TokenizerClient`  -> ``/v1/tokenize``   (exact token counts)
+
+All endpoints are derived from ``LLMConfig.endpoint`` and every request is paced
+through the shared :class:`~digest_core.llm.rate_broker.RateBroker`. The clients
+are **record/replay-aware and namespaced per endpoint**; in replay mode they make
+**zero network calls**. They are NOT wired into the live ``run.py`` path in PR2 —
+they are built and tested offline first, and their live flags stay off until PC-2.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
+
+import httpx
+import structlog
+
+from digest_core.config import LLMConfig
+from digest_core.llm.rate_broker import RateBroker
+
+logger = structlog.get_logger()
+
+
+def derive_fleet_endpoint(chat_endpoint: str, name: str) -> str:
+    """Map the chat endpoint to a sibling fleet endpoint (``/v1/<name>``)."""
+    if not chat_endpoint:
+        return ""
+    if "/v1/" in chat_endpoint:
+        base = chat_endpoint.split("/v1/")[0]
+        return f"{base}/v1/{name}"
+    # Fallback: swap the last path segment (e.g. .../chat -> .../<name>).
+    return chat_endpoint.rsplit("/", 1)[0] + "/" + name
+
+
+def _request_hash(endpoint_name: str, model: str, payload: Dict[str, Any]) -> str:
+    canonical = json.dumps(
+        {"endpoint": endpoint_name, "model": model, "payload": payload},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+class FleetClient:
+    """Base for fleet endpoints: shared broker + per-endpoint record/replay.
+
+    Record/replay files are namespaced ``{"endpoints": {name: [{request_hash,
+    response}]}}`` so several endpoints share one channel. In replay mode no HTTP
+    client is ever touched.
+    """
+
+    def __init__(
+        self,
+        config: LLMConfig,
+        *,
+        rate_broker: Optional[RateBroker] = None,
+        record: Optional[str] = None,
+        replay: Optional[str] = None,
+        http_client: Optional[httpx.Client] = None,
+    ):
+        self.config = config
+        self._broker = rate_broker
+        self._record_path = Path(record) if record else None
+        self._replay_data: Optional[Dict[str, Any]] = None
+        self._replay_consumed: Dict[str, set] = {}
+        if replay:
+            self._replay_data = json.loads(Path(replay).read_text(encoding="utf-8"))
+        self._client = http_client
+        self._owns_client = http_client is None
+
+    def _http(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(
+                timeout=httpx.Timeout(self.config.timeout_s), headers=self.config.headers
+            )
+        return self._client
+
+    def close(self) -> None:
+        if self._owns_client and self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def _post(self, endpoint_name: str, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        req_hash = _request_hash(endpoint_name, model, payload)
+
+        # ── REPLAY MODE (no network) ─────────────────────────────────
+        if self._replay_data is not None:
+            return self._replay_lookup(endpoint_name, req_hash)
+
+        # ── LIVE / RECORD ────────────────────────────────────────────
+        if self._broker is not None:
+            self._broker.acquire(model)
+        headers = dict(self.config.headers)
+        headers["Authorization"] = f"Bearer {self.config.get_token()}"
+        try:
+            response = self._http().post(
+                self._endpoint(endpoint_name), json=payload, headers=headers
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and self._broker is not None:
+                retry_after = exc.response.headers.get("Retry-After")
+                self._broker.penalize(model, float(retry_after) if retry_after else 60.0)
+            raise
+        data = response.json()
+        if self._record_path is not None:
+            self._record(endpoint_name, req_hash, data)
+        return data
+
+    def _endpoint(self, name: str) -> str:
+        return derive_fleet_endpoint(self.config.endpoint, name)
+
+    def _replay_lookup(self, endpoint_name: str, req_hash: str) -> Dict[str, Any]:
+        entries = (self._replay_data.get("endpoints", {}) or {}).get(endpoint_name, [])
+        consumed = self._replay_consumed.setdefault(endpoint_name, set())
+        # Request-keyed first.
+        for idx, entry in enumerate(entries):
+            if idx in consumed:
+                continue
+            if entry.get("request_hash") == req_hash:
+                consumed.add(idx)
+                return entry["response"]
+        # Positional fallback (legacy recordings without request_hash).
+        for idx, entry in enumerate(entries):
+            if idx not in consumed:
+                consumed.add(idx)
+                return entry["response"]
+        raise RuntimeError(f"Fleet replay exhausted for endpoint '{endpoint_name}'")
+
+    def _record(self, endpoint_name: str, req_hash: str, response: Dict[str, Any]) -> None:
+        if self._record_path.exists():
+            existing = json.loads(self._record_path.read_text(encoding="utf-8"))
+        else:
+            existing = {"endpoints": {}}
+        existing.setdefault("endpoints", {}).setdefault(endpoint_name, []).append(
+            {"request_hash": req_hash, "response": response}
+        )
+        self._record_path.parent.mkdir(parents=True, exist_ok=True)
+        self._record_path.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+
+class EmbeddingsClient(FleetClient):
+    """``/v1/embeddings`` — dense vectors for cosine relevance/threading."""
+
+    def __init__(self, config: LLMConfig, *, model: str = "bge-m3", **kwargs: Any):
+        super().__init__(config, **kwargs)
+        self.model = model
+
+    def embed(self, texts: Sequence[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        payload = {"model": self.model, "input": list(texts)}
+        data = self._post("embeddings", self.model, payload)
+        return [item["embedding"] for item in data.get("data", [])]
+
+
+class RerankerClient(FleetClient):
+    """``/v1/score`` cross-encoder — the scarce, non-batchable fleet resource."""
+
+    def __init__(self, config: LLMConfig, *, model: str = "bge-reranker-v2-m3", **kwargs: Any):
+        super().__init__(config, **kwargs)
+        self.model = model
+
+    def score(self, query: str, docs: Sequence[str]) -> List[float]:
+        if not docs:
+            return []
+        payload = {"model": self.model, "query": query, "documents": list(docs)}
+        data = self._post("score", self.model, payload)
+        if "scores" in data:
+            return [float(s) for s in data["scores"]]
+        results = sorted(data.get("results", []), key=lambda r: r.get("index", 0))
+        return [float(r.get("score", r.get("relevance_score", 0.0))) for r in results]
+
+
+class TokenizerClient(FleetClient):
+    """``/v1/tokenize`` — exact token counts (vs the words*1.3 estimate)."""
+
+    def __init__(self, config: LLMConfig, *, model: str = "qwen35-397b-a17b", **kwargs: Any):
+        super().__init__(config, **kwargs)
+        self.model = model
+
+    def tokenize(self, text: str) -> int:
+        payload = {"model": self.model, "input": text}
+        data = self._post("tokenize", self.model, payload)
+        if "count" in data:
+            return int(data["count"])
+        tokens = data.get("tokens", [])
+        return len(tokens) if isinstance(tokens, list) else int(tokens)

@@ -27,7 +27,23 @@ llm:
     Authorization: "Bearer ${LLM_TOKEN}"
   max_tokens_per_run: 30000
   cost_limit_per_run: 5.0
-  rate_limit_rpm: 15
+  rate_limit_rpm: 15         # Default per-model RPM (fallback for models not in fleet_rpm)
+  # Per-model request-per-minute buckets for the gateway fleet (RateBroker, PR2).
+  fleet_rpm:
+    qwen35-397b-a17b: 15
+    qwen3-next-80b-a3b: 45
+    glm-4.7-flash: 60
+    qwen35-35b-a3b: 30
+    bge-m3: 30
+    qwen3-embedding: 30
+    bge-reranker-v2-m3: 10
+  fleet_burst: 3             # Token-bucket burst per model
+  stage_call_budgets:        # Hard per-stage call budgets per run (extractor=2 == ADR-008)
+    extractor: 2
+    reranker: 10
+    embeddings: 30
+    judge: 8
+    tokenize: 20
   strict_json: true          # Enforce strict JSON validation with Pydantic
   max_retries: 3             # Maximum retry attempts for invalid JSON
 
