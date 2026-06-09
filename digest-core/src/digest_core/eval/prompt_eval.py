@@ -518,24 +518,15 @@ def _extract_evidence_ids(snapshot: Dict[str, Any]) -> Set[str]:
     if ids:
         return ids
 
-    # Format 3: LLM replay — try to extract from recorded input messages
+    # Format 3: LLM replay — extract from the recorded INPUT messages only.
+    # Deriving valid ids from the LLM *output* would be circular (the output's
+    # ids would validate themselves), so it is intentionally NOT done (PR7).
+    # When inputs are absent, return the empty set: callers surface this as
+    # ``evidence_ids_unverifiable`` rather than silently passing.
     for response in snapshot.get("responses", []):
-        # Prefer input messages (if recorded)
         for msg in response.get("messages", []):
             content = msg.get("content", "")
             ids.update(_parse_evidence_ids_from_text(content))
-
-    if ids:
-        return ids
-
-    # Last resort: extract from LLM output (circular — but better than nothing)
-    for response in snapshot.get("responses", []):
-        data = response.get("data", {})
-        for section in data.get("sections", []):
-            for item in section.get("items", []):
-                eid = item.get("evidence_id")
-                if eid:
-                    ids.add(eid)
 
     return ids
 
@@ -545,8 +536,8 @@ def _parse_evidence_ids_from_text(text: str) -> Set[str]:
     Parse evidence IDs from the formatted evidence block text sent to the LLM.
 
     The pipeline formats evidence as:
-        Evidence N (ID: ev-abc123, Msg: msg-xyz, Thread: conv-001)
+        Evidence N (ID: ev_abc123def456, Msg: msg-xyz, Thread: conv-001)
 
-    Returns set of extracted IDs.
+    Matches both PR1 content-hash ids (ev_<hex>) and legacy uuid ids (ev-<uuid>).
     """
-    return set(re.findall(r"\bID:\s*(ev-[a-f0-9-]+)", text))
+    return set(re.findall(r"\bID:\s*(ev[_-][a-zA-Z0-9-]+)", text))
