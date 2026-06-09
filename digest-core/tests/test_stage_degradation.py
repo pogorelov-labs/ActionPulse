@@ -30,14 +30,21 @@ def _raise_config(*args, **kwargs):
     raise ValueError("Environment variable EWS_PASSWORD not set")
 
 
+def _raise_missing_file(*args, **kwargs):
+    raise FileNotFoundError("[Errno 2] No such file or directory: '/etc/ssl/corp-ca.pem'")
+
+
 # --- pure policy ------------------------------------------------------------
 
 
 def test_policy_maps_each_stage():
     cfg = Config()
-    # ingest/normalize degrade to empty only on operational errors.
+    # Network errors always degrade ingest/normalize to empty.
     assert degradation_policy("ingest", ConnectionError(), cfg) == "empty"
-    assert degradation_policy("normalize", OSError(), cfg) == "empty"
+    # A missing file degrades only in replay mode (missing snapshot); in live mode
+    # it is a config error (e.g. bad verify_ca) and must crash.
+    assert degradation_policy("normalize", OSError(), cfg, replay=True) == "empty"
+    assert degradation_policy("ingest", FileNotFoundError(), cfg) == "crash"  # live: bad CA path
     assert degradation_policy("ingest", ValueError("no creds"), cfg) == "crash"  # config error
     assert degradation_policy("threads", Exception(), cfg) == "partial"
     assert degradation_policy("evidence", Exception(), cfg) == "partial"
@@ -187,6 +194,26 @@ def test_ingest_config_error_crashes(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError):
         _run(monkeypatch, tmp_path)
+
+
+def test_live_ingest_missing_file_crashes(monkeypatch, tmp_path):
+    # Reproduces the CI regression: a live run whose verify_ca path is absent raises
+    # FileNotFoundError in EWS setup. In LIVE mode (no replay) that is a config error
+    # and must crash, not degrade to a silent empty digest.
+    _patch(monkeypatch)
+    monkeypatch.setattr(runner, "_stage_ingest", _raise_missing_file)
+
+    with pytest.raises(FileNotFoundError):
+        runner.run_digest(
+            from_date="2026-03-29",
+            sources=["ews"],
+            out=str(tmp_path / "out"),
+            model="qwen35-397b-a17b",
+            window="calendar_day",
+            state=None,
+            force=True,
+            replay_ingest=None,  # LIVE mode -> missing file is a config error
+        )
 
 
 def test_replay_missing_snapshot_degrades(monkeypatch, tmp_path):

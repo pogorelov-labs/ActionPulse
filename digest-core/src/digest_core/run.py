@@ -971,28 +971,38 @@ class _StageDegraded(Exception):
         self.digest = digest
 
 
-def _is_operational_error(exc: Exception) -> bool:
-    """Operational (vs config/precondition) failure: network/IO, not a bad setup."""
-    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+def _is_operational_error(exc: Exception, *, replay: bool = False) -> bool:
+    """Operational (degradable) vs config/precondition failure.
+
+    Network errors always degrade. A missing/invalid file (OSError, e.g.
+    FileNotFoundError) degrades only in replay mode (a missing snapshot); in live
+    mode it is a configuration error (e.g. a bad ``verify_ca`` path) that must
+    fail loud rather than silently produce an empty digest.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    if replay and isinstance(exc, OSError):
+        return True
+    return False
 
 
-def degradation_policy(stage: str, exc: Exception, config: Config) -> str:
+def degradation_policy(stage: str, exc: Exception, config: Config, *, replay: bool = False) -> str:
     """Pure policy: how a failed `stage` degrades -> 'crash' | 'partial' | 'empty'."""
     if not config.degrade.enable:
         return "crash"
     action = _DEGRADE_ACTIONS.get(stage, "crash")
     # Ingest/normalize is the source boundary: a config/precondition error
-    # (missing credentials, bad endpoint) must fail fast rather than silently
-    # produce an empty digest. Only operational failures (EWS unreachable,
-    # missing replay snapshot) degrade.
-    if action == "empty" and not _is_operational_error(exc):
+    # (missing credentials, bad verify_ca path, bad endpoint) must fail fast
+    # rather than silently produce an empty digest. Only operational failures
+    # (EWS unreachable; a missing replay snapshot in replay mode) degrade.
+    if action == "empty" and not _is_operational_error(exc, replay=replay):
         return "crash"
     return action
 
 
 def _degrade_stage(ctx: RunContext, stage: str, exc: Exception) -> Digest:
     """Apply the degradation policy for a failed stage; return a digest or re-raise."""
-    action = degradation_policy(stage, exc, ctx.config)
+    action = degradation_policy(stage, exc, ctx.config, replay=bool(ctx.replay_ingest))
     logger.error(
         "Pipeline stage failed",
         stage=stage,
