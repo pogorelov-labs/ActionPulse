@@ -43,10 +43,16 @@ class MattermostDeliverer:
     def __init__(self, config: MattermostDeliverConfig):
         self.config = config
 
-    def deliver_digest(self, digest: Digest) -> dict:
-        """Format and send the digest to Mattermost."""
+    def deliver_digest(self, digest: Digest, json_path: str | None = None) -> dict:
+        """Format and send the digest to Mattermost.
+
+        ``json_path`` (the digest JSON artifact) is threaded into each item's
+        traceability sub-line so the delivered message carries P2 evidence refs.
+        """
         webhook_url = self.config.get_webhook_url()
-        parts = self._split_message(self._format_digest(digest), self.config.max_message_length)
+        parts = self._split_message(
+            self._format_digest(digest, json_path), self.config.max_message_length
+        )
 
         with httpx.Client(timeout=httpx.Timeout(20.0)) as client:
             for index, part in enumerate(parts, start=1):
@@ -63,7 +69,7 @@ class MattermostDeliverer:
 
         return {"status": "sent", "parts": len(parts)}
 
-    def _format_digest(self, digest: Digest) -> str:
+    def _format_digest(self, digest: Digest, json_path: str | None = None) -> str:
         blocks: List[str] = [f"## Дайджест действий — {digest.digest_date}"]
 
         for section in digest.sections:
@@ -79,12 +85,32 @@ class MattermostDeliverer:
                     else f"{index}."
                 )
                 section_lines.append(f"{prefix} {item.title}{due_part}{confidence_part}")
+                trace_line = self._format_trace_line(item, json_path)
+                if trace_line:
+                    section_lines.append(trace_line)
             blocks.append("\n".join(section_lines))
 
         if self.config.include_trace_footer:
             blocks.append(f"_trace: {digest.trace_id} | items: {self._count_items(digest)}_")
 
         return "\n\n".join(blocks)
+
+    def _format_trace_line(self, item, json_path: str | None) -> str:
+        """Per-item P2 traceability sub-line: evidence id (+ optional json link).
+
+        Legacy/system items without a real evidence id get no sub-line. The
+        ``weak_evidence`` badge is getattr-guarded so it lights up once the gate
+        (PR8) adds the field.
+        """
+        evidence_id = getattr(item, "evidence_id", "") or ""
+        if not evidence_id or evidence_id == "system":
+            return ""
+        line = f"   ↳ ev: {evidence_id}"
+        if json_path:
+            line += f" | [json]({json_path}#{evidence_id})"
+        if getattr(item, "weak_evidence", False):
+            line += " | ⚠ слабое обоснование"
+        return line
 
     def _split_message(self, message: str, max_length: int) -> List[str]:
         if len(message) <= max_length:

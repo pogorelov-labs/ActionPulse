@@ -264,7 +264,7 @@ class _FakeDeliverer:
     def __init__(self, config):
         self.config = config
 
-    def deliver_digest(self, digest):
+    def deliver_digest(self, digest, json_path=None):
         return {"status": "sent", "parts": 1}
 
 
