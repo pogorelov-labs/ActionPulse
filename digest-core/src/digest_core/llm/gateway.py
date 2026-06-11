@@ -207,6 +207,26 @@ class LLMGateway:
             self.last_request_meta = dict(response_data["meta"])
         return validated_response
 
+    def judge(
+        self, system_prompt: str, user_content: str, trace_id: str = "judge"
+    ) -> Dict[str, Any]:
+        """Small JSON verdict call for the cross-model judge (EP-12, R1).
+
+        The judge rides this gateway with a model override (construct the
+        instance with ``stage="judge"`` and the judge model) instead of a
+        second HTTP client: it inherits retry, 429 penalties, auth
+        classification, and the per-stage call budget. Returns the parsed
+        JSON content (``{}``-ish dict on an empty body); the caller owns
+        degrade behavior — this method may raise like any gateway call.
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        response_data = self._make_request_with_retry(messages, trace_id)
+        data = response_data.get("data", {})
+        return data if isinstance(data, dict) else {}
+
     def _quality_retry_fits_budget(self, response_data: Dict[str, Any]) -> bool:
         """True when a quality retry plausibly fits the remaining run token budget.
 

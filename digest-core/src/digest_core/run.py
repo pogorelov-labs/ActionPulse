@@ -24,6 +24,7 @@ import structlog
 from digest_core.assemble.markdown import MarkdownAssembler
 from digest_core.config import Config, RankerConfig
 from digest_core.deliver.mattermost import MattermostDeliverer
+from digest_core.eval.judge import LLMJudge
 from digest_core.evidence.citation_gate import CitationGate
 from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.repair import repair_weak_items
@@ -50,6 +51,9 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = PACKAGE_ROOT / "prompts"
 SECTION_ORDER = {"Мои действия": 0, "Срочное": 1, "К сведению": 2, "Не подтверждено": 3}
 QUARANTINE_SECTION = "Не подтверждено"
+# A repair verdict is a tiny JSON object; no reason to let the judge model
+# spend the extractor-sized output ceiling.
+JUDGE_MAX_OUTPUT_TOKENS = 256
 
 logger = structlog.get_logger()
 
@@ -592,18 +596,77 @@ def _post_llm_digest_enrichment(
     digest = _maybe_rank_digest(ctx, digest, selected_evidence)
     digest = _apply_shadow_citation_gate(ctx, digest, normalized_messages)
 
-    # PR11: non-generative repair. Judge OFF by default -> no-op; weak items keep
-    # their badge and are delivered (degrade-not-drop), never dropped.
+    # PR11 + EP-12 part 2: non-generative repair. With judge.enabled (default
+    # OFF) a cross-model judge approves re-selected verbatim spans — D1's
+    # quarantine gets its rescue path. Judge off/unavailable -> no-op; weak
+    # items keep their badge and are delivered (degrade-not-drop), never dropped.
     msg_map = {m.msg_id: m.text_body for m in normalized_messages if m.msg_id}
     gate = CitationGate(msg_map, config=ctx.config.reranker)
-    outcome = repair_weak_items(
-        digest, msg_map, gate=gate, tau_repair=ctx.config.reranker.tau_repair, judge=None
-    )
+    judge, judge_gateway = _build_repair_judge(ctx)
+    try:
+        outcome = repair_weak_items(
+            digest,
+            msg_map,
+            gate=gate,
+            tau_repair=ctx.config.reranker.tau_repair,
+            judge=judge,
+            proposer_model=ctx.config.llm.model,
+            judge_model=ctx.config.judge.model,
+        )
+    finally:
+        if judge_gateway is not None:
+            if ctx.rate_broker is not None:
+                ctx.run_meta["fleet_judge_calls"] = ctx.rate_broker.calls_made("judge")
+            judge_gateway.close()
 
     support_recall, items_weak = _support_recall(digest)
     recall_floor = ctx.config.reranker.recall_floor
     citation_ok = (support_recall >= recall_floor) if ctx.validate_citations else True
     return digest, citation_ok, support_recall, recall_floor, items_weak, outcome.items_repaired
+
+
+def _build_repair_judge(ctx: RunContext) -> tuple[Optional[LLMJudge], Optional[LLMGateway]]:
+    """Cross-model LLMJudge for citation repair when ``judge.enabled`` (EP-12, D4).
+
+    The judge rides the existing LLMGateway with a model override (R1) on its
+    own RPM bucket and stage call budget (judge<=8). Conditions that would
+    violate the cross-model contract (R4) or replay determinism disable the
+    judge for the run — never fail it:
+
+    * ``judge.model == llm.model`` -> disabled (the repair contract requires a
+      DIFFERENT model from the proposer);
+    * ``--replay-llm`` -> disabled (LLM recordings carry no judge channel yet;
+      a judge request would positionally consume extractor entries — the judge
+      record/replay channel is an EP-14 design item).
+
+    Returns (judge, gateway); the caller owns ``gateway.close()``.
+    """
+    cfg = ctx.config.judge
+    if not cfg.enabled:
+        return None, None
+    if cfg.model == ctx.config.llm.model:
+        logger.warning(
+            "Repair judge disabled: judge.model must differ from the extractor model (R4)",
+            judge_model=cfg.model,
+            trace_id=ctx.trace_id,
+        )
+        return None, None
+    if ctx.replay_llm:
+        logger.warning(
+            "Repair judge disabled under --replay-llm: no judge channel in LLM recordings",
+            trace_id=ctx.trace_id,
+        )
+        return None, None
+    judge_llm = ctx.config.llm.model_copy(
+        update={"model": cfg.model, "max_output_tokens": JUDGE_MAX_OUTPUT_TOKENS}
+    )
+    gateway = LLMGateway(
+        judge_llm,
+        metrics=ctx.metrics,
+        rate_broker=ctx.rate_broker,
+        stage="judge",
+    )
+    return LLMJudge(gateway), gateway
 
 
 def _support_recall(digest: Digest) -> tuple[float, int]:
