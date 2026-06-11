@@ -158,6 +158,61 @@ class TestWriteEnvFile:
             assert "=" in line
             assert not line.startswith("export ")
 
+    def test_ntlm_hint_written_commented(self, tmp_path, monkeypatch):
+        """AD-login hint is a comment — never an active override by default."""
+        env_dir = tmp_path / ".config" / "actionpulse"
+        env_path = env_dir / "env"
+        monkeypatch.setattr("digest_core.setup_wizard.ENV_DIR", env_dir)
+        monkeypatch.setattr("digest_core.setup_wizard.ENV_PATH", env_path)
+
+        _write_env_file({"EWS_PASSWORD": "x"}, ntlm_login_hint="ruapgr2")
+        content = env_path.read_text()
+        assert "# EWS_USER_LOGIN=ruapgr2" in content
+        assert "\nEWS_USER_LOGIN=" not in content  # commented only
+
+    def test_no_ntlm_hint_by_default(self, tmp_path, monkeypatch):
+        env_dir = tmp_path / ".config" / "actionpulse"
+        env_path = env_dir / "env"
+        monkeypatch.setattr("digest_core.setup_wizard.ENV_DIR", env_dir)
+        monkeypatch.setattr("digest_core.setup_wizard.ENV_PATH", env_path)
+
+        _write_env_file({"EWS_PASSWORD": "x"})
+        assert "EWS_USER_LOGIN" not in env_path.read_text()
+
+
+class TestMmWebhookCheck:
+    """Live Mattermost webhook probe — mocked transport."""
+
+    def _resp(self, status):
+        class R:
+            status_code = status
+
+        return R()
+
+    def test_ok_on_200(self, monkeypatch):
+        from digest_core.setup_wizard import _test_mm_webhook
+
+        monkeypatch.setattr("httpx.post", lambda url, json, timeout: self._resp(200))
+        ok, detail = _test_mm_webhook("https://mm.corp.ru/hooks/x")
+        assert ok and detail == "доставлено"
+
+    def test_http_error_reported(self, monkeypatch):
+        from digest_core.setup_wizard import _test_mm_webhook
+
+        monkeypatch.setattr("httpx.post", lambda url, json, timeout: self._resp(404))
+        ok, detail = _test_mm_webhook("https://mm.corp.ru/hooks/x")
+        assert not ok and detail == "HTTP 404"
+
+    def test_network_failure_is_soft(self, monkeypatch):
+        from digest_core.setup_wizard import _test_mm_webhook
+
+        def boom(url, json, timeout):
+            raise ConnectionError("no route")
+
+        monkeypatch.setattr("httpx.post", boom)
+        ok, detail = _test_mm_webhook("https://mm.corp.ru/hooks/x")
+        assert not ok and detail == "ConnectionError"
+
 
 class TestWriteConfigYaml:
     """Test config.yaml generation."""

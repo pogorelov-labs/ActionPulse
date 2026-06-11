@@ -102,8 +102,13 @@ def _derive_from_email(email: str) -> dict[str, str]:
     }
 
 
-def _write_env_file(values: dict[str, str]) -> Path:
-    """Write env file in systemd-compatible KEY=value format."""
+def _write_env_file(values: dict[str, str], ntlm_login_hint: Optional[str] = None) -> Path:
+    """Write env file in systemd-compatible KEY=value format.
+
+    ntlm_login_hint: detected machine (AD) login when it differs from the
+    email local part — written as a commented override so the fix is at hand
+    exactly where the user looks after an EWS auth failure.
+    """
     ENV_DIR.mkdir(parents=True, exist_ok=True)
 
     lines = [
@@ -131,6 +136,11 @@ def _write_env_file(values: dict[str, str]) -> Path:
     lines.append("# DIGEST_OUT_DIR=/custom/out")
     lines.append("# DIGEST_STATE_DIR=/custom/state")
     lines.append("# DIGEST_LOG_LEVEL=INFO")
+    if ntlm_login_hint:
+        lines.append("")
+        lines.append("# NTLM-аутентификация EWS использует логин из email (user_login@domain).")
+        lines.append("# Если EWS не пускает, попробуйте ваш AD-логин с этой машины:")
+        lines.append(f"# EWS_USER_LOGIN={ntlm_login_hint}")
     lines.append("")
 
     ENV_PATH.write_text("\n".join(lines), encoding="utf-8")
@@ -173,6 +183,28 @@ def _write_config_yaml(
     with open(CONFIG_USER, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     return CONFIG_USER
+
+
+def _test_mm_webhook(url: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """POST a fixed test message to the Mattermost incoming webhook.
+
+    The only endpoint verifiable from outside the corp perimeter (ADR-012:
+    Mattermost is reachable from everywhere). Returns (ok, detail); the URL
+    is never logged.
+    """
+    try:
+        import httpx
+
+        resp = httpx.post(
+            url,
+            json={"text": "⌁ ActionPulse: webhook проверен — настройка завершена."},
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            return True, "доставлено"
+        return False, f"HTTP {resp.status_code}"
+    except Exception as exc:  # noqa: BLE001 — any network failure is a soft result
+        return False, type(exc).__name__
 
 
 def _existing_ca_candidates(existing_cfg: dict) -> list[Path]:
@@ -644,8 +676,14 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
         return False
 
     # ── Write files ──
+    # Machine (AD) login differing from the email local part is the classic
+    # NTLM failure cause — leave the override at hand, commented out.
+    ntlm_hint = None
+    if det and det.login and det.login.lower() != derived["user_login"].lower():
+        ntlm_hint = det.login
+
     with console.status("[cyan]Генерация файлов…", spinner="dots"):
-        env_path = _write_env_file(env_values)
+        env_path = _write_env_file(env_values, ntlm_login_hint=ntlm_hint)
         config_path = _write_config_yaml(
             user_upn=user_upn,
             ews_endpoint=ews_endpoint,
@@ -660,6 +698,21 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     for key, val in env_values.items():
         os.environ[key] = val
 
+    # ── Live check: Mattermost is the one endpoint reachable from anywhere ──
+    # TTY-gated so scripted/piped runs keep a stable answer protocol.
+    if sys.stdin.isatty() and Confirm.ask(
+        "[bold cyan]Отправить тестовое сообщение в Mattermost?[/]", default=True
+    ):
+        with console.status("[cyan]Проверка webhook…", spinner="dots"):
+            mm_ok, mm_detail = _test_mm_webhook(mm_webhook)
+        if mm_ok:
+            console.print("  [green]✓[/] Webhook работает — тестовое сообщение в канале")
+        else:
+            console.print(
+                f"  [yellow]⚠[/] Webhook не ответил ({mm_detail}). Mattermost доступен и вне "
+                f"корп-сети — проверьте URL (повторная настройка: повторите setup)."
+            )
+
     # ── Summary ──
     next_steps = Text.assemble(
         ("Первый дайджест:\n\n", "bold"),
@@ -667,6 +720,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
         (str(env_path), "cyan"),
         (" && set +a\n", "default"),
         ("  uv run python -m digest_core.cli diagnose\n", "default"),
+        ("  uv run python -m digest_core.cli mm-ping\n", "default"),
         ("  uv run python -m digest_core.cli run --dry-run\n\n", "default"),
         ("EWS и LLM Gateway доступны только из корпоративной сети.", "dim"),
     )
