@@ -8,12 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **One-command bootstrap** for fresh macOS: repo-root `install.sh` (`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"`) checks macOS/git (tarball fallback without CLT), installs `uv` (astral.sh installer with GitHub-releases fallback), clones the repo, runs `uv sync --native-tls` with plain-sync fallback, and hands off to the setup wizard **in the same terminal session**; animated step UI degrading to plain output (non-TTY / `NO_COLOR` / non-UTF-8); flags `--dir`, `--ref`, `--no-wizard`; idempotent re-runs (`git pull --ff-only`). `digest-core/.python-version` pins Python 3.11 so `uv` provisions the interpreter regardless of the system Python.
 - [`MIGRATION.md`](./MIGRATION.md) at repo root — clarifies V2→V3 field removals vs the default `digest_core.cli run` output (`Digest` schema `1.0` + `extract_actions` prompts).
 - **`RunDigestResult`** from `run_digest()` (`pipeline_succeeded`, `citation_validation_ok`); CLI exit **2** when `--validate-citations` and post-LLM citation build/validation fails; `trace-*.meta.json` includes `citation_validation_ok` ([PR #43](https://github.com/ruspg/ActionPulse/pull/43)).
 - Post-LLM **citation pass** (`CitationBuilder` / `CitationValidator`) when `validate_citations` is set; metric `citation_validation_failures_total` on failure (`post_llm_offsets`).
 - Optional **`DigestRanker`** in `run.py` when **`ranker.enabled`**; `Item.rank_score`; `rank_items` uses `model_copy` for Pydantic models.
 
 ### Changed
+- Setup wizard restyled with **`rich`** (promoted to an explicit dependency): gradient banner, per-step rules, input validation with re-prompting instead of exiting, masked secrets with confirmation and **Enter-keeps-existing** on re-runs, review panel before any file is written, Keychain CA export under a spinner. Tested helpers and generated file formats unchanged; Ctrl+C exits 130 without writing. Fresh-install defaults no longer read `config.example.yaml` placeholders (they shadowed the EWS endpoint derived from the user's email). Quick-start docs lead with the one-liner; clone URLs migrated `ruspg` → `pogorelov-labs`; `QUICK_START.md` uses `uv run` instead of `python3.11`.
 - Interactive setup wizard via **`make setup`** or **`python -m digest_core.cli setup`** (from `digest-core/`) — 6 questions, 0 text editors. `make setup` runs `uv sync` then the same wizard. Generates `~/.config/actionpulse/env` (chmod 600, systemd-compatible) and `configs/config.yaml`. Safe to re-run (PR #32).
 - All setup documentation now points at the interactive wizard as the canonical path; manual `cp deploy/env.example` kept only as an explicit headless / CI fallback (ACTPULSE-60).
 - Consolidated all utility scripts under `digest-core/scripts/` and refreshed documentation links.

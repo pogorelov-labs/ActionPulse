@@ -21,12 +21,31 @@ Single-tenant CLI инструмент. Читает Exchange inbox, прого�
 
 ## Быстрый старт
 
+Одна команда на чистом macOS — без предустановленного Python и Homebrew:
+
 ```bash
-git clone https://github.com/ruspg/ActionPulse.git
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"
+```
+
+Скрипт проверит окружение, поставит [uv](https://docs.astral.sh/uv/) (он сам скачает Python 3.11 — версия системного Python не важна), склонирует репозиторий в `~/ActionPulse`, установит зависимости и запустит мастер настройки в этом же окне терминала. Повторный запуск безопасен: обновит код и предложит текущие значения как ответы по умолчанию. Флаги: `--dir`, `--ref`, `--no-wizard` (headless).
+
+<details>
+<summary>Ручная установка (git clone + make)</summary>
+
+```bash
+git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
 
 # Установка зависимостей + интерактивный мастер (6 вопросов, без редактирования файлов)
 make setup
+```
+
+</details>
+
+После установки:
+
+```bash
+cd ~/ActionPulse/digest-core
 
 # Загрузить секреты в текущую сессию и проверить конфигурацию
 set -a && source ~/.config/actionpulse/env && set +a

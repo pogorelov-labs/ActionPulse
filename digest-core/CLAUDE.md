@@ -13,6 +13,8 @@ git status --short --branch
 make setup                           # uv sync --native-tls + uv run python -m digest_core.cli setup
 uv run python -m digest_core.cli setup  # Re-run wizard (reads existing values as defaults)
 uv sync --native-tls                 # Deps only, no wizard (headless / CI)
+# Fresh Mac, one-liner (repo-root install.sh: uv + clone + sync + wizard):
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"
 
 # Development
 make test                            # Run pytest (all mocked, no network needed)
