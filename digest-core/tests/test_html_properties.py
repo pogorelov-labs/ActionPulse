@@ -78,7 +78,9 @@ def test_deterministic(content):
 # Script/style BODIES must never leak into digest text (the bs4 path removes the
 # elements wholesale; this is the security-relevant property for injected email).
 _payload = st.text(
-    alphabet=st.characters(blacklist_characters="<>&", blacklist_categories=("Cs",)),
+    # No <>& (markup) and no quotes: a quote inside an attribute value legally
+    # terminates it (HTML semantics, not a leak). Same fix as PR #75.
+    alphabet=st.characters(blacklist_characters="<>&\"'", blacklist_categories=("Cs",)),
     min_size=8,
     max_size=80,
 ).map(lambda s: "PAYLOAD" + s.replace("\x00", ""))

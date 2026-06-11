@@ -188,5 +188,5 @@ class _NullDeliverer:
     def __init__(self, config):
         pass
 
-    def deliver_digest(self, digest, json_path=None):
+    def deliver_digest(self, digest, json_path=None, **kwargs):
         return {"status": "skipped", "parts": 0}

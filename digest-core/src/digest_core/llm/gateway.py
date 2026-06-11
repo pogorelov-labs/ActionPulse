@@ -118,6 +118,7 @@ class LLMGateway:
         self._rate_broker = rate_broker
         self._stage = stage
         self._run_tokens_used = 0
+        self._run_calls_made = 0  # network calls only (replay excluded) — D6 visibility
         self._record_path = Path(record_llm) if record_llm else None
         self._replay_data: Optional[Dict[str, Any]] = None
         self._replay_cursor = 0
@@ -389,6 +390,8 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         if self._rate_broker is not None:
             self._rate_broker.acquire(self.config.model)
 
+        self._run_calls_made += 1
+
         start_time = time.time()
         tokens_in = None
         tokens_out = None
@@ -417,6 +420,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 "http_status": status_code,
                 "latency_ms": self.last_latency_ms,
                 "validation_errors": 0,
+                "run_calls_made": self._run_calls_made,
             }
             logger.error(
                 "LLM request failed with HTTP error",
@@ -452,6 +456,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 "http_status": response.status_code,
                 "latency_ms": self.last_latency_ms,
                 "validation_errors": 0,
+                "run_calls_made": self._run_calls_made,
             }
             return {
                 "trace_id": trace_id,
@@ -473,6 +478,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 "http_status": response.status_code,
                 "latency_ms": self.last_latency_ms,
                 "validation_errors": 1,
+                "run_calls_made": self._run_calls_made,
             }
             if finish_reason == "length":
                 # Truncated output, not malformed output: a retry with the same input
@@ -567,6 +573,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             "latency_ms": self.last_latency_ms,
             "validation_errors": 0,
             "run_tokens_used": self._run_tokens_used,
+            "run_calls_made": self._run_calls_made,
             "finish_reason": finish_reason,
         }
         result = {
