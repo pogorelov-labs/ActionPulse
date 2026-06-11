@@ -122,8 +122,17 @@ loginctl enable-linger "$USER"      # run even when logged out
   yet** (see §8). A single bad citation or a weak item never trips it.
 - **Idempotency:** a run skips unless `config_sha256 + content_sha256 +
   pipeline_version` changed (state in the `.idem.json` sidecar). `--force` bypasses.
-- **Rate limit:** extractor is 15 RPM (Personal); a daily run makes ≤2 LLM calls —
-  far under cap; the RateBroker paces it. Nothing to tune.
+- **Dedup ledger** (`memory.dedup_ledger`, default **on** per decision D3): repeat
+  items get a «↻ повтор» badge, never suppressed. `.state/delivered-items.jsonl`
+  stores SHA-256 fingerprints only; the 14-day TTL sweep (`memory.dedup_ttl_days`)
+  **is the data-retention policy** — deleting the file is right-to-be-forgotten.
+- **Weak items** (`reranker.quarantine_weak`, default **on** per decision D1): items
+  without an offset-verifiable span are withheld from the main sections into a
+  trailing «Не подтверждено» section (still badged ⚠, never dropped).
+- **LLM budget (D6):** every run reports calls + tokens vs budget — in the log, in
+  `trace-*.meta.json` (`llm_budget`), and in the MM trace footer. The RateBroker
+  enforces per-stage call budgets (`llm.stage_call_budgets`); 15 RPM is the key
+  budget, the real ceilings are 3-parallel and per-call latency.
 - **Logs:** structured JSON (structlog), emails redacted. Watch `status: partial`
   (a stage degraded) and `items_weak`.
 - **Metrics:** Prometheus on `:9108`, health on `:9109` — but the run is `oneshot`,
