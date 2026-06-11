@@ -996,15 +996,28 @@ digest-core/
 - **Rationale:** Corporate environment is RU-first
 - **Consequence:** All section titles, confidence labels, empty-day messages in Russian
 
-### ADR-008: Single LLM call + rate limit budget (qwen35-397b-a17b, 15 RPM)
-- **Decision:** Max 2 LLM calls per pipeline run (1 primary + 1 retry).
-  No multi-step prompting (extract → summarize → format).
-- **Rationale:** Gateway rate limit 15 RPM. Multi-step (3 calls/run) = max 5 runs/min.
-  Single-call (1-2 calls/run) = max 7-15 runs/min. Подтверждает и усиливает ADR-002.
-- **Consequence:** Prompt quality — единственный рычаг. Нельзя компенсировать
-  плохой extraction вторым LLM-вызовом для "cleanup".
-- **Scope:** Ограничение по числу вызовов относится к **default `run.py`** / **`extract_actions`**. Экспериментальный пакет **`hierarchical/`** (не вызывается из `run.py` в MVP) делает **несколько** HTTP-вызовов на прогон; включение его в прод-путь требует отдельного решения по ADR-002/008 и лимиту RPM.
-- **Revisit when:** Rate limit увеличен до ≥60 RPM или добавлен второй endpoint.
+### ADR-008: Per-stage LLM call budgets at the real gateway ceilings (rev. 2026-06-11, D6)
+- **Decision (v2):** Лимиты вызовов задаются **per-stage бюджетами RateBroker**
+  (`llm.stage_call_budgets`: extractor=2, reranker=10, embeddings=30, judge=8, tokenize=20),
+  а не прозой «max 2 calls per run». Бюджеты можно поднимать **до реальных потолков
+  гейтвея** (key-budget 15 RPM на флагмане; **3 параллельных запроса**; ~30 s латентность
+  на вызов; token-budget `max_tokens_per_run`), когда задача того требует (например
+  best-of-N extraction, EP-10) — повышение фиксируется в конфиге, не в коде.
+- **Visibility (часть решения):** каждый run обязан показывать оператору фактический
+  расход — call count и token usage против бюджета (`run_meta.llm_budget`, лог,
+  trace-footer в Mattermost). Невидимый бюджет — не бюджет.
+- **Rationale:** 15 RPM — бюджет *ключа*, а не свойство пайплайна: дневной batch с
+  N=3 последовательными extraction-вызовами (~30 s каждый) тривиально укладывается.
+  Реальные ограничители — параллелизм (3) и латентность; их моделирует RateBroker,
+  и он же это **enforce'ит** — ADR теперь описывает то, что код делает.
+  (Источник лимитов: консолидированный справочник эндпоинта, 2026-06-11.)
+- **Defaults unchanged:** extractor budget остаётся 2 (1 primary + 1 quality retry);
+  поведение по умолчанию не меняется. Подъём extractor-бюджета — только вместе с
+  `extract.best_of_n` (EP-10), после offline-доказательства выигрыша на citation-recall.
+- **History (v1, 2026-03):** «Max 2 LLM calls per run; no multi-step prompting» —
+  написано, когда дормантный `hierarchical/` грозил исчерпать RPM; пакет удалён в
+  redesign-cleanup. Формулировка v1 сохранена в git history.
+- **Revisit when:** меняются key-бюджеты гейтвея или появляется второй endpoint.
 
 ### ADR-009: Extraction prompts are plain text (Jinja2 elsewhere only)
 - **Decision:** Extraction prompts (`extract_actions.v1.txt`, `extract_actions.en.v1.txt`)

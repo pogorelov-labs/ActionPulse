@@ -265,21 +265,25 @@ steady state. Planning row only.
 
 ---
 
-## DECISIONS-NEEDED (owner calls — deliberately unresolved)
+## DECISIONS — RESOLVED 2026-06-11 (owner interview)
 
-| # | Decision | Tension | Blocks |
+All seven owner calls were resolved in a structured pros/cons interview on 2026-06-11.
+The original tensions are preserved in git history; this table is the ruling.
+
+| # | Decision | Resolution | Enactment |
 |---|---|---|---|
-| D1 | Citation gate **shadow → enforcing** (drop/withhold unverifiable items?) | Product behavior change; conflicts with the documented R3 degrade-not-drop posture (`citation_gate.py:10` "NEVER drops") and changes what users see | EP-4 part B; any enforcing mode |
-| D2 | CI eval gate + raising `recall_floor` above 0.0 | Turns evals into a release gate (builds start failing); floor needs PR10 calibration data from corp reactions first | EP-5 step 4 |
-| D3 | Cross-run memory vs privacy-by-not-storing | A delivered-items ledger retains per-user state on disk (TTL'd) in a privacy-first product that today stores nothing item-level | EP-7 default-on / suppression mode |
-| D4 | PC-2 per-endpoint data-handling ADR | Compliance decision; unlocks fleet (reranker/embeddings/judge), JIT retrieval, F1/F2 remainder | all fleet-dependent work; parts of EP-10 |
-| D5 | Release-judge architecture: pairwise vs reference-anchored vs hybrid | Both beat pointwise in the research pass but differ in gold-set cost (pairwise needs candidate pairs; reference-anchored needs maintained references) | EP-5 step 3 |
-| D6 | Best-of-N vs **ADR-008** "max 2 LLM calls/run" | N>2 sampling violates the ADR as written; either rewrite ADR-008 as per-stage budgets (RateBroker already models this) or cap N=2 | EP-10 |
-| D7 | Backlog seeding into Plane (project ACTPULSE) | Program is a proposal; filing W2/W3 issues before the owner prioritizes pre-empts the decisions above; sanitization required | Backlog handoff (BACKLOG.md written instead, see below) |
+| D1 | Citation gate shadow → enforcing | **Quarantine now**: weak items move to a trailing «Не подтверждено» section (flag `reranker.quarantine_weak`, default on) — withheld from the main sections, never dropped (R3-compatible) | run.py quarantine step + tests; repair becomes real once D4 wiring lands |
+| D2 | CI eval gate + `recall_floor` | **eval-replay joins GitHub CI now** (deterministic corpus regression gate, exit 2 fails the job); `recall_floor` stays 0.0 until the first MM-reactions export → `eval-gold` → `eval-calibrate` produces a defensible number | `.github/workflows/ci.yml` eval job |
+| D3 | Dedup ledger vs privacy-by-not-storing | **Default ON, annotate-only** (hashed fingerprints + 14-day TTL = the documented retention policy; right-to-be-forgotten = delete the file); MM gets a «↻ повтор» marker; suppression deferred until dogfood data | `memory.dedup_ledger` default flip + MM marker; RUNBOOK retention note |
+| D4 | PC-2 per-endpoint data handling | **YES for all three** fleet endpoints (reranker `/rerank`, embeddings, judge `qwen35-35b-a3b`) — same gateway host/key/trust domain as the approved extractor | unlocks fleet wiring (W3 work + corp validation); repair + real support scores + judge calibration |
+| D5 | Release-judge architecture | **Hybrid by job**: reference-anchored judge for the release/regression gate (calibrated vs gold, κ ≥ 0.41 + CI floor before it may gate); pairwise reserved for EP-10 best-of-N selection | EP-5 step 3 implementation (post fleet wiring) |
+| D6 | Best-of-N vs ADR-008 | **Rewrite ADR-008 around the real constraint ceilings** (per-stage RateBroker budgets, 15 RPM key budget, 3-parallel, token budget) — go up to the ceilings when needed — **plus visible call-count + token-budget reporting** to the operator every run | ADR-008 text rewritten (ARCHITECTURE.md); `llm_budget` summary in run_meta + log + MM trace footer |
+| D7 | Plane seeding | **Seed open items only** (post-decision survivors), sanitized | ~7 issues filed in ACTPULSE; ids recorded in BACKLOG.md |
 
 ---
 
 ## Backlog handoff
 
-Plane MCP is available but seeding is deferred (D7). `docs/audits/BACKLOG.md` carries the table;
-the continuous failure→issue flow belongs to EP-11 (`backlog-loop` skill).
+Resolved per D7: open items are seeded into Plane (project ACTPULSE) with sanitized text;
+`docs/audits/BACKLOG.md` mirrors them. The continuous failure→issue flow belongs to EP-11
+(`backlog-loop` skill).
