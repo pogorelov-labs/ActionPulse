@@ -22,10 +22,12 @@ class MetricsCollector:
 
     _active_ports = set()
 
-    def __init__(self, port: int = 9108):
+    def __init__(self, port: int = 9108, fail_on_exporter_error: bool = False):
         self.port = port
         self.start_time = time.time()
         self._server_started = False
+        self.exporter_error: str | None = None
+        self._fail_on_exporter_error = fail_on_exporter_error
 
         # Create custom registry
         self.registry = CollectorRegistry()
@@ -330,7 +332,14 @@ class MetricsCollector:
         )
 
     def start_server(self, port: int | None = None):
-        """Start the Prometheus endpoint if it is not already active."""
+        """Start the Prometheus endpoint if it is not already active.
+
+        A bind failure is recorded in ``exporter_error`` and logged at **error**
+        (it used to be a swallowed warning — the root cause of the April
+        "metrics not available" incident, frontier-audit F6). The run keeps
+        going by default (oneshot batch, degrade-not-drop); set
+        ``observability.fail_on_exporter_error`` to crash instead.
+        """
         port = port or self.port
         self.port = port
         if port in self.__class__._active_ports or self._server_started:
@@ -339,9 +348,28 @@ class MetricsCollector:
             start_http_server(port, registry=self.registry)
             self.__class__._active_ports.add(port)
             self._server_started = True
+            self.exporter_error = None
             logger.info("Prometheus metrics server started", port=port)
         except Exception as e:
-            logger.warning("Failed to start metrics server", port=port, error=str(e))
+            self.exporter_error = str(e)
+            logger.error(
+                "Failed to start metrics exporter — run continues but is unobservable "
+                "via Prometheus; see observability.fail_on_exporter_error",
+                port=port,
+                error=str(e),
+            )
+            if self._fail_on_exporter_error:
+                raise
+
+    def exporter_status(self) -> dict:
+        """Exporter state for the run trace (``run_meta['metrics_exporter']``)."""
+        if self._server_started or self.port in self.__class__._active_ports:
+            status = "ok"
+        elif self.exporter_error:
+            status = "failed"
+        else:
+            status = "not_started"
+        return {"status": status, "port": self.port, "error": self.exporter_error}
 
     def stop_server(self):
         """Compatibility no-op for tests and older callers."""

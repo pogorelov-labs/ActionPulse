@@ -163,6 +163,13 @@ class ObservabilityConfig(BaseModel):
 
     prometheus_port: int = Field(default=9108, description="Prometheus metrics port")
     log_level: str = Field(default="INFO", description="Log level")
+    fail_on_exporter_error: bool = Field(
+        default=False,
+        description=(
+            "Crash the run when the Prometheus exporter cannot bind its port"
+            " (default: log an error, record it in run_meta, continue)"
+        ),
+    )
 
 
 class MattermostDeliverConfig(BaseModel):

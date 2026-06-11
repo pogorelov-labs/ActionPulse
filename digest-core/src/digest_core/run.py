@@ -205,7 +205,10 @@ def _init_context(
         state_dir.mkdir(parents=True, exist_ok=True)
         config.ews.sync_state_path = str(state_dir / Path(config.ews.sync_state_path).name)
 
-    metrics = MetricsCollector(config.observability.prometheus_port)
+    metrics = MetricsCollector(
+        config.observability.prometheus_port,
+        fail_on_exporter_error=config.observability.fail_on_exporter_error,
+    )
     start_health_server(port=9109, llm_config=config.llm)
 
     digest_date = _resolve_digest_date(from_date)
@@ -230,6 +233,7 @@ def _init_context(
         "evidence_summary": {},
         "ews_fetch_stats": {},
         "llm_request_trace": {},
+        "metrics_exporter": _exporter_status_entry(metrics),
         "config_sanitized": _sanitize_config(config),
         "provenance": build_provenance(
             config, config_sha256=_config_sha256(config), pipeline_version=PIPELINE_VERSION
@@ -1259,6 +1263,16 @@ def _build_evidence_summary(
             for thread in threads
         ],
     }
+
+
+def _exporter_status_entry(metrics: Any) -> Dict[str, Any]:
+    """Exporter state for run_meta, tolerant of test doubles (mocks/dummies)."""
+    status_fn = getattr(metrics, "exporter_status", None)
+    if callable(status_fn):
+        candidate = status_fn()
+        if isinstance(candidate, dict):
+            return candidate
+    return {"status": "unknown", "port": None, "error": None}
 
 
 def _sanitize_config(config: Config) -> Dict[str, Any]:
