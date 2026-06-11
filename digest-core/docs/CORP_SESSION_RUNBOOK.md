@@ -71,6 +71,13 @@ chmod 600 ~/.config/actionpulse/env
 
 ## 1. На корп-машине: setup (~5 мин)
 
+> **Свежий Mac (нет клона):** один-единственный шаг заменяет §1.1 + §1.2 + §0.3 —
+> ```bash
+> /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"
+> ```
+> Установит uv (+ Python 3.11), клонирует репозиторий, поставит зависимости и
+> запустит мастер в том же терминале. Первый корп-запуск one-liner'а — пройдите §8.
+
 ### 1.1 Подтянуть код
 
 ```bash
@@ -304,6 +311,53 @@ diff <(jq .scores ~/corpus/eval-2026-04-01.json) \
 
 ---
 
+## 8. Однократно: валидация one-liner setup (~10 мин)
+
+Установщик и автообнаружение (PR #76/#78) проверены **вне периметра**; ниже —
+то, что можно подтвердить только на реальном корп-Mac. Пройти один раз,
+результаты — в `CORP_VALIDATION_FINDINGS` или issue.
+
+**8.1 One-liner за корп-прокси.** В чистую папку:
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)" install.sh --dir ~/ActionPulse-validate
+```
+Записать: дошёл ли `raw.githubusercontent.com`; какой источник uv сработал
+(astral.sh или GitHub-fallback — видно в логе шага при падении); прошёл ли
+`uv sync --native-tls` с первой попытки. При падении шага скрипт сам печатает
+хвост лога (`$TMPDIR/actionpulse-install-log…`).
+
+**8.2 Автообнаружение.** В панели «Автообнаружение» мастера записать:
+- какой email выбран и с какими причинами (имя/домен/частота) — верный ли UPN;
+- нашёлся ли EWS host из keychain-артефактов (`<login>@owa.…`) и стоит ли `DNS ✓`;
+- что в «Домены сети» (dsconfigad / scutil).
+
+Если email выбран **неверно** — сохранить весь вывод панели (кандидаты выше/ниже),
+анонимизировать и завести issue: эвристика калибрована по одной машине (n=1).
+
+**8.3 NTLM-логин.** `run --dry-run` с дефолтным `user_login` (= local-part email).
+При auth-ошибке: раскомментировать `EWS_USER_LOGIN=<ad-login>` в
+`~/.config/actionpulse/env` (мастер уже вписал подсказку с логином машины) и
+повторить. Зафиксировать, какой вариант работает → решение, менять ли деривацию
+по умолчанию в `config.py`.
+
+**8.4 CA chain из Keychain.** Экспорт по алиасам Raiffeisen (Root + Issuing):
+оба ли сертификата нашлись; EWS/LLM/MM ходят с verify без `verify_ssl=false`?
+
+**8.5 MM live-check.** Тестовое сообщение мастера дошло в канал?
+
+**8.6 Полный прогон.** §2–§3 как обычно — дайджест доставлен.
+
+```
+□  8.1 one-liner: curl + uv + sync за прокси
+□  8.2 автообнаружение: UPN верный, EWS host найден, DNS ✓
+□  8.3 NTLM: email-local или EWS_USER_LOGIN — что работает
+□  8.4 CA chain: Root + Issuing экспортированы, TLS verify OK
+□  8.5 MM тест-сообщение в канале
+□  8.6 полный run → дайджест в MM
+```
+
+---
+
 ## Чеклист корп-сессии (quick ref)
 
 ```
@@ -315,6 +369,7 @@ diff <(jq .scores ~/corpus/eval-2026-04-01.json) \
 □  full run + record-llm → дайджест в MM
 □  eval-prompt → baseline score
 □  tar.gz артефакты → скопированы наружу
+□  (однократно) §8 — валидация one-liner setup
 □  (бонус) systemd timer установлен
 ```
 
