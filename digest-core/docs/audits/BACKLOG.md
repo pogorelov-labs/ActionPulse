@@ -1,10 +1,10 @@
 # Quality-program backlog — ActionPulse digest-core
 
-Updated 2026-06-11 (third pass): fleet PRs #81/#82/#83 MERGED — composed main
+Updated 2026-06-11 (fourth pass): fleet PRs #81/#82/#83 MERGED — composed main
 verified green (753 passed ×2, eval-replay baseline OK). All fleet flags remain
 off until EP-14 corp validation. D1–D7 resolved — see `ENHANCEMENT_PROGRAM.md`.
-Plane seeding (D7) still pending — the Plane MCP was offline again this
-session; issue ids recorded below when filed.
+**D7 enacted 2026-06-11**: the open rows (post-decision survivors) are seeded
+into Plane ACTPULSE, sanitized; ids in the table below.
 
 ## Done (W1 + W2 + fleet wiring, PRs #62–#72 + decision enactment + dep hygiene)
 
@@ -28,7 +28,7 @@ session; issue ids recorded below when filed.
 
 | id | title | wave | gate / depends on | Plane |
 |---|---|---|---|---|
-| EP-10 | Best-of-N extraction selected by the citation gate (offline harness first; pairwise selection via `eval/judge.py pairwise_judge`) | W3 | D6 ✅ (ADR-008 v2); EP-12 ✅ (#81/#82); baseline #67 | TBD |
-| EP-14 | W3 corp validation pack: carry `make bundle`; injection probes (threat-model §6); LLM endpoint curl check; re-record fixtures on main; EP-2 scrape reachability; EP-3 real-401; OTel collector decision; first `items_weak`/quarantine read-out. **Added by EP-12/EP-5(3) wiring:** ① `/rerank` exact path + payload/response shape (curl; flip `reranker.endpoint_path` if `/v1/rerank` or `/v1/score`); ② reranker live score distribution on real items → first `tau` read-out; ③ fleet RPM/latency under the 3-parallel key budget (broker penalties observed); ④ record a `--record-llm` run with `reranker.enabled` → verify `.fleet.json` sidecar replays; ⑤ judge live verdict quality vs `tau_repair` → first `items_repaired` read-out; ⑥ design the judge record/replay channel (judge disabled under replay today); ⑦ first reference-judge calibration vs gold (`eval-judge-run`, report-only) — κ + CI floor into `docs/audits/baselines/` | W3 (requires corp) | next corp visit | TBD |
-| EP-15 | `recall_floor` calibration: export MM reactions → `eval-gold` → `eval-calibrate` → set floor > 0; gate flips (CI eval floor, `eval.judge_mode`) only after κ ≥ 0.41 with the bootstrap CI floor | W4-entry | D2 ✅ (second half); needs reactions data + EP-14 ⑦ | TBD |
-| EP-11 | Continuous failure→gold→issue loop (`backlog-loop` skill) | W4 | program steady-state | TBD |
+| EP-10 | Best-of-N extraction selected by the citation gate (offline harness first; pairwise selection via `eval/judge.py pairwise_judge`) | W3 | D6 ✅ (ADR-008 v2); EP-12 ✅ (#81/#82); baseline #67 | ACTPULSE-65 |
+| EP-14 | W3 corp validation pack: carry `make bundle`; injection probes (threat-model §6); LLM endpoint curl check; re-record fixtures on main; EP-2 scrape reachability; EP-3 real-401; OTel collector decision; first `items_weak`/quarantine read-out. **Added by EP-12/EP-5(3) wiring:** ① `/rerank` exact path + payload/response shape (curl; flip `reranker.endpoint_path` if `/v1/rerank` or `/v1/score`); ② reranker live score distribution on real items → first `tau` read-out; ③ fleet RPM/latency under the 3-parallel key budget (broker penalties observed); ④ record a `--record-llm` run with `reranker.enabled` → verify `.fleet.json` sidecar replays; ⑤ judge live verdict quality vs `tau_repair` → first `items_repaired` read-out; ⑥ design the judge record/replay channel (judge disabled under replay today); ⑦ first reference-judge calibration vs gold (`eval-judge-run`, report-only) — κ + CI floor into `docs/audits/baselines/` | W3 (requires corp) | next corp visit | ACTPULSE-66 |
+| EP-15 | `recall_floor` calibration: export MM reactions → `eval-gold` → `eval-calibrate` → set floor > 0; gate flips (CI eval floor, `eval.judge_mode`) only after κ ≥ 0.41 with the bootstrap CI floor | W4-entry | D2 ✅ (second half); needs reactions data + EP-14 ⑦ | ACTPULSE-67 |
+| EP-11 | Continuous failure→gold→issue loop (`backlog-loop` skill) | W4 | program steady-state | ACTPULSE-68 |
