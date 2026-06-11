@@ -521,6 +521,28 @@ File artifacts already written by Stage 7 — delivery is best-effort.
 
 ---
 
+### 4.6 P2 citation gate + LLM fleet (PR8/PR11 + EP-12, decisions D1/D4/D5)
+
+Post-LLM enrichment order in `run.py`: **gate annotate → repair → support-recall →
+quarantine**. Every stage is degrade-not-drop (R3): fleet failures fall back to
+today's behavior, items are never dropped.
+
+| Step | Module | Contract |
+|---|---|---|
+| Gate (shadow, always on) | `evidence/citation_gate.py` | Annotates every evidence-backed item: `citation_fidelity_ok` (offset+SHA in the normalized body), `support_score` (optional), `weak_evidence`. Zero network with the reranker off. |
+| Reranker support scoring | `llm/fleet.py` `RerankerClient` | Behind `reranker.enabled` (default **off**; D4/PC-2 approved, live flip waits for EP-14). Endpoint `/rerank` (probe-verified; `reranker.endpoint_path` flips it without code). Spent on **low-confidence items only**, ≤ `budget_per_run` (10); model `bge-reranker-v2-m3` on its own 10 RPM bucket + stage budget via `RateBroker`. Any failure (429/timeout/budget) → gate turns fidelity-only for the rest of the run. |
+| Repair (quarantine rescue) | `evidence/repair.py` | Behind `judge.enabled` (default **off**). Re-selects a **verbatim** span (`reselect_span`, non-generative) and accepts it only if the **cross-model** judge (`judge.model` ≠ `llm.model`, R4) approves above `reranker.tau_repair`. Judge rides `LLMGateway.judge()` with a model override (R1), stage budget `judge=8`. Failures keep the weak badge; budget exhaustion stops further attempts. |
+| Quarantine | `run.py _quarantine_weak_items` | D1: items still `weak_evidence` after repair move to the trailing **«Не подтверждено»** section — withheld from main sections, still delivered. Repaired items escape it. |
+| Eval judge (offline only) | `eval/judge.py` | `eval.judge_mode` (default `pointwise` = advisory dashboard; **never a gate** — research-refuted pattern). `reference` = reference-anchored binary judging vs gold rows (`eval-judge-run`: calibration κ/α + regression report). Pairwise = library only, reserved for EP-10. **No-gate rule:** nothing gates CI until reactions-based calibration clears κ ≥ 0.41 with the bootstrap CI floor (D2/EP-15). |
+
+Record/replay: fleet calls use a **`<recording>.fleet.json` sidecar** next to the
+LLM recording (namespaced per endpoint); under `--replay-llm` without a sidecar
+the reranker is disabled for the run, and the repair judge is always disabled
+under replay (no judge channel in LLM recordings yet — EP-14 design item).
+`run_meta` reports `fleet_reranker_calls` / `fleet_judge_calls` (D6 visibility).
+
+---
+
 ## 5. Configuration
 
 ### 5.1 Config Schema
@@ -564,6 +586,20 @@ deliver:
 observability:
   prometheus_port: 9108
   log_level: "INFO"
+
+reranker:                                  # P2-gate support scoring (EP-12, D4)
+  enabled: false                           # OFF until corp validation (EP-14)
+  tau: 0.0
+  budget_per_run: 10
+  low_confidence_threshold: 0.7
+  quarantine_weak: true                    # D1: weak -> «Не подтверждено»
+
+judge:                                     # cross-model repair judge (EP-12, D1)
+  enabled: false                           # OFF until corp validation (EP-14)
+  model: "qwen35-35b-a3b"                  # must differ from llm.model (R4)
+
+eval:
+  judge_mode: "pointwise"                  # D5: pointwise (advisory) | reference
 ```
 
 ### 5.2 Config Precedence
@@ -882,12 +918,22 @@ digest-core/
 │   │   ├── signals.py             # Heuristic signals on text
 │   │   ├── actions.py             # Action / mention extraction helpers
 │   │   ├── citations.py           # CitationBuilder / CitationValidator (wired when `--validate-citations`)
+│   │   ├── citation_gate.py       # P2 shadow gate: offset fidelity + support_score (§4.6)
+│   │   ├── repair.py              # Non-generative weak-item repair, cross-model judge (§4.6)
 │   │   └── lemmatizer.py          # RU lemmatization for NLP-style helpers
 │   ├── select/
 │   │   └── context.py             # Context selection/scoring
 │   ├── llm/
-│   │   ├── gateway.py             # LLM HTTP client
+│   │   ├── gateway.py             # LLM HTTP client (+ judge() verdict call, §4.6)
+│   │   ├── fleet.py               # Fleet clients: embeddings / reranker / tokenizer (§4.6)
+│   │   ├── rate_broker.py         # Per-model RPM buckets + per-stage call budgets (ADR-008 v2)
 │   │   └── schemas.py             # Pydantic output schemas
+│   ├── eval/                      # Offline eval harness (no live-run coupling)
+│   │   ├── replay_harness.py      # eval-replay: frozen corpus vs committed baseline
+│   │   ├── judge.py               # Hybrid judge: pointwise / reference-anchored / pairwise (D5)
+│   │   ├── agreement.py           # Cohen κ / Krippendorff α + may_gate floor (EP-5)
+│   │   ├── gold_set.py            # MM-reactions gold labels
+│   │   └── calibrate.py           # Per-stratum tau calibration
 │   ├── assemble/
 │   │   ├── jsonout.py             # JSON output writer
 │   │   └── markdown.py            # Markdown output writer
