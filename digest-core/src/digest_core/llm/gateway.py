@@ -19,6 +19,7 @@ from digest_core.llm.date_utils import get_current_datetime_in_tz
 from digest_core.llm.degrade import extractive_fallback
 from digest_core.llm.prompt_registry import get_prompt_template_path
 from digest_core.llm.rate_broker import RateBroker
+from digest_core.observability import tracing
 from digest_core.observability.metrics import MetricsCollector
 
 
@@ -338,7 +339,32 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             for attempt in retrying:
                 with attempt:
                     call_count += 1
-                    response_data = self._make_request_once(messages, trace_id)
+                    # One gen_ai.* span per attempt (EP-8) — structural attributes
+                    # only; replay attempts are marked, never faked as network.
+                    with tracing.llm_call_span(self.config.model) as llm_span:
+                        response_data = self._make_request_once(messages, trace_id)
+                        if llm_span is not None:
+                            meta = response_data.get("meta", {})
+                            llm_span.set_attribute(
+                                "gen_ai.usage.input_tokens", int(meta.get("tokens_in") or 0)
+                            )
+                            llm_span.set_attribute(
+                                "gen_ai.usage.output_tokens", int(meta.get("tokens_out") or 0)
+                            )
+                            llm_span.set_attribute(
+                                "gen_ai.request.max_tokens", self.config.max_output_tokens
+                            )
+                            llm_span.set_attribute(
+                                "gen_ai.request.temperature", self.config.temperature
+                            )
+                            finish_reason = meta.get("finish_reason")
+                            if finish_reason:
+                                llm_span.set_attribute(
+                                    "gen_ai.response.finish_reasons", [finish_reason]
+                                )
+                            llm_span.set_attribute(
+                                "actionpulse.replay", self._replay_data is not None
+                            )
                     last_status = response_data["meta"].get("http_status")
                     response_data["meta"]["call_count"] = call_count
                     response_data["meta"]["retry_count"] = max(call_count - 1, 0)

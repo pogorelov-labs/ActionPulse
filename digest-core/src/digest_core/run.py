@@ -38,6 +38,7 @@ from digest_core.normalize.html import HTMLNormalizer
 from digest_core.normalize.quotes import QuoteCleaner
 from digest_core.observability.healthz import start_health_server
 from digest_core.observability.logs import setup_logging
+from digest_core.observability import tracing
 from digest_core.provenance import build_provenance, prompt_sha256
 from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
@@ -240,6 +241,23 @@ def _init_context(
         ),
         "status": "started",
         "partial": False,
+    }
+
+    # OTel GenAI tracing (EP-8): off by default; structural attributes only.
+    provenance_manifest = run_meta["provenance"]
+    otel_active = tracing.configure_tracing(
+        config.observability,
+        {
+            "service.version": PIPELINE_VERSION,
+            "actionpulse.code_sha": provenance_manifest["code_sha"],
+            "actionpulse.config_sha256": provenance_manifest["config_sha256"],
+        },
+    )
+    if otel_active:
+        tracing.start_run_span(trace_id, digest_date)
+    run_meta["otel"] = {
+        "enabled": otel_active,
+        "export": (config.observability.otel_export_path or "console") if otel_active else None,
     }
 
     # One RateBroker per run, shared by the LLM gateway and (later) fleet clients (R1).
@@ -671,6 +689,15 @@ def _run_pipeline(
         replay_llm=replay_llm,
     )
 
+    # The root span covers every exit path (ok / partial / skipped / failed);
+    # no-op unless observability.otel_enabled configured tracing in _init_context.
+    try:
+        return _run_pipeline_traced(ctx, sources)
+    finally:
+        tracing.end_run_span(ctx.run_meta.get("status"))
+
+
+def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestResult:
     config_sha = _config_sha256(ctx.config)
     idem_sidecar = _read_idem_sidecar(ctx.json_path)
 
@@ -1363,6 +1390,7 @@ def _record_stage_duration(
     duration_seconds = time.perf_counter() - started_at
     run_meta["stage_durations_ms"][stage] = int(duration_seconds * 1000)
     metrics.record_pipeline_stage_duration(stage, duration_seconds)
+    tracing.record_stage_span(stage, duration_seconds)
 
 
 def _count_digest_items(digest: Digest) -> int:
