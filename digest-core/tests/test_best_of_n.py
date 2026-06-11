@@ -169,6 +169,7 @@ def _ctx(extract_cfg, *, replay_llm=None):
     return SimpleNamespace(
         config=SimpleNamespace(
             llm=LLMConfig(endpoint="https://gw.corp/api/v1/chat", model="qwen35-397b-a17b"),
+            report=SimpleNamespace(language="en"),
             extract=extract_cfg,
         ),
         metrics=_NullMetrics(),

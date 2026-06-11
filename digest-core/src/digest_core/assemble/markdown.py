@@ -1,19 +1,30 @@
 """
-Markdown output assembler for digest data with Russian localization.
+Markdown output assembler for digest data, localized per report.language.
 """
 
 from pathlib import Path
 import structlog
 
+from digest_core.assemble.labels import (
+    DEFAULT_LANGUAGE,
+    FYI,
+    MY_ACTIONS,
+    confidence_text,
+    display_title,
+    report_strings,
+    section_title,
+)
 from digest_core.llm.schemas import Digest, EnhancedDigest
 
 logger = structlog.get_logger()
 
 
 class MarkdownAssembler:
-    """Assemble digest data into Markdown output with Russian localization."""
+    """Assemble digest data into Markdown output in the configured report language."""
 
-    def __init__(self):
+    def __init__(self, language: str = DEFAULT_LANGUAGE):
+        self.language = language
+        self._s = report_strings(language)
         self.max_words = 400
         self.max_items_per_section = 10
 
@@ -59,7 +70,7 @@ class MarkdownAssembler:
             if isinstance(digest_data, dict)
             else getattr(digest_data, "trace_id", "")
         )
-        lines.append(f"# Дайджест действий - {digest_date}")
+        lines.append(f"# {self._s['digest_header']} - {digest_date}")
         lines.append("")
         lines.append(f"*Trace ID: {trace_id}*")
         lines.append("")
@@ -75,7 +86,7 @@ class MarkdownAssembler:
             for section in sections
         )
         if total_items == 0:
-            lines.append("За период релевантных действий не найдено.")
+            lines.append(self._s["no_actions"])
             return "\n".join(lines)
 
         # Sections
@@ -87,7 +98,7 @@ class MarkdownAssembler:
             if not items:
                 continue
 
-            lines.append(f"## {title}")
+            lines.append(f"## {display_title(title, self.language)}")
             lines.append("")
 
             # Limit items per section
@@ -114,27 +125,31 @@ class MarkdownAssembler:
 
                 # Add due date if present
                 if item_due:
-                    lines.append(f"**Срок:** {item_due}")
+                    lines.append(f"**{self._s['due_label']}:** {item_due}")
 
                 # Add confidence
-                confidence_text = self._format_confidence(item_confidence)
-                lines.append(f"**Уверенность:** {confidence_text}")
+                lines.append(
+                    f"**{self._s['confidence_label']}:**"
+                    f" {self._format_confidence(item_confidence)}"
+                )
 
                 # Add evidence reference (required format) with email subject
                 source_type = item_source_ref.get("type", "unknown")
                 if item_email_subject:
                     lines.append(
-                        f'**Источник:** {source_type}, тема "{item_email_subject}", evidence {item_evidence_id}'
+                        f'**{self._s["source_label"]}:** {source_type}, {self._s["subject_word"]} "{item_email_subject}", evidence {item_evidence_id}'
                     )
                 else:
-                    lines.append(f"**Источник:** {source_type}, evidence {item_evidence_id}")
+                    lines.append(
+                        f"**{self._s['source_label']}:** {source_type}, evidence {item_evidence_id}"
+                    )
 
                 lines.append("")
 
             # Add note if items were truncated
             if len(items) > self.max_items_per_section:
                 remaining = len(items) - self.max_items_per_section
-                lines.append(f"*... и еще {remaining} элементов*")
+                lines.append(self._s["and_more_items"].format(remaining=remaining))
                 lines.append("")
 
         # Statistics section
@@ -150,18 +165,20 @@ class MarkdownAssembler:
         )
 
         if total_processed > 0:
-            lines.append("## Статистика")
+            lines.append(f"## {self._s['statistics_header']}")
             lines.append("")
             percent = (
                 int((emails_with_actions / total_processed) * 100) if total_processed > 0 else 0
             )
             lines.append(
-                f"Обработано {total_processed} писем, {emails_with_actions} ({percent}%) содержали действия"
+                self._s["processed_summary"].format(
+                    total=total_processed, with_actions=emails_with_actions, percent=percent
+                )
             )
             lines.append("")
 
         # Evidence section
-        lines.append("## Источники")
+        lines.append(f"## {self._s['sources_header']}")
         lines.append("")
 
         evidence_ids = set()
@@ -193,17 +210,8 @@ class MarkdownAssembler:
         return content
 
     def _format_confidence(self, confidence: float) -> str:
-        """Format confidence score as Russian text."""
-        if confidence >= 0.9:
-            return "Очень высокая"
-        elif confidence >= 0.7:
-            return "Высокая"
-        elif confidence >= 0.5:
-            return "Средняя"
-        elif confidence >= 0.3:
-            return "Низкая"
-        else:
-            return "Очень низкая"
+        """Format confidence score as capitalized report-language text."""
+        return confidence_text(confidence, self.language).capitalize()
 
     def _count_words(self, text: str) -> int:
         """Count words in text."""
@@ -223,7 +231,7 @@ class MarkdownAssembler:
         truncated_content = " ".join(truncated_words)
 
         # Add truncation note
-        truncated_content += "\n\n*[Содержимое обрезано для соблюдения лимита слов]*"
+        truncated_content += "\n\n" + self._s["truncated_note"]
 
         return truncated_content
 
@@ -240,15 +248,15 @@ class MarkdownAssembler:
         )
 
         if total_items == 0:
-            return "За период релевантных действий не найдено."
+            return self._s["no_actions"]
 
-        summary_parts = [f"Найдено {total_items} действий:"]
+        summary_parts = [self._s["found_actions"].format(total=total_items)]
 
         for section in sections:
             items = section.get("items", []) if isinstance(section, dict) else section.items
             title = section.get("title", "") if isinstance(section, dict) else section.title
             if items:
-                summary_parts.append(f"- {title}: {len(items)}")
+                summary_parts.append(f"- {display_title(title, self.language)}: {len(items)}")
 
         return " ".join(summary_parts)
 
@@ -266,7 +274,11 @@ class MarkdownAssembler:
                 return False
 
             # Check for evidence references
-            evidence_refs = [line for line in lines if "Источник:" in line and "evidence" in line]
+            evidence_refs = [
+                line
+                for line in lines
+                if ("Источник:" in line or "Source:" in line) and "evidence" in line
+            ]
             if not evidence_refs:
                 logger.warning("No evidence references found in markdown")
                 return False
@@ -283,7 +295,7 @@ class MarkdownAssembler:
 
     def format_evidence_reference(self, source_type: str, evidence_id: str) -> str:
         """Format evidence reference in required format."""
-        return f"**Источник:** {source_type}, evidence {evidence_id}"
+        return f"**{self._s['source_label']}:** {source_type}, evidence {evidence_id}"
 
     def write_enhanced_digest(
         self,
@@ -343,7 +355,7 @@ class MarkdownAssembler:
         lines = []
 
         # Header
-        lines.append(f"# Дайджест действий - {digest.digest_date}")
+        lines.append(f"# {self._s['digest_header']} - {digest.digest_date}")
         lines.append(f"*Trace ID: {digest.trace_id}*")
         lines.append(f"*Timezone: {digest.timezone}*")
         lines.append(f"*Schema version: {digest.schema_version}*")
@@ -353,30 +365,26 @@ class MarkdownAssembler:
         if is_partial:
             if partial_reason == "llm_json_error":
                 lines.append("---")
-                lines.append("⚠️ **ЧАСТИЧНЫЙ ОТЧЁТ: LLM дал невалидный JSON**")
+                lines.append(f"⚠️ **{self._s['partial_json_title']}**")
                 lines.append("")
-                lines.append(
-                    "Данный дайджест создан в резервном режиме (extractive fallback) из-за ошибки парсинга JSON от LLM."
-                )
-                lines.append("Информация может быть неполной или менее точной, чем обычно.")
+                lines.append(self._s["partial_json_body"])
+                lines.append(self._s["partial_note"])
                 lines.append("---")
                 lines.append("")
             elif partial_reason == "llm_processing_failed":
                 lines.append("---")
-                lines.append("⚠️ **ЧАСТИЧНЫЙ ОТЧЁТ: Ошибка обработки LLM**")
+                lines.append(f"⚠️ **{self._s['partial_llm_title']}**")
                 lines.append("")
-                lines.append(
-                    "Данный дайджест создан в резервном режиме (extractive fallback) из-за сбоя LLM."
-                )
-                lines.append("Информация может быть неполной или менее точной, чем обычно.")
+                lines.append(self._s["partial_llm_body"])
+                lines.append(self._s["partial_note"])
                 lines.append("---")
                 lines.append("")
             else:
                 lines.append("---")
-                lines.append("⚠️ **ЧАСТИЧНЫЙ ОТЧЁТ**")
+                lines.append(f"⚠️ **{self._s['partial_generic_title']}**")
                 lines.append("")
-                lines.append("Данный дайджест создан в резервном режиме (extractive fallback).")
-                lines.append("Информация может быть неполной или менее точной, чем обычно.")
+                lines.append(self._s["partial_generic_body"])
+                lines.append(self._s["partial_note"])
                 lines.append("---")
                 lines.append("")
 
@@ -390,7 +398,7 @@ class MarkdownAssembler:
         )
 
         if total_items == 0:
-            lines.append("За период релевантных действий не найдено.")
+            lines.append(self._s["no_actions"])
             if digest.markdown_summary:
                 lines.append("")
                 lines.append("---")
@@ -399,126 +407,133 @@ class MarkdownAssembler:
 
         # My actions
         if digest.my_actions:
-            lines.append("## Мои действия")
+            lines.append(f"## {section_title(MY_ACTIONS, self.language)}")
             lines.append("")
             for i, action in enumerate(digest.my_actions, 1):
                 lines.append(f"### {i}. {action.title}")
-                lines.append(f"**Описание:** {action.description}")
+                lines.append(f"**{self._s['description_label']}:** {action.description}")
                 if action.due_date:
                     due_label = f" ({action.due_date_label})" if action.due_date_label else ""
-                    lines.append(f"**Срок:** {action.due_date}{due_label}")
+                    lines.append(f"**{self._s['due_label']}:** {action.due_date}{due_label}")
                 if action.due_date_normalized:
-                    lines.append(f"**Дата (ISO):** {action.due_date_normalized}")
-                lines.append(f"**Уверенность:** {action.confidence}")
+                    lines.append(f"**{self._s['date_iso_label']}:** {action.due_date_normalized}")
+                lines.append(f"**{self._s['confidence_label']}:** {action.confidence}")
                 # Render actors or owners (V2 vs V3)
                 actors_or_owners = getattr(action, "owners", None) or getattr(
                     action, "actors", None
                 )
                 if actors_or_owners:
-                    lines.append(f"**Ответственные:** {', '.join(actors_or_owners)}")
+                    lines.append(f"**{self._s['owners_label']}:** {', '.join(actors_or_owners)}")
                 if action.response_channel:
-                    lines.append(f"**Канал ответа:** {action.response_channel}")
+                    lines.append(
+                        f"**{self._s['response_channel_label']}:** {action.response_channel}"
+                    )
                 # Add source with email subject
                 email_subject = getattr(action, "email_subject", None)
                 if email_subject:
                     lines.append(
-                        f'**Источник:** тема "{email_subject}", evidence {action.evidence_id}'
+                        f'**{self._s["source_label"]}:** {self._s["subject_word"]} "{email_subject}", evidence {action.evidence_id}'
                     )
                 else:
-                    lines.append(f"**Источник:** Evidence {action.evidence_id}")
-                lines.append(f'**Цитата:** "{action.quote}"')
+                    lines.append(f"**{self._s['source_label']}:** Evidence {action.evidence_id}")
+                lines.append(f'**{self._s["quote_label"]}:** "{action.quote}"')
                 lines.append("")
 
         # Others' actions
         if digest.others_actions:
-            lines.append("## Действия других")
+            lines.append(f"## {self._s['enhanced_others_header']}")
             lines.append("")
             for i, action in enumerate(digest.others_actions, 1):
                 lines.append(f"### {i}. {action.title}")
-                lines.append(f"**Описание:** {action.description}")
+                lines.append(f"**{self._s['description_label']}:** {action.description}")
                 if action.due_date:
                     due_label = f" ({action.due_date_label})" if action.due_date_label else ""
-                    lines.append(f"**Срок:** {action.due_date}{due_label}")
-                lines.append(f"**Уверенность:** {action.confidence}")
+                    lines.append(f"**{self._s['due_label']}:** {action.due_date}{due_label}")
+                lines.append(f"**{self._s['confidence_label']}:** {action.confidence}")
                 # Render actors or owners (V2 vs V3)
                 actors_or_owners = getattr(action, "owners", None) or getattr(
                     action, "actors", None
                 )
                 if actors_or_owners:
-                    lines.append(f"**Ответственные:** {', '.join(actors_or_owners)}")
+                    lines.append(f"**{self._s['owners_label']}:** {', '.join(actors_or_owners)}")
                 # Add source with email subject
                 email_subject = getattr(action, "email_subject", None)
                 if email_subject:
                     lines.append(
-                        f'**Источник:** тема "{email_subject}", evidence {action.evidence_id}'
+                        f'**{self._s["source_label"]}:** {self._s["subject_word"]} "{email_subject}", evidence {action.evidence_id}'
                     )
                 else:
-                    lines.append(f"**Источник:** Evidence {action.evidence_id}")
-                lines.append(f'**Цитата:** "{action.quote}"')
+                    lines.append(f"**{self._s['source_label']}:** Evidence {action.evidence_id}")
+                lines.append(f'**{self._s["quote_label"]}:** "{action.quote}"')
                 lines.append("")
 
         # Deadlines and meetings
         if digest.deadlines_meetings:
-            lines.append("## Дедлайны и встречи")
+            lines.append(f"## {self._s['enhanced_deadlines_header']}")
             lines.append("")
             for i, item in enumerate(digest.deadlines_meetings, 1):
                 lines.append(f"### {i}. {item.title}")
                 date_label = f" ({item.date_label})" if item.date_label else ""
-                lines.append(f"**Дата/время:** {item.date_time}{date_label}")
+                lines.append(f"**{self._s['datetime_label']}:** {item.date_time}{date_label}")
                 if item.location:
-                    lines.append(f"**Место:** {item.location}")
+                    lines.append(f"**{self._s['location_label']}:** {item.location}")
                 if item.participants:
-                    lines.append(f"**Участники:** {', '.join(item.participants)}")
+                    lines.append(
+                        f"**{self._s['participants_label']}:** {', '.join(item.participants)}"
+                    )
                 # Add source with email subject (use getattr for V3 compatibility)
                 email_subject = getattr(item, "email_subject", None)
                 if email_subject:
                     lines.append(
-                        f'**Источник:** тема "{email_subject}", evidence {item.evidence_id}'
+                        f'**{self._s["source_label"]}:** {self._s["subject_word"]} "{email_subject}", evidence {item.evidence_id}'
                     )
                 else:
-                    lines.append(f"**Источник:** Evidence {item.evidence_id}")
-                lines.append(f'**Цитата:** "{item.quote}"')
+                    lines.append(f"**{self._s['source_label']}:** Evidence {item.evidence_id}")
+                lines.append(f'**{self._s["quote_label"]}:** "{item.quote}"')
                 lines.append("")
 
         # Risks and blockers
         if digest.risks_blockers:
-            lines.append("## Риски и блокеры")
+            lines.append(f"## {self._s['enhanced_risks_header']}")
             lines.append("")
             for i, item in enumerate(digest.risks_blockers, 1):
                 lines.append(f"### {i}. {item.title}")
-                lines.append(f"**Серьёзность:** {item.severity}")
-                lines.append(f"**Влияние:** {item.impact}")
+                lines.append(f"**{self._s['severity_label']}:** {item.severity}")
+                lines.append(f"**{self._s['impact_label']}:** {item.impact}")
                 # Render owners if present (V3)
                 owners = getattr(item, "owners", None)
                 if owners:
-                    lines.append(f"**Ответственные:** {', '.join(owners)}")
+                    lines.append(f"**{self._s['owners_label']}:** {', '.join(owners)}")
                 # Add source with email subject
                 item_email_subject = getattr(item, "email_subject", None)
                 if item_email_subject:
                     lines.append(
-                        f'**Источник:** тема "{item_email_subject}", evidence {item.evidence_id}'
+                        f'**{self._s["source_label"]}:** {self._s["subject_word"]} "{item_email_subject}", evidence {item.evidence_id}'
                     )
                 else:
-                    lines.append(f"**Источник:** Evidence {item.evidence_id}")
-                lines.append(f'**Цитата:** "{item.quote}"')
+                    lines.append(f"**{self._s['source_label']}:** Evidence {item.evidence_id}")
+                lines.append(f'**{self._s["quote_label"]}:** "{item.quote}"')
                 lines.append("")
 
         # FYI items
         if digest.fyi:
-            lines.append("## К сведению (FYI)")
+            lines.append(
+                f"## {section_title(FYI, self.language)}"
+                + (" (FYI)" if self.language == "ru" else "")
+            )
             lines.append("")
             for i, item in enumerate(digest.fyi, 1):
                 lines.append(f"### {i}. {item.title}")
                 if item.category:
-                    lines.append(f"**Категория:** {item.category}")
+                    lines.append(f"**{self._s['category_label']}:** {item.category}")
                 # Add source with email subject
                 if item.email_subject:
                     lines.append(
-                        f'**Источник:** тема "{item.email_subject}", evidence {item.evidence_id}'
+                        f'**{self._s["source_label"]}:** {self._s["subject_word"]} "{item.email_subject}", evidence {item.evidence_id}'
                     )
                 else:
-                    lines.append(f"**Источник:** Evidence {item.evidence_id}")
-                lines.append(f'**Цитата:** "{item.quote}"')
+                    lines.append(f"**{self._s['source_label']}:** Evidence {item.evidence_id}")
+                lines.append(f'**{self._s["quote_label"]}:** "{item.quote}"')
                 lines.append("")
 
         # Statistics section - get from model_dump if available
@@ -531,13 +546,15 @@ class MarkdownAssembler:
         emails_with_actions = data_dict.get("emails_with_actions", 0)
 
         if total_processed > 0:
-            lines.append("## Статистика")
+            lines.append(f"## {self._s['statistics_header']}")
             lines.append("")
             percent = (
                 int((emails_with_actions / total_processed) * 100) if total_processed > 0 else 0
             )
             lines.append(
-                f"Обработано {total_processed} писем, {emails_with_actions} ({percent}%) содержали действия"
+                self._s["processed_summary"].format(
+                    total=total_processed, with_actions=emails_with_actions, percent=percent
+                )
             )
             lines.append("")
 

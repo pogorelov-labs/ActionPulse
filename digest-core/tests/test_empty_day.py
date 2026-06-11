@@ -112,9 +112,9 @@ class TestEmptyDayValidation:
                 markdown_content = f.read()
 
             # Validate content
-            assert "# Дайджест действий - 2024-01-15" in markdown_content
+            assert "# Action digest - 2024-01-15" in markdown_content
             assert "*Trace ID: test-empty-trace*" in markdown_content
-            assert "За период релевантных действий не найдено" in markdown_content
+            assert "No relevant actions found for the period" in markdown_content
 
             # Validate word count is reasonable
             word_count = assembler.get_word_count(markdown_content)
@@ -142,7 +142,7 @@ class TestEmptyDayValidation:
 
         # Validate both outputs are valid
         assert json_data["sections"] == []
-        assert "За период релевантных действий не найдено" in markdown_content
+        assert "No relevant actions found for the period" in markdown_content
 
     def test_empty_digest_with_non_actionable_content(self):
         """Test empty digest when only non-actionable content is present."""
@@ -290,7 +290,7 @@ class TestEmptyDayValidation:
 
         # Validate outputs
         assert json_data["sections"] == []
-        assert "За период релевантных действий не найдено" in markdown_content
+        assert "No relevant actions found for the period" in markdown_content
 
 
 if __name__ == "__main__":

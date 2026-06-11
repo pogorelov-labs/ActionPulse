@@ -143,7 +143,7 @@ def test_mm_trace_line_carries_repeat_marker():
         seen_before=True,
     )
     line = deliverer._format_trace_line(item, None)
-    assert "↻ повтор" in line
+    assert "↻ repaired" in line
 
     fresh = Item(
         title="Новое действие",

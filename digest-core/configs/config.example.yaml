@@ -1,3 +1,8 @@
+# Report rendering (L1): output language for the digest, prompts and labels.
+# "en" (default) or "ru". Env override: DIGEST_REPORT_LANGUAGE.
+report:
+  language: "en"
+
 time:
   user_timezone: "Europe/Moscow"
   window: "calendar_day"

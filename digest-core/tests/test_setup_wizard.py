@@ -194,7 +194,7 @@ class TestMmWebhookCheck:
 
         monkeypatch.setattr("httpx.post", lambda url, json, timeout: self._resp(200))
         ok, detail = _test_mm_webhook("https://mm.corp.ru/hooks/x")
-        assert ok and detail == "доставлено"
+        assert ok and detail == "delivered"
 
     def test_http_error_reported(self, monkeypatch):
         from digest_core.setup_wizard import _test_mm_webhook

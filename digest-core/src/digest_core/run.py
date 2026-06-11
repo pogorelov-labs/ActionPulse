@@ -42,6 +42,16 @@ from digest_core.normalize.quotes import QuoteCleaner
 from digest_core.observability.healthz import start_health_server
 from digest_core.observability.logs import setup_logging
 from digest_core.observability import tracing
+from digest_core.assemble.labels import (
+    DEFAULT_LANGUAGE,
+    STATUS,
+    UNCONFIRMED,
+    normalize_section,
+    report_strings,
+    section_sort_weight,
+    section_title,
+    stage_banner,
+)
 from digest_core.provenance import build_provenance, prompt_sha256
 from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
@@ -50,6 +60,8 @@ from digest_core.threads.build import ThreadBuilder
 PIPELINE_VERSION = "1.1.0"
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = PACKAGE_ROOT / "prompts"
+# Deprecated compat aliases (RU titles). Logic routes through assemble.labels
+# canonical keys; these stay importable for existing tests/integrations.
 SECTION_ORDER = {"Мои действия": 0, "Срочное": 1, "К сведению": 2, "Не подтверждено": 3}
 QUARANTINE_SECTION = "Не подтверждено"
 # A repair verdict is a tiny JSON object; no reason to let the judge model
@@ -406,7 +418,9 @@ def _stage_llm(
         digest = _build_empty_digest(ctx.digest_date, ctx.trace_id, prompt_version="none")
         llm_error = None
     else:
-        prompt_version, prompt_text = _load_extract_prompt(ctx.config.llm.model)
+        prompt_version, prompt_text = _load_extract_prompt(
+            ctx.config.llm.model, ctx.config.report.language
+        )
         provenance = ctx.run_meta.get("provenance")
         if isinstance(provenance, dict):
             provenance["prompt_id"] = prompt_version
@@ -434,9 +448,9 @@ def _stage_llm(
                 digest_date=ctx.digest_date,
                 trace_id=ctx.trace_id,
                 error_message=str(exc),
+                language=ctx.config.report.language,
                 title=(
-                    "LLM Gateway отклонил токен (401/403): обновите LLM_TOKEN. "
-                    "Дайджест неполный."
+                    report_strings(ctx.config.report.language)["banner_llm_auth"]
                     if auth_failure
                     else None
                 ),
@@ -829,7 +843,7 @@ def _stage_assemble(ctx: RunContext, digest: Digest) -> None:
     """Stage 7: ASSEMBLE — write JSON and Markdown artifacts."""
     assemble_start = time.perf_counter()
     _write_json(ctx.json_path, digest.model_dump(exclude_none=True))
-    MarkdownAssembler().write_digest(digest, ctx.md_path)
+    MarkdownAssembler(language=ctx.config.report.language).write_digest(digest, ctx.md_path)
     _record_stage_duration(ctx.run_meta, ctx.metrics, "assemble", assemble_start)
 
 
@@ -852,7 +866,9 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
     if ctx.config.deliver.mattermost.enabled:
         deliver_start = time.perf_counter()
         try:
-            delivery_receipt = MattermostDeliverer(ctx.config.deliver.mattermost).deliver_digest(
+            delivery_receipt = MattermostDeliverer(
+                ctx.config.deliver.mattermost, language=ctx.config.report.language
+            ).deliver_digest(
                 digest,
                 json_path=str(ctx.json_path),
                 llm_budget=ctx.run_meta.get("llm_budget"),
@@ -1036,7 +1052,9 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         # Only meaningful when citation validation ran — without it spans are never
         # resolved and *every* item looks weak (quarantining all would be a drop).
         if ctx.validate_citations and ctx.config.reranker.quarantine_weak:
-            ctx.run_meta["items_quarantined"] = _quarantine_weak_items(digest)
+            ctx.run_meta["items_quarantined"] = _quarantine_weak_items(
+                digest, ctx.config.report.language
+            )
 
         # Cross-run dedup annotation (EP-7; no-op unless memory.dedup_ledger)
         _apply_dedup_ledger(ctx, digest)
@@ -1267,8 +1285,17 @@ _EXTRACT_PROMPT_BY_MODEL = {
 _DEFAULT_EXTRACT_PROMPT = "extract_actions.v1"
 
 
-def _load_extract_prompt(model_name: str) -> tuple[str, str]:
-    prompt_version = _EXTRACT_PROMPT_BY_MODEL.get(model_name or "", _DEFAULT_EXTRACT_PROMPT)
+def _load_extract_prompt(model_name: str, language: str = DEFAULT_LANGUAGE) -> tuple[str, str]:
+    """Prompt variant by (model, report language).
+
+    EN reports use the v2 prompt (EN instructions + EN output) for every
+    model; RU reports keep the per-model instruction-language map below
+    (output RU in both of those prompts).
+    """
+    if language == "en":
+        prompt_version = "extract_actions.en.v2"
+    else:
+        prompt_version = _EXTRACT_PROMPT_BY_MODEL.get(model_name or "", _DEFAULT_EXTRACT_PROMPT)
     template_path = get_prompt_template_path(prompt_version)
     prompt_path = PROMPTS_DIR / template_path
     return prompt_version, prompt_path.read_text(encoding="utf-8")
@@ -1352,8 +1379,10 @@ def _degrade_stage(ctx: RunContext, stage: str, exc: Exception) -> Digest:
     ctx.run_meta.setdefault("degraded_stages", []).append(stage)
     if action == "empty":
         return _build_empty_digest(ctx.digest_date, ctx.trace_id, prompt_version="degraded")
-    banner = STAGE_BANNERS_RU.get(stage, "Сбой пайплайна. Дайджест неполный.")
-    return _build_partial_digest(ctx.digest_date, ctx.trace_id, str(exc), title=banner)
+    banner = stage_banner(stage, ctx.config.report.language)
+    return _build_partial_digest(
+        ctx.digest_date, ctx.trace_id, str(exc), title=banner, language=ctx.config.report.language
+    )
 
 
 def _guard(ctx: RunContext, stage: str, thunk):
@@ -1405,12 +1434,17 @@ def _build_empty_digest(digest_date: str, trace_id: str, prompt_version: str) ->
 
 
 def _build_partial_digest(
-    digest_date: str, trace_id: str, error_message: str, title: str | None = None
+    digest_date: str,
+    trace_id: str,
+    error_message: str,
+    title: str | None = None,
+    language: str = DEFAULT_LANGUAGE,
 ) -> Digest:
+    strings = report_strings(language)
     if title is None:
-        title = "LLM Gateway недоступен. Дайджест неполный."
+        title = strings["banner_llm_unavailable"]
         if "timed out" in error_message.lower() or "timeout" in error_message.lower():
-            title = "LLM Gateway превысил таймаут. Дайджест неполный."
+            title = strings["banner_llm_timeout"]
     return Digest(
         schema_version="1.0",
         prompt_version="none",
@@ -1418,7 +1452,7 @@ def _build_partial_digest(
         trace_id=trace_id,
         sections=[
             {
-                "title": "Статус",
+                "title": section_title(STATUS, language),
                 "items": [
                     {
                         "title": title,
@@ -1442,7 +1476,7 @@ def _sort_sections(sections: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized_sections.append({"title": section.get("title", ""), "items": items})
     return sorted(
         normalized_sections,
-        key=lambda section: (SECTION_ORDER.get(section["title"], 99), section["title"]),
+        key=lambda section: (section_sort_weight(section["title"]), section["title"]),
     )
 
 
@@ -1520,7 +1554,7 @@ def _build_evidence_summary(
     }
 
 
-def _quarantine_weak_items(digest: Digest) -> int:
+def _quarantine_weak_items(digest: Digest, language: str = DEFAULT_LANGUAGE) -> int:
     """Move ``weak_evidence`` items into a trailing «Не подтверждено» section (D1).
 
     Containment without loss: items the gate could not offset-verify leave the
@@ -1531,7 +1565,7 @@ def _quarantine_weak_items(digest: Digest) -> int:
     quarantined = []
     surviving_sections = []
     for section in digest.sections:
-        if section.title == QUARANTINE_SECTION:
+        if normalize_section(section.title) == UNCONFIRMED:
             quarantined.extend(section.items)
             continue
         kept = [item for item in section.items if not getattr(item, "weak_evidence", False)]
@@ -1541,7 +1575,9 @@ def _quarantine_weak_items(digest: Digest) -> int:
             section.items = kept
             surviving_sections.append(section)
     if quarantined:
-        surviving_sections.append(Section(title=QUARANTINE_SECTION, items=quarantined))
+        surviving_sections.append(
+            Section(title=section_title(UNCONFIRMED, language), items=quarantined)
+        )
     digest.sections = surviving_sections
     return len(quarantined)
 

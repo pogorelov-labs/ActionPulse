@@ -36,7 +36,7 @@ class DummyMetrics:
 class FakeDeliverer:
     deliveries = []
 
-    def __init__(self, config):
+    def __init__(self, config, language="en"):
         self.config = config
 
     def deliver_digest(self, digest, json_path=None, **kwargs):
@@ -380,8 +380,8 @@ def test_pipeline_writes_partial_digest_on_llm_failure(monkeypatch, tmp_path):
 
     assert result
     assert isinstance(result, RunDigestResult)
-    assert payload["sections"][0]["title"] == "Статус"
-    assert "таймаут" in payload["sections"][0]["items"][0]["title"].lower()
+    assert payload["sections"][0]["title"] == "Status"
+    assert "timed out" in payload["sections"][0]["items"][0]["title"].lower()
 
 
 def test_export_diagnostics_creates_bundle(monkeypatch, tmp_path):

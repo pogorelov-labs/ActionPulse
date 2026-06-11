@@ -646,6 +646,19 @@ class MemoryConfig(BaseModel):
     )
 
 
+class ReportConfig(BaseModel):
+    """Digest report rendering options (L1, TERMINAL_DESIGN_ROADMAP)."""
+
+    language: str = Field(
+        default="en",
+        description=(
+            "Report output language: 'en' (default) or 'ru'. Drives the LLM"
+            " output-language prompt variant, section titles, and all"
+            " report-bound labels. Env override: DIGEST_REPORT_LANGUAGE."
+        ),
+    )
+
+
 class Config(BaseSettings):
     """Main configuration class."""
 
@@ -655,6 +668,7 @@ class Config(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     deliver: DeliverConfig = Field(default_factory=DeliverConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    report: ReportConfig = Field(default_factory=ReportConfig)
     selection_buckets: SelectionBucketsConfig = Field(default_factory=SelectionBucketsConfig)
     selection_weights: SelectionWeightsConfig = Field(default_factory=SelectionWeightsConfig)
     context_budget: ContextBudgetConfig = Field(default_factory=ContextBudgetConfig)
@@ -764,6 +778,8 @@ class Config(BaseSettings):
             self._merge_model(self.deliver.mattermost, mattermost_config, env_prefix="MM")
         if "observability" in yaml_config:
             self._merge_model(self.observability, yaml_config["observability"], env_prefix="OBS")
+        if "report" in yaml_config:
+            self._merge_model(self.report, yaml_config["report"], env_prefix="REPORT")
         if "selection_buckets" in yaml_config:
             self._merge_model(
                 self.selection_buckets,

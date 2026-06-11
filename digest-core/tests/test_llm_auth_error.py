@@ -94,7 +94,7 @@ def test_pipeline_writes_actionable_partial_digest_on_auth_failure(monkeypatch, 
     assert result  # degrade-not-drop: the run still completes with a partial digest
     assert meta["status"] == "partial"
     status_section = payload["sections"][0]
-    assert status_section["title"] == "Статус"
+    assert status_section["title"] == "Status"
     banner = status_section["items"][0]["title"]
     assert "LLM_TOKEN" in banner, "banner must tell the operator what to rotate"
     assert "401" in banner

@@ -2,42 +2,42 @@
 # ============================================================================
 #  ActionPulse — bootstrap installer (macOS-first)
 #
-#  Канонический запуск (Homebrew-стиль — stdin остаётся на терминале,
-#  поэтому мастер настройки спрашивает пароли в этой же сессии):
+#  Canonical invocation (Homebrew-style — stdin stays on the terminal,
+#  so the setup wizard can ask for passwords in the same session):
 #
 #    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"
 #
-#  Что делает (идемпотентно, безопасно перезапускать):
-#    1. Проверяет ОС и наличие git / Xcode Command Line Tools
-#       (без git — fallback на tarball с GitHub, git не обязателен).
-#    2. Ставит uv (официальный установщик astral.sh; запасной URL — GitHub).
-#       uv сам скачает CPython 3.11 (см. digest-core/.python-version) —
-#       системный Python любой версии или его отсутствие не важны.
-#    3. Клонирует репозиторий в ~/ActionPulse (спросит, можно изменить).
-#       Повторный запуск: git pull --ff-only вместо клонирования.
-#    4. uv sync --native-tls, при неудаче — uv sync (паритет с Makefile;
-#       native-tls нужен за корп-прокси с подменой TLS-сертификатов).
-#    5. Запускает интерактивный мастер настройки в этом же терминале
-#       (email, EWS, LLM endpoint, токены, Mattermost webhook).
+#  What it does (idempotent, safe to re-run):
+#    1. Checks the OS and git / Xcode Command Line Tools
+#       (without git it falls back to a GitHub tarball — git is optional).
+#    2. Installs uv (official astral.sh installer; GitHub fallback URL).
+#       uv downloads CPython 3.11 itself (see digest-core/.python-version) —
+#       any system Python version, or none at all, is fine.
+#    3. Clones the repository into ~/ActionPulse (asks; can be changed).
+#       Re-run: git pull --ff-only instead of cloning.
+#    4. uv sync --native-tls, falling back to uv sync (Makefile parity;
+#       native-tls is needed behind corp proxies with TLS interception).
+#    5. Launches the interactive setup wizard in this same terminal
+#       (email, EWS, LLM endpoint, tokens, Mattermost webhook).
 #
-#  Флаги:
-#    --dir DIR      каталог установки (или env ACTIONPULSE_DIR)
-#    --ref REF      ветка/тег вместо main (для тестирования)
-#    --no-wizard    только зависимости, без мастера (headless / CI)
-#    --help         эта справка
+#  Flags:
+#    --dir DIR      install directory (or env ACTIONPULSE_DIR)
+#    --ref REF      branch/tag instead of main (for testing)
+#    --no-wizard    dependencies only, no wizard (headless / CI)
+#    --help         this help
 #
-#  Дизайн-инварианты:
-#    * bash 3.2 (родной для macOS): без mapfile, declare -A, ${var,,}.
-#    * Никаких sudo. Всё в $HOME.
-#    * Вывод деградирует: не-TTY / NO_COLOR / TERM=dumb / не-UTF-8 локаль.
-#    * Секреты не печатаются и не логируются (лог шагов — только stdout
-#      команд установки).
+#  Design invariants:
+#    * bash 3.2 (macOS stock): no mapfile, declare -A, ${var,,}.
+#    * No sudo. Everything in $HOME.
+#    * Output degrades: non-TTY / NO_COLOR / TERM=dumb / non-UTF-8 locale.
+#    * Secrets are never printed or logged (the step log captures only
+#      installer command output).
 # ============================================================================
 
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
-# Конфигурация
+# Configuration
 # ----------------------------------------------------------------------------
 REPO_URL="${ACTIONPULSE_REPO_URL:-https://github.com/pogorelov-labs/ActionPulse.git}"
 TARBALL_URL_BASE="${ACTIONPULSE_TARBALL_BASE:-https://github.com/pogorelov-labs/ActionPulse/archive/refs/heads}"
@@ -47,7 +47,7 @@ RUN_WIZARD=1
 STEP_LOG=""
 
 # ----------------------------------------------------------------------------
-# Оформление: цвета, глифы, спиннер
+# Presentation: colors, glyphs, spinner
 # ----------------------------------------------------------------------------
 TTY_OUT=0
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
@@ -82,9 +82,9 @@ ok()   { printf '  %s%s%s %s\n' "$C_GRN" "$G_OK" "$C_RST" "$1"; }
 
 banner() {
     say ""
-    printf '  %s%s%s %sActionPulse%s %s· установка%s\n' \
+    printf '  %s%s%s %sActionPulse%s %s· installer%s\n' \
         "$C_CYN" "$G_PULSE" "$C_RST" "$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
-    printf '  %sдайджест действий из корпоративной почты — каждое утро%s\n' "$C_DIM" "$C_RST"
+    printf '  %syour corporate inbox, distilled into actions — every morning%s\n' "$C_DIM" "$C_RST"
     if [ "$UTF8_OK" = 1 ]; then
         printf '  %s─────%s⌁%s──────────────────────────────────────%s\n' \
             "$C_DIM" "$C_CYN" "$C_DIM" "$C_RST"
@@ -94,11 +94,11 @@ banner() {
     say ""
 }
 
-# Последние строки лога шага — при падении, чтобы не слать пользователя в файл.
+# Tail of the step log on failure — so the user is not sent off to a file.
 show_step_log_tail() {
     if [ -n "$STEP_LOG" ] && [ -s "$STEP_LOG" ]; then
         say ""
-        note "Последние строки лога ($STEP_LOG):"
+        note "Last log lines ($STEP_LOG):"
         tail -n 15 "$STEP_LOG" | while IFS= read -r line; do
             printf '  %s│%s %s\n' "$C_DIM" "$C_RST" "$line"
         done
@@ -112,8 +112,8 @@ die() {
     exit 1
 }
 
-# run_step "метка" cmd args…  — спиннер пока команда работает, ✓/✗ + длительность.
-# stdout/stderr команды уходят в $STEP_LOG (секреты в этих шагах не участвуют).
+# run_step "label" cmd args…  — spinner while the command runs, ✓/✗ + duration.
+# Command stdout/stderr goes to $STEP_LOG (no secrets flow through these steps).
 run_step() {
     local label="$1"; shift
     local start=$SECONDS rc=0
@@ -135,19 +135,19 @@ run_step() {
 
     local dur=$((SECONDS - start))
     if [ "$rc" = 0 ]; then
-        printf '  %s%s%s %s %s(%sс)%s\n' "$C_GRN" "$G_OK" "$C_RST" "$label" "$C_DIM" "$dur" "$C_RST"
+        printf '  %s%s%s %s %s(%ss)%s\n' "$C_GRN" "$G_OK" "$C_RST" "$label" "$C_DIM" "$dur" "$C_RST"
     else
-        printf '  %s%s %s — не удалось%s\n' "$C_RED" "$G_FAIL" "$label" "$C_RST"
+        printf '  %s%s %s — failed%s\n' "$C_RED" "$G_FAIL" "$label" "$C_RST"
         return "$rc"
     fi
 }
 
-# `test -r /dev/tty` проверяет только права; без управляющего терминала
-# (cron, CI) open(2) всё равно падает с ENXIO — проверяем реальным открытием.
+# `test -r /dev/tty` checks permission bits only; without a controlling
+# terminal (cron, CI) open(2) still fails with ENXIO — test with a real open.
 tty_openable() { ( : </dev/tty; ) 2>/dev/null; }
 
-# Вопрос пользователю. Читает с /dev/tty (работает и при `curl | bash`),
-# иначе — со stdin (скриптовый сценарий). Результат в $REPLY_VALUE.
+# Ask the user. Reads from /dev/tty (works under `curl | bash` too),
+# otherwise from stdin (scripted scenario). Result lands in $REPLY_VALUE.
 REPLY_VALUE=""
 ask() {
     local prompt="$1" default="${2:-}" input=""
@@ -163,12 +163,12 @@ ask() {
 
 usage() {
     sed -n '2,33p' "$0" 2>/dev/null | sed 's/^#//' || true
-    # При запуске через `bash -c` файла нет — краткая версия:
-    say "ActionPulse installer. Флаги: --dir DIR, --ref REF, --no-wizard, --help"
+    # Under `bash -c` there is no file on disk — short version:
+    say "ActionPulse installer. Flags: --dir DIR, --ref REF, --no-wizard, --help"
 }
 
 # ----------------------------------------------------------------------------
-# Шаги установки
+# Install steps
 # ----------------------------------------------------------------------------
 
 check_os() {
@@ -180,13 +180,13 @@ check_os() {
         arch="$(uname -m)"
         ok "macOS $ver ($arch)"
     else
-        warn "ОС $os — установщик рассчитан на macOS, продолжаю как есть"
+        warn "OS $os — this installer targets macOS, continuing as-is"
     fi
-    command -v curl >/dev/null 2>&1 || die "curl не найден" "На macOS curl предустановлен; проверьте PATH."
+    command -v curl >/dev/null 2>&1 || die "curl not found" "macOS ships curl preinstalled; check your PATH."
 }
 
-# git нужен для clone/pull. На свежем macOS git появляется вместе с
-# Command Line Tools. Если их нет — предлагаем поставить, иначе tarball.
+# git is needed for clone/pull. On a fresh macOS git arrives with the
+# Command Line Tools. If absent — offer to install them, else tarball.
 HAVE_GIT=0
 check_git() {
     if [ "$(uname -s)" != "Darwin" ]; then
@@ -201,24 +201,24 @@ check_git() {
         return 0
     fi
 
-    warn "git / Xcode Command Line Tools не найдены"
-    ask "Установить Command Line Tools сейчас? (откроется окно macOS) y/n" "y"
+    warn "git / Xcode Command Line Tools not found"
+    ask "Install Command Line Tools now? (a macOS dialog will open) y/n" "y"
     if [ "$REPLY_VALUE" = "y" ] || [ "$REPLY_VALUE" = "Y" ]; then
         xcode-select --install >/dev/null 2>&1 || true
-        note "Подтвердите установку в открывшемся окне. Жду завершения…"
+        note "Confirm the install in the dialog. Waiting for it to finish…"
         local waited=0
         while ! xcode-select -p >/dev/null 2>&1; do
             sleep 5
             waited=$((waited + 5))
             if [ "$waited" -ge 1800 ]; then
-                warn "Не дождался Command Line Tools — продолжаю без git (tarball)"
+                warn "Command Line Tools never arrived — continuing without git (tarball)"
                 return 0
             fi
         done
         HAVE_GIT=1
-        ok "Command Line Tools установлены"
+        ok "Command Line Tools installed"
     else
-        note "Продолжаю без git — скачаю снимок репозитория (tarball)."
+        note "Continuing without git — downloading a repository snapshot (tarball)."
     fi
 }
 
@@ -235,8 +235,8 @@ find_uv() {
 }
 
 install_uv() {
-    # Официальный установщик; запасной путь — релизы uv на GitHub
-    # (на случай если astral.sh закрыт прокси, а GitHub открыт).
+    # Official installer; fallback path — uv releases on GitHub
+    # (for proxies that block astral.sh while GitHub stays open).
     local tmp
     tmp="$(mktemp -t uv-installer)"
     if ! curl -fsSL https://astral.sh/uv/install.sh -o "$tmp" 2>>"$STEP_LOG"; then
@@ -245,15 +245,15 @@ install_uv() {
     fi
     sh "$tmp" >>"$STEP_LOG" 2>&1
     rm -f "$tmp"
-    find_uv || die "uv установлен, но не найден в PATH" \
-        "Откройте новый терминал и запустите установщик ещё раз."
+    find_uv || die "uv installed but not found on PATH" \
+        "Open a new terminal and run the installer again."
 }
 
 ensure_uv() {
     if find_uv; then
         ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
     else
-        run_step "Установка uv (менеджер Python-окружений)" install_uv
+        run_step "Installing uv (Python environment manager)" install_uv
         ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
     fi
 }
@@ -263,7 +263,7 @@ clone_tarball() {
     tmp="$(mktemp -d -t actionpulse-src)"
     curl -fsSL "$TARBALL_URL_BASE/$REF.tar.gz" | tar -xz -C "$tmp"
     mkdir -p "$INSTALL_DIR"
-    # ActionPulse-<ref> → INSTALL_DIR (cp -R: без rsync-зависимости)
+    # ActionPulse-<ref> → INSTALL_DIR (cp -R: no rsync dependency)
     cp -R "$tmp"/ActionPulse-*/. "$INSTALL_DIR"/
     rm -rf "$tmp"
 }
@@ -272,45 +272,45 @@ fetch_sources() {
     if [ -f "$INSTALL_DIR/digest-core/pyproject.toml" ]; then
         if [ -d "$INSTALL_DIR/.git" ] && [ "$HAVE_GIT" = 1 ]; then
             if [ -n "$(git -C "$INSTALL_DIR" status --porcelain 2>/dev/null)" ]; then
-                warn "В $INSTALL_DIR есть локальные изменения — пропускаю git pull"
+                warn "Local changes in $INSTALL_DIR — skipping git pull"
             else
-                run_step "Обновление репозитория (git pull)" \
+                run_step "Updating the repository (git pull)" \
                     git -C "$INSTALL_DIR" pull --ff-only origin "$REF"
             fi
         else
-            ok "Использую существующий каталог $INSTALL_DIR"
+            ok "Using the existing directory $INSTALL_DIR"
         fi
         return 0
     fi
 
     if [ "$HAVE_GIT" = 1 ]; then
-        run_step "Клонирование репозитория ($REF)" \
+        run_step "Cloning the repository ($REF)" \
             git clone --branch "$REF" "$REPO_URL" "$INSTALL_DIR"
     else
-        run_step "Загрузка снимка репозитория ($REF, tarball)" clone_tarball
+        run_step "Downloading a repository snapshot ($REF, tarball)" clone_tarball
     fi
 }
 
 sync_deps() {
-    # Паритет с digest-core/Makefile: сперва native-tls (корп-прокси с
-    # подменой сертификатов), при неудаче — обычный sync.
+    # Makefile parity: native-tls first (corp proxies with certificate
+    # interception), plain sync on failure.
     cd "$INSTALL_DIR/digest-core"
     if uv sync --native-tls; then
         echo "[install.sh] uv sync --native-tls: ok"
     else
-        echo "[install.sh] native-tls не прошёл, пробую обычный uv sync"
+        echo "[install.sh] native-tls failed, trying plain uv sync"
         uv sync
     fi
 }
 
 run_wizard() {
     say ""
-    printf '  %s%s%s %sМастер настройки%s %s— ответьте на 6 вопросов, секреты скрыты при вводе%s\n' \
+    printf '  %s%s%s %sSetup wizard%s %s— 7 questions, secrets hidden while typing%s\n' \
         "$C_CYN" "$G_PULSE" "$C_RST" "$C_BOLD" "$C_RST" "$C_DIM" "$C_RST"
     say ""
-    # При `curl | bash` stdin занят пайпом — отдаём мастеру терминал.
-    # Если stdin уже терминал (bash -c "$(curl …)") или это скриптовый
-    # запуск с ответами через пайп — ничего не перенаправляем.
+    # Under `curl | bash` stdin is the pipe — hand the wizard the terminal.
+    # If stdin already is a terminal (bash -c "$(curl …)") or this is a
+    # scripted run with piped answers — redirect nothing.
     if [ ! -t 0 ] && tty_openable; then
         (cd "$INSTALL_DIR/digest-core" && uv run python -m digest_core.cli setup </dev/tty)
     else
@@ -330,21 +330,21 @@ summary() {
     else
         printf '  %s----------------------------------------------%s\n' "$C_DIM" "$C_RST"
     fi
-    printf '  %s%s%s %sActionPulse установлен%s %s(за %sс)%s\n' \
+    printf '  %s%s%s %sActionPulse installed%s %s(in %ss)%s\n' \
         "$C_GRN" "$G_OK" "$C_RST" "$C_BOLD" "$C_RST" "$C_DIM" "$SECONDS" "$C_RST"
     say ""
-    printf '  %sкод%s     %s\n' "$C_DIM" "$C_RST" "$dir_short"
-    printf '  %sсекреты%s %s %s(chmod 600)%s\n' "$C_DIM" "$C_RST" "$env_short" "$C_DIM" "$C_RST"
+    printf '  %scode%s    %s\n' "$C_DIM" "$C_RST" "$dir_short"
+    printf '  %ssecrets%s %s %s(chmod 600)%s\n' "$C_DIM" "$C_RST" "$env_short" "$C_DIM" "$C_RST"
     say ""
-    printf '  %sПервый дайджест:%s\n' "$C_BOLD" "$C_RST"
+    printf '  %sFirst digest:%s\n' "$C_BOLD" "$C_RST"
     say ""
     printf '    %scd%s %s/digest-core\n' "$C_CYN" "$C_RST" "$dir_short"
     printf '    %sset%s -a && %ssource%s %s && %sset%s +a\n' \
         "$C_CYN" "$C_RST" "$C_CYN" "$C_RST" "$env_short" "$C_CYN" "$C_RST"
     printf '    %suv run%s python -m digest_core.cli run --dry-run\n' "$C_CYN" "$C_RST"
     say ""
-    note "EWS и LLM Gateway доступны только из корпоративной сети —"
-    note "вне её dry-run честно сообщит об отсутствии подключения."
+    note "EWS and the LLM Gateway are reachable only from the corp network —"
+    note "outside it, dry-run will honestly report the missing connectivity."
     say ""
 }
 
@@ -356,7 +356,7 @@ main() {
             --ref)        REF="${2:-main}"; shift 2 ;;
             --no-wizard)  RUN_WIZARD=0; shift ;;
             --help|-h)    usage; exit 0 ;;
-            *) die "Неизвестный флаг: $1" "Доступно: --dir DIR, --ref REF, --no-wizard, --help" ;;
+            *) die "Unknown flag: $1" "Available: --dir DIR, --ref REF, --no-wizard, --help" ;;
         esac
     done
 
@@ -367,12 +367,12 @@ main() {
     check_git
     ensure_uv
 
-    # Каталог установки: флаг/env → текущий клон → вопрос с дефолтом.
+    # Install directory: flag/env → current clone → question with a default.
     if [ -z "$INSTALL_DIR" ]; then
         if [ -f "./digest-core/pyproject.toml" ]; then
             INSTALL_DIR="$(pwd)"
         else
-            ask "Куда установить?" "$HOME/ActionPulse"
+            ask "Where to install?" "$HOME/ActionPulse"
             INSTALL_DIR="$REPLY_VALUE"
         fi
     fi
@@ -381,12 +381,12 @@ main() {
     esac
 
     fetch_sources
-    run_step "Зависимости + Python 3.11 (uv sync)" sync_deps
+    run_step "Dependencies + Python 3.11 (uv sync)" sync_deps
 
     if [ "$RUN_WIZARD" = 1 ]; then
         run_wizard
     else
-        note "Мастер пропущен (--no-wizard). Запустить позже:"
+        note "Wizard skipped (--no-wizard). Run it later:"
         note "  cd $INSTALL_DIR/digest-core && uv run python -m digest_core.cli setup"
     fi
 
@@ -394,5 +394,5 @@ main() {
     rm -f "$STEP_LOG"
 }
 
-# Вызов через main гарантирует: частично скачанный скрипт не исполнится.
+# Calling through main guarantees a partially downloaded script never runs.
 main "$@"

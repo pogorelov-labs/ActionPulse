@@ -83,5 +83,5 @@ def test_trace_meta_carries_provenance(monkeypatch, tmp_path):
     assert re.fullmatch(r"[0-9a-f]{64}", manifest["config_sha256"])
     assert manifest["model_extractor"] == "qwen35-397b-a17b"
     # LLM stage ran → prompt identity is pinned to the exact bytes used
-    assert manifest["prompt_id"] == "extract_actions.en.v1"
+    assert manifest["prompt_id"] == "extract_actions.en.v2"
     assert re.fullmatch(r"[0-9a-f]{64}", manifest["prompt_sha256"])

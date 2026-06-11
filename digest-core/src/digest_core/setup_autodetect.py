@@ -274,14 +274,14 @@ def _rank_emails(
             matched = [t for t in tokens if t in local_parts]
             if len(matched) == len(tokens):
                 cand.score += 50
-                cand.reasons.append("имя и фамилия в адресе")
+                cand.reasons.append("first+last name in the address")
             elif matched:
                 cand.score += 20
-                cand.reasons.append("часть имени в адресе")
+                cand.reasons.append("part of the name in the address")
 
         if any(domain == h or domain.endswith("." + h) for h in hints):
             cand.score += 25
-            cand.reasons.append("домен совпадает с сетью")
+            cand.reasons.append("domain matches the network")
 
         if domain in _PUBLIC_PROVIDERS:
             cand.score -= 40
@@ -289,7 +289,7 @@ def _rank_emails(
         if login_low and local_low == login_low:
             # login@host artifacts are service identities (OWA/EWS), not the UPN
             cand.score -= 15
-            cand.reasons.append("служебный адрес (логин@хост)")
+            cand.reasons.append("service address (login@host)")
 
         cand.score += min(total, 10)
         candidates.append(cand)
@@ -374,8 +374,8 @@ def detect_environment(
     if det.emails and det.emails[0].score >= 25:
         best = det.emails[0]
         det.best_upn = best.address
-        full_name_match = "имя и фамилия в адресе" in best.reasons
-        domain_match = "домен совпадает с сетью" in best.reasons
+        full_name_match = "first+last name in the address" in best.reasons
+        domain_match = "domain matches the network" in best.reasons
         det.upn_confidence = CONF_HIGH if (full_name_match and domain_match) else CONF_MEDIUM
 
     det.ews_host = _extract_ews_host(det.emails, det.login, det.best_upn, det.domain_hints)
@@ -388,7 +388,7 @@ def detect_environment(
             and det.upn_confidence == CONF_MEDIUM
             and upn_domain
             and det.ews_host.endswith("." + upn_domain)
-            and "имя и фамилия в адресе" in det.emails[0].reasons
+            and "first+last name in the address" in det.emails[0].reasons
         ):
             det.upn_confidence = CONF_HIGH
         if dns_check:
@@ -400,17 +400,21 @@ def detect_environment(
 
 def _build_notes(det: DetectedEnv) -> None:
     if det.login:
-        det.notes.append(f"Логин: {det.login}")
+        det.notes.append(f"Login: {det.login}")
     if det.first_name or det.last_name:
         full = " ".join(t for t in (det.first_name, det.last_name) if t)
-        det.notes.append(f"Имя: {full} (из учётной записи)")
+        det.notes.append(f"Name: {full} (from the OS account)")
     if det.domain_hints:
-        det.notes.append("Домены сети: " + ", ".join(det.domain_hints[:3]))
+        det.notes.append("Network domains: " + ", ".join(det.domain_hints[:3]))
     if det.best_upn:
-        reasons = ", ".join(det.emails[0].reasons) if det.emails[0].reasons else "по частоте"
+        reasons = ", ".join(det.emails[0].reasons) if det.emails[0].reasons else "by frequency"
         det.notes.append(f"Email (Keychain): {det.best_upn} — {reasons}")
     elif det.emails:
-        det.notes.append("Email в Keychain уверенно не определён — спрошу")
+        det.notes.append("No confident email match in Keychain — will ask")
     if det.ews_host:
-        dns = "DNS ✓" if det.ews_endpoint_verified else "DNS не отвечает (вне корп-сети?)"
+        dns = (
+            "DNS ✓"
+            if det.ews_endpoint_verified
+            else "DNS not resolving (outside the corp network?)"
+        )
         det.notes.append(f"EWS host: {det.ews_host} — {dns}")

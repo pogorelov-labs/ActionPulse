@@ -185,7 +185,7 @@ class _NullMetrics:
 
 
 class _NullDeliverer:
-    def __init__(self, config):
+    def __init__(self, config, language="en"):
         pass
 
     def deliver_digest(self, digest, json_path=None, **kwargs):

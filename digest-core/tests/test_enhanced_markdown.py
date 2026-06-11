@@ -58,10 +58,10 @@ class TestEnhancedMarkdownAssembler:
             # Read and verify
             content = output_path.read_text(encoding="utf-8")
 
-            assert "# Дайджест действий - 2024-12-14" in content
+            assert "# Action digest - 2024-12-14" in content
             assert "Trace ID: test_123" in content
             assert "Schema version: 2.0" in content
-            assert "## Мои действия" in content
+            assert "## My actions" in content
             assert "Review PR" in content
             assert "Evidence ev_1" in content
             assert "Please review pull request" in content
@@ -104,7 +104,7 @@ class TestEnhancedMarkdownAssembler:
 
             content = output_path.read_text(encoding="utf-8")
 
-            assert "## Дедлайны и встречи" in content
+            assert "## Deadlines and meetings" in content
             assert "Team standup" in content
             assert "Room 201" in content
             assert "Alice, Bob, Charlie" in content
@@ -137,7 +137,7 @@ class TestEnhancedMarkdownAssembler:
 
             content = output_path.read_text(encoding="utf-8")
 
-            assert "За период релевантных действий не найдено" in content
+            assert "No relevant actions found for the period" in content
             assert "Краткое резюме" in content
 
         finally:
@@ -165,7 +165,7 @@ class TestEnhancedMarkdownAssembler:
         content = assembler._generate_enhanced_markdown(digest)
 
         # Check that quote is present
-        assert "**Цитата:**" in content
+        assert "**Quote:**" in content
         assert "Please update the documentation" in content
 
 
@@ -200,7 +200,7 @@ class TestEnhancedMarkdownV3:
 
             # Verify plain name rendering (no [[REDACT:*]] patterns)
             assert "John Smith, Jane Doe" in content
-            assert "**Ответственные:** John Smith, Jane Doe" in content
+            assert "**Owners:** John Smith, Jane Doe" in content
             assert "[[REDACT" not in content
             assert "Schema version: 3.0" in content
 
@@ -228,7 +228,7 @@ class TestEnhancedMarkdownV3:
 
         # Verify plain name rendering
         assert "Project Manager, Finance Team" in content
-        assert "**Ответственные:** Project Manager, Finance Team" in content
+        assert "**Owners:** Project Manager, Finance Team" in content
         assert "[[REDACT" not in content
 
     def test_v3_backward_compatible_with_v2(self):
@@ -254,4 +254,4 @@ class TestEnhancedMarkdownV3:
 
         # V2 uses actors, should still render as Ответственные
         assert "Alice, Bob" in content
-        assert "**Ответственные:** Alice, Bob" in content
+        assert "**Owners:** Alice, Bob" in content

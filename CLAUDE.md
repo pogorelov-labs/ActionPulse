@@ -25,8 +25,11 @@ Monorepo with one package. All development happens in `digest-core/`.
 ## Language
 
 - Code: English (variables, functions, comments)
-- Output/prompts: Russian (дайджест is RU-first product)
-- Docs: Russian for product docs, English for code-level docs
+- **All user-facing surfaces are English by default** (README, installer, wizard, CLI, prompts, reports) — switched 2026-06-12 (L1, `docs/development/TERMINAL_DESIGN_ROADMAP.md`)
+- Reports switch to Russian via `report.language: ru` in `configs/config.yaml` (wizard question 7; env `DIGEST_REPORT_LANGUAGE`)
+- Report-bound strings live ONLY in `digest-core/src/digest_core/assemble/labels.py` (canonical section keys + EN/RU tables) — never inline
+- Section identity is a canonical key (`my_actions`/`urgent`/`fyi`/`status`/`unconfirmed`); code never matches on display titles
+- Docs: English going forward; remaining Russian docs are the L3 translation backlog
 
 ## Golden Rules
 
