@@ -77,7 +77,7 @@ class _FakeDeliverer:
     def __init__(self, config):
         pass
 
-    def deliver_digest(self, digest, json_path=None):
+    def deliver_digest(self, digest, json_path=None, **kwargs):
         _FakeDeliverer.sent.append(digest)
         return {"status": "sent", "parts": 1}
 

@@ -453,6 +453,11 @@ def _stage_llm(
     if llm_error is not None:
         llm_trace["error"] = str(llm_error)
     ctx.run_meta["llm_request_trace"] = llm_trace
+
+    # ADR-008 v2 visibility clause (D6): an invisible budget is not a budget.
+    budget = _llm_budget_summary(llm_trace, ctx.config.llm)
+    ctx.run_meta["llm_budget"] = budget
+    logger.info("LLM budget", trace_id=ctx.trace_id, **budget)
     try:
         ctx.metrics.record_llm_latency(llm_meta.get("last_latency_ms", 0) or 0)
         ctx.metrics.record_llm_tokens(
@@ -637,6 +642,19 @@ def _stage_assemble(ctx: RunContext, digest: Digest) -> None:
     _record_stage_duration(ctx.run_meta, ctx.metrics, "assemble", assemble_start)
 
 
+def _llm_budget_summary(llm_trace: Dict[str, Any], llm_config) -> Dict[str, Any]:
+    """Per-run call/token spend vs budget (ADR-008 v2 visibility clause, D6)."""
+    tokens_used = int(llm_trace.get("run_tokens_used") or 0)
+    token_budget = int(llm_config.max_tokens_per_run or 0)
+    return {
+        "calls_made": int(llm_trace.get("run_calls_made") or 0),
+        "extractor_call_budget": int((llm_config.stage_call_budgets or {}).get("extractor", 0)),
+        "tokens_used": tokens_used,
+        "max_tokens_per_run": token_budget,
+        "tokens_pct": round(100.0 * tokens_used / token_budget, 1) if token_budget else None,
+    }
+
+
 def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
     """Stage 8: DELIVER — send digest to Mattermost if enabled."""
     delivery_receipt: Dict[str, Any] = {}
@@ -644,7 +662,9 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
         deliver_start = time.perf_counter()
         try:
             delivery_receipt = MattermostDeliverer(ctx.config.deliver.mattermost).deliver_digest(
-                digest, json_path=str(ctx.json_path)
+                digest,
+                json_path=str(ctx.json_path),
+                llm_budget=ctx.run_meta.get("llm_budget"),
             )
         except Exception as exc:
             delivery_receipt = {"status": "warning", "error": str(exc)}

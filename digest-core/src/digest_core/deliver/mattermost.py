@@ -43,15 +43,22 @@ class MattermostDeliverer:
     def __init__(self, config: MattermostDeliverConfig):
         self.config = config
 
-    def deliver_digest(self, digest: Digest, json_path: str | None = None) -> dict:
+    def deliver_digest(
+        self,
+        digest: Digest,
+        json_path: str | None = None,
+        llm_budget: dict | None = None,
+    ) -> dict:
         """Format and send the digest to Mattermost.
 
         ``json_path`` (the digest JSON artifact) is threaded into each item's
         traceability sub-line so the delivered message carries P2 evidence refs.
+        ``llm_budget`` (run_meta summary) lands in the trace footer — the ADR-008
+        v2 visibility clause: the operator sees calls and tokens every run.
         """
         webhook_url = self.config.get_webhook_url()
         parts = self._split_message(
-            self._format_digest(digest, json_path), self.config.max_message_length
+            self._format_digest(digest, json_path, llm_budget), self.config.max_message_length
         )
 
         with httpx.Client(timeout=httpx.Timeout(20.0)) as client:
@@ -69,7 +76,12 @@ class MattermostDeliverer:
 
         return {"status": "sent", "parts": len(parts)}
 
-    def _format_digest(self, digest: Digest, json_path: str | None = None) -> str:
+    def _format_digest(
+        self,
+        digest: Digest,
+        json_path: str | None = None,
+        llm_budget: dict | None = None,
+    ) -> str:
         blocks: List[str] = [f"## Дайджест действий — {digest.digest_date}"]
 
         for section in digest.sections:
@@ -91,7 +103,15 @@ class MattermostDeliverer:
             blocks.append("\n".join(section_lines))
 
         if self.config.include_trace_footer:
-            blocks.append(f"_trace: {digest.trace_id} | items: {self._count_items(digest)}_")
+            footer = f"_trace: {digest.trace_id} | items: {self._count_items(digest)}"
+            if llm_budget and llm_budget.get("max_tokens_per_run"):
+                footer += (
+                    f" | llm: {llm_budget.get('calls_made', 0)} calls,"
+                    f" {llm_budget.get('tokens_used', 0)}/{llm_budget['max_tokens_per_run']} tok"
+                )
+                if llm_budget.get("tokens_pct") is not None:
+                    footer += f" ({llm_budget['tokens_pct']}%)"
+            blocks.append(footer + "_")
 
         return "\n\n".join(blocks)
 
