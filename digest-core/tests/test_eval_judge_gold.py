@@ -99,5 +99,5 @@ def test_judge_metrics_stratifies_by_lang():
         {"predicted": True, "gold": True, "prob": 1.0, "lang": "en"},
     ]
     metrics = compute_judge_metrics(records)
-    assert set(metrics) == {"ru", "en"}
+    assert set(metrics) == {"ru", "en", "agreement"}  # "agreement" is the reserved EP-5 key
     assert metrics["en"]["f1"] == 1.0
