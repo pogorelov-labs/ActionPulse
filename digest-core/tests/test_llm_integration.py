@@ -17,11 +17,11 @@ class TestLLMIntegration:
 
     def setup_method(self):
         """Setup for each test method."""
-        self.mock_gateway = MockLLMGateway(port=8080)
+        self.mock_gateway = MockLLMGateway()  # ephemeral port — no collisions
         self.mock_gateway.start()
 
-        # Create mock config
-        self.mock_config = LLMConfig(**create_mock_llm_config(port=8080))
+        # Create mock config (port known only after start)
+        self.mock_config = LLMConfig(**create_mock_llm_config(port=self.mock_gateway.port))
 
         self.token_patcher = patch.dict(os.environ, {"LLM_TOKEN": "mock-token"})
         self.token_patcher.start()
