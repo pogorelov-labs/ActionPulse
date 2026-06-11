@@ -46,8 +46,8 @@ Hard rules:
 - If there is no relevant evidence, return {"sections": []}.
 
 Section taxonomy:
-- "Мои действия": explicit tasks, requests, approvals, replies, preparations, confirmations, or next steps expected from the recipient.
-- "Срочное": deadlines within 2 business days, explicit urgency markers, or issues requiring immediate action.
+- "Мои действия": explicit tasks, requests, approvals, replies, preparations, confirmations, or next steps expected from the recipient. Even when a deadline is present, place the item here unless there are urgency markers.
+- "Срочное": at least one urgency signal is present: (a) Importance: High, (b) the words "срочно"/"urgent"/"ASAP", (c) an explicit request with a hard deadline ≤ 2 business days AND intensified phrasing ("обязательно до...", "крайний срок"). A deadline alone without intensified urgency goes to "Мои действия", not "Срочное".
 - "К сведению": important informational updates that do not require action from the recipient.
 
 Placement rules:
@@ -62,7 +62,7 @@ How to decide whether the recipient must act:
 
 Confidence calibration:
 - 0.90-1.00: explicit request/assignment plus deadline, urgency marker, or direct address.
-- 0.70-0.89: clear action without a hard deadline.
+- 0.70-0.89: clear action without a hard deadline, but the addressee is clear.
 - 0.50-0.69: action is implied but still reasonably clear.
 - Below 0.50: weak signal, do not return it.
 

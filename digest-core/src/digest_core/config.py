@@ -8,7 +8,8 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+import structlog
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
 
@@ -97,12 +98,33 @@ class EWSConfig(BaseModel):
         )
 
 
+# Hard output ceiling of the corp gateway's flagship model. Oversize `max_tokens`
+# comes back as HTTP 429 (not 413), so clamp client-side instead of surfacing it
+# as an opaque rate-limit error. See docs/CORP_VALIDATION_FINDINGS_2026-06.md F-18.
+GATEWAY_MAX_OUTPUT_TOKENS = 16384
+
+
 class LLMConfig(BaseModel):
     """LLM Gateway configuration."""
 
     endpoint: str = Field(default="", description="LLM Gateway endpoint")
     model: str = Field(default="qwen35-397b-a17b", description="Model identifier")
     timeout_s: int = Field(default=120, description="Request timeout in seconds")
+    temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature for extraction calls (0.0 = deterministic)",
+    )
+    max_output_tokens: int = Field(
+        default=6000,
+        ge=1,
+        description=(
+            "Max completion tokens per LLM call; a real production day measured 5,226,"
+            " so the former hardcoded 2000 truncated. Values above the gateway ceiling"
+            " are clamped."
+        ),
+    )
     headers: Dict[str, str] = Field(default_factory=dict, description="Additional headers")
     max_tokens_per_run: int = Field(default=30000, description="Max tokens per run")
     cost_limit_per_run: float = Field(default=5.0, description="Cost limit per run in USD")
@@ -136,6 +158,18 @@ class LLMConfig(BaseModel):
         default=True, description="Enforce strict JSON validation with Pydantic"
     )
     max_retries: int = Field(default=3, description="Maximum retry attempts for invalid JSON")
+
+    @field_validator("max_output_tokens")
+    @classmethod
+    def _clamp_max_output_tokens(cls, v: int) -> int:
+        if v > GATEWAY_MAX_OUTPUT_TOKENS:
+            structlog.get_logger().warning(
+                "llm.max_output_tokens exceeds the gateway output ceiling; clamping",
+                requested=v,
+                ceiling=GATEWAY_MAX_OUTPUT_TOKENS,
+            )
+            return GATEWAY_MAX_OUTPUT_TOKENS
+        return v
 
     def __init__(self, **kwargs):
         # Читаем значения из переменных окружения если они не заданы

@@ -20,9 +20,14 @@ ews:
   user_aliases: ["Name", "Surname", "Name.Surname@corp-domain.ru", "login"]  # <-- CHANGE
 
 llm:
-  endpoint: "https://llm-gw.corp.com/api/v1/chat"             # <-- CHANGE
+  # The gateway's OpenAI front (per the CIB endpoint reference); a legacy
+  # "/api/v1/chat" path may appear in older configs — unverified, do not copy it.
+  endpoint: "https://llm-gw.corp.com/v1/chat/completions"     # <-- CHANGE
   model: "qwen35-397b-a17b"
   timeout_s: 120
+  temperature: 0.0           # 0.0 = deterministic extraction (default)
+  max_output_tokens: 6000    # Per-call completion cap; a real prod day measured 5,226.
+                             # Clamped to the gateway ceiling 16384 (oversize → HTTP 429).
   headers:
     Authorization: "Bearer ${LLM_TOKEN}"
   max_tokens_per_run: 30000

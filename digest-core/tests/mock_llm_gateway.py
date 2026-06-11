@@ -174,9 +174,14 @@ class MockLLMGatewayHandler(BaseHTTPRequestHandler):
 
 
 class MockLLMGateway:
-    """Mock LLM Gateway server for testing."""
+    """Mock LLM Gateway server for testing.
 
-    def __init__(self, port: int = 8080):
+    Binds an ephemeral port by default (port=0) so tests never collide with
+    local services (e.g. Docker Desktop on :8080). Read ``self.port`` after
+    ``start()`` for the actual port.
+    """
+
+    def __init__(self, port: int = 0):
         self.port = port
         self.server = None
         self.thread = None
@@ -184,6 +189,7 @@ class MockLLMGateway:
     def start(self):
         """Start the mock server."""
         self.server = HTTPServer(("localhost", self.port), MockLLMGatewayHandler)
+        self.port = self.server.server_address[1]
 
         def serve():
             logger.info("Mock LLM Gateway started", port=self.port)
