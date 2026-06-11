@@ -29,6 +29,7 @@ from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
+from digest_core.llm.fleet import RerankerClient
 from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
 from digest_core.llm.rate_broker import RateBroker
@@ -620,18 +621,59 @@ def _support_recall(digest: Digest) -> tuple[float, int]:
     return verified / len(backed), weak
 
 
+def _build_reranker(ctx: RunContext) -> Optional[RerankerClient]:
+    """RerankerClient for the P2 gate when ``reranker.enabled`` (EP-12, D4).
+
+    Replay runs stay deterministic: LLM recordings and fleet recordings live in
+    separate channels, so the reranker only runs under ``--replay-llm`` when a
+    ``<recording>.fleet.json`` sidecar exists — otherwise it is disabled for the
+    run (fidelity-only gate, logged). ``--record-llm`` records fleet calls into
+    the same sidecar for later replay.
+    """
+    cfg = ctx.config.reranker
+    if not cfg.enabled:
+        return None
+    replay = None
+    if ctx.replay_llm:
+        sidecar = Path(f"{ctx.replay_llm}.fleet.json")
+        if not sidecar.exists():
+            logger.warning(
+                "Reranker disabled for this replay run: no fleet sidecar recording",
+                sidecar=str(sidecar),
+                trace_id=ctx.trace_id,
+            )
+            return None
+        replay = str(sidecar)
+    return RerankerClient(
+        ctx.config.llm,
+        model=cfg.model,
+        endpoint_path=cfg.endpoint_path,
+        rate_broker=ctx.rate_broker,
+        record=f"{ctx.record_llm}.fleet.json" if ctx.record_llm else None,
+        replay=replay,
+        stage="reranker",
+    )
+
+
 def _apply_shadow_citation_gate(
     ctx: RunContext, digest: Digest, normalized_messages: Sequence[NormalizedMessage]
 ) -> Digest:
     """P2 gate in SHADOW mode (PR8): annotate offset-fidelity + weak_evidence always.
 
     Default-on but shadow — it never changes citation_validation_ok, exit codes, or
-    delivery (those stay as-is until PR11). The reranker is off (PC-2), so the gate
-    is offset-only and makes zero network calls.
+    delivery (those stay as-is until PR11). With ``reranker.enabled`` off (the
+    default until EP-14 corp validation) the gate is offset-only and makes zero
+    network calls; with it on, low-confidence items get a budgeted support score.
     """
     msg_map = {m.msg_id: m.text_body for m in normalized_messages if m.msg_id}
-    gate = CitationGate(msg_map, reranker=None, config=ctx.config.reranker)
-    return gate.annotate(digest, metrics=ctx.metrics)
+    reranker = _build_reranker(ctx)
+    gate = CitationGate(msg_map, reranker=reranker, config=ctx.config.reranker)
+    try:
+        return gate.annotate(digest, metrics=ctx.metrics)
+    finally:
+        if reranker is not None:
+            ctx.run_meta["fleet_reranker_calls"] = gate.reranker_calls
+            reranker.close()
 
 
 def _stage_assemble(ctx: RunContext, digest: Digest) -> None:

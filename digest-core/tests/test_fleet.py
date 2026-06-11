@@ -41,6 +41,12 @@ def test_derive_fleet_endpoint():
         derive_fleet_endpoint("https://gw.corp/v1/chat/completions", "score")
         == "https://gw.corp/v1/score"
     )
+    # Leading slash = absolute under the gateway host (LiteLLM mounts /rerank at root).
+    assert (
+        derive_fleet_endpoint("https://gw.corp/v1/chat/completions", "/rerank")
+        == "https://gw.corp/rerank"
+    )
+    assert derive_fleet_endpoint("https://gw.corp/chat", "/rerank") == "https://gw.corp/rerank"
     assert derive_fleet_endpoint("", "tokenize") == ""
 
 
@@ -65,6 +71,37 @@ def test_reranker_reorders_results_by_index(monkeypatch):
         return_value=_resp({"results": [{"index": 1, "score": 0.9}, {"index": 0, "score": 0.2}]})
     )
     assert client.score("q", ["d0", "d1"]) == [0.2, 0.9]
+    # Default path is the probe-verified /rerank at the gateway host root (D4).
+    assert client._client.post.call_args[0][0] == "https://gw.corp/api/rerank"
+
+
+def test_reranker_endpoint_path_is_configurable(monkeypatch):
+    monkeypatch.setenv("LLM_TOKEN", "t")
+    client = RerankerClient(_config(), endpoint_path="/v1/score")
+    client._client = Mock()
+    client._client.post = Mock(return_value=_resp({"scores": [0.5]}))
+    assert client.score("q", ["d0"]) == [0.5]
+    assert client._client.post.call_args[0][0] == "https://gw.corp/api/v1/score"
+
+
+def test_stage_call_budget_enforced_via_broker(monkeypatch):
+    from digest_core.llm.rate_broker import StageCallBudgetExceeded
+
+    monkeypatch.setenv("LLM_TOKEN", "t")
+    broker = RateBroker(
+        fleet_rpm={"bge-reranker-v2-m3": 10},
+        stage_call_budgets={"reranker": 2},
+        sleep=lambda d: None,
+    )
+    client = RerankerClient(_config(), rate_broker=broker, stage="reranker")
+    client._client = Mock()
+    client._client.post = Mock(return_value=_resp({"scores": [0.5]}))
+
+    assert client.score("q", ["d"]) == [0.5]
+    assert client.score("q2", ["d"]) == [0.5]
+    with pytest.raises(StageCallBudgetExceeded):
+        client.score("q3", ["d"])
+    assert broker.calls_made("reranker") == 3  # the rejected attempt is counted
 
 
 def test_empty_inputs_skip_network(monkeypatch):
