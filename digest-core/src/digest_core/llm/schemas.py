@@ -64,6 +64,12 @@ class Item(BaseModel):
         default=None,
         description="Rule-based actionability score from DigestRanker (0..1)",
     )
+    # EP-7 dedup ledger annotation. Optional so exclude_none keeps artifacts
+    # byte-compatible while memory.dedup_ledger is off (the default).
+    seen_before: Optional[bool] = Field(
+        default=None,
+        description="Evidence behind this item already backed a delivered item (dedup ledger)",
+    )
 
 
 class Section(BaseModel):
