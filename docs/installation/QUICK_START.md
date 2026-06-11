@@ -4,13 +4,23 @@
 
 ## Установка
 
+Одна команда на чистом macOS (Python и Homebrew не нужны — `uv` сам скачает Python 3.11):
+
 ```bash
-git clone https://github.com/ruspg/ActionPulse.git
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"
+```
+
+Скрипт ставит `uv`, клонирует репозиторий в `~/ActionPulse` (спросит, можно изменить), устанавливает зависимости и запускает мастер настройки в этом же окне терминала. Повторный запуск безопасен. Флаги: `--dir DIR`, `--ref REF`, `--no-wizard`.
+
+Ручной вариант:
+
+```bash
+git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
 make setup    # установка зависимостей + интерактивный мастер (6 вопросов)
 ```
 
-Мастер спросит: корпоративный email, EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL. Сгенерирует:
+Мастер сначала сам находит логин, имя и корпоративный email (скан метаданных Keychain, всё локально; `--no-autodetect` отключает), затем спросит недостающее: EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL. Сгенерирует:
 - `~/.config/actionpulse/env` (chmod 600, systemd-compatible)
 - `configs/config.yaml`
 
@@ -46,33 +56,33 @@ python -m digest_core.cli diagnose
 
 ### 3. Запустите первый дайджест
 
-> **Требуется Python 3.11+**. На macOS установите `brew install python@3.11` и используйте `python3.11` явно.
+> Python отдельно ставить не нужно: `uv` использует закреплённую в репозитории версию (`.python-version`, сейчас 3.11) и скачает её сам при необходимости.
 
 ```bash
 # Тестовый запуск (без LLM) - проверяет только EWS подключение
-python3.11 -m digest_core.cli run --dry-run
+uv run python -m digest_core.cli run --dry-run
 
 # Полный запуск для сегодня
-python3.11 -m digest_core.cli run
+uv run python -m digest_core.cli run
 ```
 
 ## Основные команды
 
 ```bash
 # Базовый запуск (дайджест за сегодня)
-python3.11 -m digest_core.cli run
+uv run python -m digest_core.cli run
 
 # Для конкретной даты
-python3.11 -m digest_core.cli run --from-date 2024-01-15
+uv run python -m digest_core.cli run --from-date 2024-01-15
 
 # Dry-run режим (только ingest+normalize, без LLM)
-python3.11 -m digest_core.cli run --dry-run
+uv run python -m digest_core.cli run --dry-run
 
 # Другая модель LLM
-python3.11 -m digest_core.cli run --model "qwen35-397b-a17b"
+uv run python -m digest_core.cli run --model "qwen35-397b-a17b"
 
 # Кастомная директория вывода
-python3.11 -m digest_core.cli run --out ./my-digests
+uv run python -m digest_core.cli run --out ./my-digests
 
 # Используя make
 make run

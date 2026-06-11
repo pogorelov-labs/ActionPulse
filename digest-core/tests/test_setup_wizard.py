@@ -2,13 +2,71 @@
 
 import yaml
 
+from digest_core.setup_autodetect import DetectedEnv
 from digest_core.setup_wizard import (
     _auto_detect_ca_path,
     _derive_from_email,
+    _mask_secret,
+    _merge_aliases,
     _read_existing_env,
+    _validate_email,
+    _validate_url,
     _write_env_file,
     _write_config_yaml,
 )
+
+
+class TestMergeAliases:
+    """Detected real-name tokens + machine login extend the derived aliases."""
+
+    def test_adds_name_tokens_and_login(self):
+        det = DetectedEnv(login="ruapgr2", first_name="Ruslan", last_name="POGORELOV")
+        merged = _merge_aliases(["Ruslan", "ruslan.pogorelov@megacorp.ru"], det)
+        assert "Pogorelov" in merged  # caps surname title-cased
+        assert "ruapgr2" in merged  # machine login differs from email local
+        assert merged.count("Ruslan") == 1  # case-insensitive dedupe
+
+    def test_no_detection_is_identity(self):
+        assert _merge_aliases(["X"], None) == ["X"]
+
+
+class TestMaskSecret:
+    """Secrets must never render in full."""
+
+    def test_long_secret_shows_tail_only(self):
+        assert _mask_secret("tok-abcdef123456") == "••••3456"
+
+    def test_short_secret_fully_masked(self):
+        assert _mask_secret("abc123") == "••••"
+
+    def test_no_tail_mode_for_passwords(self):
+        assert _mask_secret("a-very-long-password-here", show_tail=0) == "••••"
+
+    def test_empty(self):
+        assert _mask_secret("") == ""
+
+
+class TestValidators:
+    """Input validators return error text or None."""
+
+    def test_email_valid(self):
+        assert _validate_email("ivan.petrov@megacorp.ru") is None
+
+    def test_email_no_at(self):
+        assert _validate_email("ivan.petrov") is not None
+
+    def test_email_bare_domain(self):
+        assert _validate_email("ivan@corp") is not None
+
+    def test_url_valid(self):
+        assert _validate_url("https://owa.corp.ru/EWS/Exchange.asmx") is None
+        assert _validate_url("http://llm.corp.ru/v1") is None
+
+    def test_url_missing_scheme(self):
+        assert _validate_url("owa.corp.ru/EWS") is not None
+
+    def test_url_with_spaces(self):
+        assert _validate_url("https://owa corp.ru") is not None
 
 
 class TestDeriveFromEmail:

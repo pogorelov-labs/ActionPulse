@@ -20,6 +20,7 @@ dependencies = [
   "pyyaml>=6.0",
   "regex>=2023.0",
   "jinja2>=3.1",
+  "rich>=13.7",
 ]
 
 [project.scripts]

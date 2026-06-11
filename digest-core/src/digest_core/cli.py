@@ -261,8 +261,19 @@ def export_diagnostics_command(
 
 
 @app.command()
-def setup():
+def setup(
+    no_autodetect: bool = typer.Option(
+        False,
+        "--no-autodetect",
+        help="Skip local autodetection (login, RealName, Keychain emails, network domains).",
+    ),
+):
     """Interactive setup: configure ActionPulse in 6 questions, no text editor needed.
+
+    On first run the wizard auto-detects the machine login, real name, corp
+    email candidates (Keychain metadata scan, local-only) and network domains,
+    pre-filling or auto-confirming validated values; everything detected is
+    reviewed on the final summary screen before files are written.
 
     Generates:
       - ~/.config/actionpulse/env   (secrets, systemd-compatible)
@@ -272,7 +283,7 @@ def setup():
     """
     from digest_core.setup_wizard import run_setup
 
-    run_setup()
+    run_setup(no_autodetect=no_autodetect)
 
 
 @app.command("eval-prompt")

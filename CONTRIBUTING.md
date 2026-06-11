@@ -14,7 +14,7 @@ Thank you for your interest in contributing to ActionPulse! This document provid
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/ruspg/ActionPulse.git
+   git clone https://github.com/pogorelov-labs/ActionPulse.git
    cd ActionPulse
    ```
 
