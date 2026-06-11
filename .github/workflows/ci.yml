@@ -71,3 +71,20 @@ jobs:
       - name: Build Docker image
         run: docker build -t digest-core:ci -f docker/Dockerfile .
         working-directory: digest-core
+
+  # Report-only dependency audit (EP-6, F12). Deliberately non-blocking until the
+  # owner sets a gating policy — findings must be a recorded decision, not a
+  # surprise inside the air-gap.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Export hashed lockfile
+        run: uv export --frozen --no-emit-project --format requirements-txt -o requirements.ci.lock
+
+      - name: pip-audit (report-only)
+        run: uvx pip-audit -r requirements.ci.lock --disable-pip
+        continue-on-error: true

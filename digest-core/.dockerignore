@@ -1,0 +1,16 @@
+# Keep the image build context clean and secret-free (EP-6).
+.venv/
+out/
+.state/
+.pytest_cache/
+__pycache__/
+*.pyc
+dist/
+build/
+.git/
+.fixtures/
+.session-reports/
+*.snapshot.json
+*-recording.json
+# …but the committed synthetic eval corpus ships with the package:
+!src/digest_core/eval/corpus/*.snapshot.json

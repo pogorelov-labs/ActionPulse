@@ -26,3 +26,6 @@ configs/config.yaml
 # …but the synthetic eval corpus (PR7) IS committed on purpose:
 !src/digest_core/eval/corpus/*.snapshot.json
 
+# Build artifacts (uv build, make bundle)
+dist/
+build/
