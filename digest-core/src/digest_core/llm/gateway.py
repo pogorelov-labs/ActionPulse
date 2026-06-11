@@ -625,9 +625,20 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             return {"sections": validated_sections}
 
         except Exception as e:
-            logger.error("Response validation failed", error=str(e))
+            # A crashed validation discards the entire response; report every item
+            # as a validation error rather than masquerading as a clean empty day.
+            discarded = 0
+            try:
+                discarded = sum(
+                    len(s.get("items", []))
+                    for s in response_data.get("sections", [])
+                    if isinstance(s, dict)
+                )
+            except Exception:
+                discarded = 0
+            logger.error("Response validation failed", error=str(e), items_discarded=discarded)
             if self.last_request_meta:
-                self.last_request_meta["validation_errors"] = 0
+                self.last_request_meta["validation_errors"] = max(discarded, 1)
             return {"sections": []}
 
     def _validate_section(
