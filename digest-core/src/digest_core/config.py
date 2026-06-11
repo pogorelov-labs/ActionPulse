@@ -158,6 +158,15 @@ class LLMConfig(BaseModel):
         default=True, description="Enforce strict JSON validation with Pydantic"
     )
     max_retries: int = Field(default=3, description="Maximum retry attempts for invalid JSON")
+    spotlight_evidence: bool = Field(
+        default=False,
+        description=(
+            "Fence each untrusted evidence body between per-call random data markers"
+            " and instruct the model to never follow instructions found inside them"
+            " (EP-4 injection containment). OFF until the eval baseline diff is"
+            " reviewed; flag only changes the LLM request, never the digest schema."
+        ),
+    )
 
     @field_validator("max_output_tokens")
     @classmethod
