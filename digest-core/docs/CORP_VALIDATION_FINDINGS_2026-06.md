@@ -1,6 +1,9 @@
 # Corp Validation Session 2026-06-10 — Verified Findings vs Current `main`
 
-**Status:** review draft (branch `docs/corp-findings-2026-06`).
+**Status:** review draft (branch `docs/corp-findings-2026-06`). Backlog items
+**B-1, B-2, B-7 are implemented** in follow-up commits on the stacked branch
+`feat/llm-output-cap`; **B-3** (corp re-validation on main) and **B-4–B-6**
+remain open.
 **Scope:** re-verification of the corp-network validation session of 2026-06-10 against
 current `origin/main` (`b287a3e`, post multi-agent redesign PRs #46–#61).
 **Audience:** maintainer. No payload data in this document (see §8).
