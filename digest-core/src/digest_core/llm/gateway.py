@@ -79,6 +79,16 @@ class LLMTruncationError(Exception):
     """
 
 
+class LLMAuthError(Exception):
+    """The gateway rejected our credentials (HTTP 401/403).
+
+    Deliberately NOT retryable: corp tokens are rotated on a schedule, and a
+    rejected token stays rejected until a human refreshes it — retrying only
+    burns scarce gateway calls. The message must stay operator-actionable: it
+    surfaces verbatim in the partial-digest status banner and in logs.
+    """
+
+
 class LLMGateway:
     """Client for LLM Gateway API with retry logic and schema validation."""
 
@@ -367,6 +377,12 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 raise RetryableLLMError(str(exc), retry_after) from exc
             if 500 <= status_code < 600:
                 raise RetryableLLMError(str(exc), 5.0) from exc
+            if status_code in (401, 403):
+                raise LLMAuthError(
+                    f"LLM gateway rejected credentials (HTTP {status_code}): LLM_TOKEN is"
+                    " likely expired or rotated. Refresh the token, update"
+                    " ~/.config/actionpulse/env, then re-run."
+                ) from exc
             raise
 
         result = response.json()

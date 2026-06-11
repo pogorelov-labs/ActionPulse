@@ -29,7 +29,7 @@ from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
-from digest_core.llm.gateway import LLMGateway
+from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
 from digest_core.llm.rate_broker import RateBroker
 from digest_core.llm.schemas import Digest, Section
@@ -38,6 +38,7 @@ from digest_core.normalize.html import HTMLNormalizer
 from digest_core.normalize.quotes import QuoteCleaner
 from digest_core.observability.healthz import start_health_server
 from digest_core.observability.logs import setup_logging
+from digest_core.provenance import build_provenance, prompt_sha256
 from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
 from digest_core.threads.build import ThreadBuilder
@@ -204,7 +205,10 @@ def _init_context(
         state_dir.mkdir(parents=True, exist_ok=True)
         config.ews.sync_state_path = str(state_dir / Path(config.ews.sync_state_path).name)
 
-    metrics = MetricsCollector(config.observability.prometheus_port)
+    metrics = MetricsCollector(
+        config.observability.prometheus_port,
+        fail_on_exporter_error=config.observability.fail_on_exporter_error,
+    )
     start_health_server(port=9109, llm_config=config.llm)
 
     digest_date = _resolve_digest_date(from_date)
@@ -229,7 +233,11 @@ def _init_context(
         "evidence_summary": {},
         "ews_fetch_stats": {},
         "llm_request_trace": {},
+        "metrics_exporter": _exporter_status_entry(metrics),
         "config_sanitized": _sanitize_config(config),
+        "provenance": build_provenance(
+            config, config_sha256=_config_sha256(config), pipeline_version=PIPELINE_VERSION
+        ),
         "status": "started",
         "partial": False,
     }
@@ -370,6 +378,10 @@ def _stage_llm(
         llm_error = None
     else:
         prompt_version, prompt_text = _load_extract_prompt(ctx.config.llm.model)
+        provenance = ctx.run_meta.get("provenance")
+        if isinstance(provenance, dict):
+            provenance["prompt_id"] = prompt_version
+            provenance["prompt_sha256"] = prompt_sha256(prompt_text)
         try:
             llm_response = llm_gateway.extract_actions(
                 evidence=selected_evidence,
@@ -385,13 +397,20 @@ def _stage_llm(
             )
             llm_error = None
         except Exception as exc:
-            ctx.metrics.record_degradation("llm_failed")
+            auth_failure = isinstance(exc, LLMAuthError)
+            ctx.metrics.record_degradation("llm_auth_failed" if auth_failure else "llm_failed")
             ctx.run_meta["partial"] = True
             ctx.run_meta["status"] = "partial"
             digest = _build_partial_digest(
                 digest_date=ctx.digest_date,
                 trace_id=ctx.trace_id,
                 error_message=str(exc),
+                title=(
+                    "LLM Gateway отклонил токен (401/403): обновите LLM_TOKEN. "
+                    "Дайджест неполный."
+                    if auth_failure
+                    else None
+                ),
             )
             llm_error = exc
             logger.warning(
@@ -1251,6 +1270,16 @@ def _build_evidence_summary(
             for thread in threads
         ],
     }
+
+
+def _exporter_status_entry(metrics: Any) -> Dict[str, Any]:
+    """Exporter state for run_meta, tolerant of test doubles (mocks/dummies)."""
+    status_fn = getattr(metrics, "exporter_status", None)
+    if callable(status_fn):
+        candidate = status_fn()
+        if isinstance(candidate, dict):
+            return candidate
+    return {"status": "unknown", "port": None, "error": None}
 
 
 def _sanitize_config(config: Config) -> Dict[str, Any]:
