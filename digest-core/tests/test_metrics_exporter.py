@@ -74,7 +74,7 @@ def test_run_meta_carries_exporter_status(monkeypatch, tmp_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )

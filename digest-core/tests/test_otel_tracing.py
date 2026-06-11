@@ -85,7 +85,7 @@ def test_replay_run_emits_payload_free_span_tree(monkeypatch, tmp_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )

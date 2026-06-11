@@ -577,10 +577,12 @@ class MemoryConfig(BaseModel):
     """
 
     dedup_ledger: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Annotate items whose evidence already backed a delivered item"
-            " (seen_before: true). Hashed fingerprints only; never suppresses."
+            " (seen_before: true, «↻ повтор» in MM). Hashed fingerprints only;"
+            " never suppresses. Default ON per decision D3; the TTL sweep is the"
+            " retention policy."
         ),
     )
     dedup_ttl_days: int = Field(

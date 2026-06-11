@@ -110,6 +110,8 @@ class MattermostDeliverer:
             line += f" | [json]({json_path}#{evidence_id})"
         if getattr(item, "weak_evidence", False):
             line += " | ⚠ слабое обоснование"
+        if getattr(item, "seen_before", False):
+            line += " | ↻ повтор"
         return line
 
     def _split_message(self, message: str, max_length: int) -> List[str]:
