@@ -44,11 +44,25 @@ cd digest-core && make setup     # uv sync --native-tls + interactive wizard
 in `configs/config.yaml`:
 
 - `llm.model: qwen35-397b-a17b` (✅ Personal extractor — **do not change**)
+- `llm.endpoint`: must point at the gateway's **OpenAI front** —
+  `https://<gateway-host>/v1/chat/completions` (per the CIB endpoint reference:
+  official API doc + live probe 2026-06-09). Older configs and the example
+  placeholder carry a legacy `/api/v1/chat` path — **unverified**; if a run fails at
+  the LLM stage (404), check this first. See
+  [`CORP_VALIDATION_FINDINGS_2026-06.md`](CORP_VALIDATION_FINDINGS_2026-06.md) F-04.
 - `ews.endpoint / user_upn / user_login / user_domain / user_aliases / verify_ca`
 - `ews.folders` (default `["Inbox"]`), `time.user_timezone`, `time.window`
 - `deliver.mattermost.enabled: true`, `webhook_url_env: "MM_WEBHOOK_URL"`
 
 ## 3. Verify before the first real run
+
+Load secrets first — a manual shell does **not** auto-read the wizard's env file
+(only the systemd unit does, via `EnvironmentFile`); without this, `run` fails with
+exit 1 `Environment variable EWS_PASSWORD not set` (seen in the 2026-06-10 corp run):
+
+```bash
+set -a; source ~/.config/actionpulse/env; set +a
+```
 
 ```bash
 python -m digest_core.cli diagnose       # env + CA + tools
