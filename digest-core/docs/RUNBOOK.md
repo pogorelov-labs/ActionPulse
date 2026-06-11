@@ -46,10 +46,13 @@ in `configs/config.yaml`:
 - `llm.model: qwen35-397b-a17b` (✅ Personal extractor — **do not change**)
 - `llm.endpoint`: must point at the gateway's **OpenAI front** —
   `https://<gateway-host>/v1/chat/completions` (per the CIB endpoint reference:
-  official API doc + live probe 2026-06-09). Older configs and the example
-  placeholder carry a legacy `/api/v1/chat` path — **unverified**; if a run fails at
-  the LLM stage (404), check this first. See
+  official API doc + live probe 2026-06-09). Older configs carry a legacy
+  `/api/v1/chat` path — **unverified**; if a run fails at the LLM stage (404),
+  check this first. See
   [`CORP_VALIDATION_FINDINGS_2026-06.md`](CORP_VALIDATION_FINDINGS_2026-06.md) F-04.
+- `llm.max_output_tokens: 6000`, `llm.temperature: 0.0` — defaults are correct (a
+  real prod day measured 5,226 output tokens). Raise the cap only up to the gateway
+  ceiling (16384) if a digest degrades with an "output truncated" banner.
 - `ews.endpoint / user_upn / user_login / user_domain / user_aliases / verify_ca`
 - `ews.folders` (default `["Inbox"]`), `time.user_timezone`, `time.window`
 - `deliver.mattermost.enabled: true`, `webhook_url_env: "MM_WEBHOOK_URL"`

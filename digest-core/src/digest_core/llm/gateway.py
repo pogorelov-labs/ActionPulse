@@ -70,6 +70,15 @@ class TokenBudgetExceeded(Exception):
     """Raised when a run's cumulative token usage exceeds ``max_tokens_per_run``."""
 
 
+class LLMTruncationError(Exception):
+    """Output hit ``max_output_tokens`` and the truncated JSON could not be parsed.
+
+    Deliberately NOT retryable: at temperature 0.0 an identical request truncates
+    identically, so a retry only burns a scarce gateway call. The fix is a larger
+    ``llm.max_output_tokens`` (gateway ceiling: 16384).
+    """
+
+
 class LLMGateway:
     """Client for LLM Gateway API with retry logic and schema validation."""
 
@@ -138,19 +147,27 @@ class LLMGateway:
             has_positive = any(ec.priority_score >= 1.5 for ec in evidence)
             call_count = response_data.get("meta", {}).get("call_count", 1)
             if has_positive and call_count < 2:
-                logger.info(
-                    "Quality retry: empty sections but positive signals present",
-                    trace_id=trace_id,
-                )
-                quality_hint = (
-                    "\n\nIMPORTANT: If there are actionable requests or deadlines, "
-                    "return items accordingly. Return strict JSON per schema only."
-                )
-                messages[0]["content"] = messages[0]["content"] + quality_hint
-                response_data = self._make_request_with_retry(messages, trace_id, None)
-                validated_response = self._validate_response(
-                    response_data.get("data", {}), evidence
-                )
+                if not self._quality_retry_fits_budget(response_data):
+                    logger.warning(
+                        "Quality retry skipped: run token budget too tight",
+                        run_tokens_used=self._run_tokens_used,
+                        max_tokens_per_run=self.config.max_tokens_per_run,
+                        trace_id=trace_id,
+                    )
+                else:
+                    logger.info(
+                        "Quality retry: empty sections but positive signals present",
+                        trace_id=trace_id,
+                    )
+                    quality_hint = (
+                        "\n\nIMPORTANT: If there are actionable requests or deadlines, "
+                        "return items accordingly. Return strict JSON per schema only."
+                    )
+                    messages[0]["content"] = messages[0]["content"] + quality_hint
+                    response_data = self._make_request_with_retry(messages, trace_id, None)
+                    validated_response = self._validate_response(
+                        response_data.get("data", {}), evidence
+                    )
 
         logger.info(
             "LLM action extraction completed",
@@ -166,6 +183,20 @@ class LLMGateway:
             validated_response["_meta"] = response_data["meta"]
             self.last_request_meta = dict(response_data["meta"])
         return validated_response
+
+    def _quality_retry_fits_budget(self, response_data: Dict[str, Any]) -> bool:
+        """True when a quality retry plausibly fits the remaining run token budget.
+
+        Estimate = the last call's input size (the retry reuses the same evidence)
+        plus the full output cap. Checking *before* the call avoids burning a scarce
+        gateway request only to trip ``TokenBudgetExceeded`` after it.
+        """
+        if not self.config.max_tokens_per_run:
+            return True
+        last_tokens_in = int(response_data.get("meta", {}).get("tokens_in", 0) or 0)
+        estimated_next = last_tokens_in + self.config.max_output_tokens
+        remaining = self.config.max_tokens_per_run - self._run_tokens_used
+        return estimated_next <= remaining
 
     def _prepare_evidence_text(self, evidence: List[EvidenceChunk]) -> str:
         """Prepare evidence text for LLM processing with rich metadata."""
@@ -301,8 +332,8 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         payload = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 2000,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_output_tokens,
             "response_format": {"type": "json_object"},
         }
 
@@ -339,7 +370,9 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             raise
 
         result = response.json()
-        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        choice0 = result.get("choices", [{}])[0]
+        content = choice0.get("message", {}).get("content", "")
+        finish_reason = choice0.get("finish_reason")
 
         if not content:
             logger.warning("Empty LLM response", trace_id=trace_id)
@@ -371,6 +404,20 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 "latency_ms": self.last_latency_ms,
                 "validation_errors": 1,
             }
+            if finish_reason == "length":
+                # Truncated output, not malformed output: a retry with the same input
+                # truncates again (deterministic), so fail straight to the degrade path
+                # with an operator-actionable message.
+                logger.error(
+                    "LLM output truncated at max_output_tokens; skipping futile JSON retry",
+                    max_output_tokens=self.config.max_output_tokens,
+                    trace_id=trace_id,
+                )
+                raise LLMTruncationError(
+                    f"LLM output truncated at max_output_tokens="
+                    f"{self.config.max_output_tokens}; raise llm.max_output_tokens"
+                    " (gateway ceiling 16384)"
+                ) from parse_err
             if "IMPORTANT: Return ONLY valid JSON" not in messages[0]["content"]:
                 messages[0]["content"] = (
                     messages[0]["content"]
@@ -436,6 +483,13 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             trace_id=trace_id,
         )
 
+        if finish_reason == "length":
+            logger.warning(
+                "LLM output hit max_output_tokens; JSON parsed but may be incomplete",
+                max_output_tokens=self.config.max_output_tokens,
+                trace_id=trace_id,
+            )
+
         meta = {
             "tokens_in": tokens_in or 0,
             "tokens_out": tokens_out or 0,
@@ -443,6 +497,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             "latency_ms": self.last_latency_ms,
             "validation_errors": 0,
             "run_tokens_used": self._run_tokens_used,
+            "finish_reason": finish_reason,
         }
         result = {
             "trace_id": trace_id,
@@ -824,7 +879,12 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 raise
 
             # Determine reason for degradation
-            reason = "llm_json_error" if "JSON" in str(llm_err) else "llm_processing_failed"
+            if isinstance(llm_err, LLMTruncationError):
+                reason = "llm_output_truncated"
+            elif "JSON" in str(llm_err):
+                reason = "llm_json_error"
+            else:
+                reason = "llm_processing_failed"
 
             # Record degradation metric
             if self.metrics:
