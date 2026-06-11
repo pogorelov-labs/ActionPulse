@@ -299,11 +299,20 @@ class EvidenceChunk:
     {"role": "system", "content": "<prompt_template>"},
     {"role": "user", "content": "<numbered evidence blocks with headers>"}
   ],
-  "temperature": 0.1,
-  "max_tokens": 2000,
+  "temperature": 0.0,
+  "max_tokens": 6000,
   "response_format": {"type": "json_object"}
 }
 ```
+
+`temperature` and `max_tokens` come from config (`llm.temperature`, default 0.0;
+`llm.max_output_tokens`, default 6000 — a real production day measured 5,226 output
+tokens, so the former hardcoded 2000 truncated; see
+`CORP_VALIDATION_FINDINGS_2026-06.md` F-01). `max_output_tokens` is clamped to the
+gateway output ceiling (16384; oversize `max_tokens` returns HTTP 429, not 413).
+`finish_reason=length` with unparseable JSON fails straight to degrade (no retry —
+deterministic truncation would just repeat); with parseable JSON it logs a warning
+and is recorded in the request meta.
 
 **Retry policy (two levels):**
 

@@ -88,3 +88,16 @@ def test_require_evidence_spans_drops_unsupported_item(monkeypatch):
     # but a valid span keeps it
     kept = gw._validate_item(_item([{"msg_id": "m-1", "quote": "согласуй бюджет"}]), [_chunk()])
     assert kept is not None
+
+
+def test_validation_crash_reports_discarded_items(monkeypatch):
+    """A crashed validation must not masquerade as a clean empty day.
+
+    sections=None blows up the section loop; the catch-all must return empty
+    sections AND report at least one validation error in the request meta.
+    """
+    gw = _gateway(monkeypatch)
+    gw.last_request_meta = {"validation_errors": 0}
+    result = gw._validate_response({"sections": None}, [_chunk()])
+    assert result == {"sections": []}
+    assert gw.last_request_meta["validation_errors"] >= 1

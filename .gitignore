@@ -76,3 +76,11 @@ Thumbs.db
 .Spotlight-V100
 .Trashes
 ehthumbs.db
+
+# Corp-data artifacts — real mail / LLM fixtures and validation session reports
+# must never reach git (CORP_VALIDATION_FINDINGS_2026-06.md B-2). The committed
+# eval corpus is re-included in digest-core/.gitignore.
+.session-reports/
+.fixtures/
+*.snapshot.json
+*-recording.json

@@ -18,6 +18,13 @@ configs/config.yaml
 .vscode/
 .idea/
 
+# Corp-data artifacts (real mail / LLM content) — never commit
+.fixtures/
+.session-reports/
+*.snapshot.json
+*-recording.json
+# …but the synthetic eval corpus (PR7) IS committed on purpose:
+!src/digest_core/eval/corpus/*.snapshot.json
 
 # Build artifacts (uv build, make bundle)
 dist/

@@ -1,4 +1,5 @@
 # CHANGELOG
 # v1.0 2026-03-29 — initial version: base taxonomy (Мои действия/Срочное/К сведению), JSON contract, confidence calibration
 # v1.1 2026-03-30 — expanded prompt to 189 lines: added few-shot examples (x3), edge cases, pre-answer checklist
+# v1.2 2026-06-11 — en.v1: align "Срочное" taxonomy with RU (urgency signal required; plain deadline → "Мои действия"); restore addressee-clarity wording in the 0.70-0.89 confidence band
 # END_CHANGELOG

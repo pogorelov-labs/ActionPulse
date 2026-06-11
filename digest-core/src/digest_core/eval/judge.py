@@ -12,6 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import Callable, Dict, List
 
+from digest_core.eval.agreement import compute_agreement, pairs_from_judge_records
+
 JUDGE_PROMPT = (
     "You are a strict verifier. Decide whether the digest item is fully supported by "
     "the quoted evidence span. Reply with JSON only: "
@@ -54,10 +56,14 @@ def _prf(tp: int, fp: int, fn: int) -> Dict[str, float]:
 def compute_judge_metrics(
     records: List[dict], *, stratum_key: Callable[[dict], str] = lambda r: r.get("lang", "ru")
 ) -> Dict[str, Dict[str, float]]:
-    """Per-stratum P/R/F1, hallucination rate, Brier.
+    """Per-stratum P/R/F1, hallucination rate, Brier — plus chance-corrected agreement.
 
     Each record: {predicted: bool (judge says supported), gold: bool (human good),
     prob: float, lang: "ru"|"en"}. Positive class = supported/good.
+
+    The reserved ``"agreement"`` key (never a stratum name — strata are language
+    codes) carries Cohen's κ / Krippendorff's α judge-vs-gold (EP-5): drift
+    trackers and the may-gate floor, NOT the gate itself (D5).
     """
     strata: Dict[str, List[dict]] = {}
     for record in records:
@@ -80,4 +86,8 @@ def compute_judge_metrics(
         metrics["brier"] = round(brier / len(rows), 4) if rows else 0.0
         metrics["n"] = len(rows)
         out[name] = metrics
+
+    pairs = pairs_from_judge_records(records)
+    if pairs:
+        out["agreement"] = compute_agreement(pairs)
     return out

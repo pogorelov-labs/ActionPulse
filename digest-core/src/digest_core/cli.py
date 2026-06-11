@@ -461,6 +461,39 @@ def eval_judge(
     typer.echo(json.dumps(compute_judge_metrics(rows), ensure_ascii=False, indent=2))
 
 
+@app.command("eval-agreement")
+def eval_agreement(
+    labels: str = typer.Option(..., "--labels", help="CSV with human and judge label columns"),
+    human_col: str = typer.Option("human", "--human", help="Human-label column name"),
+    judge_col: str = typer.Option("judge", "--judge", help="Judge-label column name"),
+    bootstrap: int = typer.Option(2000, "--bootstrap", help="Bootstrap iterations for the κ CI"),
+    seed: int = typer.Option(42, "--seed", help="Bootstrap seed (fixed for reproducibility)"),
+):
+    """Cohen's κ / Krippendorff's α between human and judge labels (EP-5).
+
+    Drift trackers and the may-gate floor (κ ≥ 0.41), NOT the gate itself —
+    the gate architecture is an open owner decision (ENHANCEMENT_PROGRAM.md D5).
+    Deterministic for a fixed seed; offline.
+    """
+    from digest_core.eval.agreement import compute_agreement, read_pairs_csv
+
+    path = Path(labels)
+    if not path.exists():
+        typer.echo(f"Labels file not found: {path}", err=True)
+        raise typer.Exit(1)
+    try:
+        pairs = read_pairs_csv(path, human_col, judge_col)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    if not pairs:
+        typer.echo("No usable rows (all missing?)", err=True)
+        raise typer.Exit(1)
+    report = compute_agreement(pairs, bootstrap=bootstrap, seed=seed)
+    typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    typer.echo(report["verdict"], err=True)
+
+
 @app.command("eval-calibrate")
 def eval_calibrate(
     scored: str = typer.Option(..., "--scored", help="JSONL of {score, gold, lang} rows"),
