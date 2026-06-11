@@ -48,6 +48,7 @@ python -m digest_core.cli run                      # Полный запуск
 - **[Implementation Guide](development/IMPLEMENTATION_GUIDE.md)** - Руководство по реализации с примерами кода
 - **[Code Examples](development/CODE_EXAMPLES.md)** - Практические примеры кода
 - **[Testing](development/TESTING.md)** - Стратегии тестирования и quality assurance
+- **[Terminal Design](development/TERMINAL_DESIGN.md)** - Дизайн-система терминала: цвет, анимация, live-прогресс, клавиатура, деградация
 - **[Code Quality](development/CODE_QUALITY.md)** - Настройка pre-commit hooks и линтеров
 
 ### 📊 Планирование и roadmap
