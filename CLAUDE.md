@@ -18,6 +18,7 @@ Monorepo with one package. All development happens in `digest-core/`.
 - `digest-core/CLAUDE.md` — Dev commands, **CLI exit codes**, **`RunDigestResult`**, `--validate-citations`, gotchas
 - `digest-core/docs/PHASE0_PROMPT.md` — Historical Phase 0 execution checklist; not a guarantee that items are still open
 - `docs/planning/BUSINESS_REQUIREMENTS.md` — Product / business requirements (repo root `docs/`)
+- `docs/development/TERMINAL_DESIGN.md` — Terminal design system: color tokens, motion budgets, live work-display spec, input model, degradation matrix (every rule evidence-tiered)
 - `docs/development/TECHNICAL.md` — Redirect to `digest-core/docs/ARCHITECTURE.md` (the file used to be a parallel tech overview but drifted; reduced to a redirect 2026-04-06)
 
 ## Language
