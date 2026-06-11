@@ -544,6 +544,28 @@ class JudgeConfig(BaseModel):
     )
 
 
+class MemoryConfig(BaseModel):
+    """Cross-run memory (EP-7). Everything OFF by default — privacy via not-storing.
+
+    With ``dedup_ledger`` on, the only persisted state is SHA-256 fingerprints of
+    ``evidence_id|msg_id`` in ``.state/delivered-items.jsonl``; the TTL sweep is
+    the data-retention policy. Suppression / default-on is owner decision D3.
+    """
+
+    dedup_ledger: bool = Field(
+        default=False,
+        description=(
+            "Annotate items whose evidence already backed a delivered item"
+            " (seen_before: true). Hashed fingerprints only; never suppresses."
+        ),
+    )
+    dedup_ttl_days: int = Field(
+        default=14,
+        ge=1,
+        description="Retention window for ledger fingerprints (TTL sweep on every load)",
+    )
+
+
 class Config(BaseSettings):
     """Main configuration class."""
 
@@ -563,6 +585,7 @@ class Config(BaseSettings):
     nlp: NLPConfig = Field(default_factory=NLPConfig)
     ranker: RankerConfig = Field(default_factory=RankerConfig)
     degrade: DegradeConfig = Field(default_factory=DegradeConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
 
@@ -699,6 +722,8 @@ class Config(BaseSettings):
             self._merge_model(self.ranker, yaml_config["ranker"], env_prefix="RANKER")
         if "degrade" in yaml_config:
             self._merge_model(self.degrade, yaml_config["degrade"], env_prefix="DEGRADE")
+        if "memory" in yaml_config:
+            self._merge_model(self.memory, yaml_config["memory"], env_prefix="MEMORY")
 
     def _merge_model(
         self,

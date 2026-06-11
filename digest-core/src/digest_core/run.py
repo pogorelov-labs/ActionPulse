@@ -793,6 +793,9 @@ def _run_pipeline(
         ctx.run_meta["items_weak"] = items_weak
         ctx.run_meta["items_repaired"] = items_repaired
 
+        # Cross-run dedup annotation (EP-7; no-op unless memory.dedup_ledger)
+        _apply_dedup_ledger(ctx, digest)
+
         # Stage 7: ASSEMBLE
         _stage_assemble(ctx, digest)
 
@@ -1270,6 +1273,51 @@ def _build_evidence_summary(
             for thread in threads
         ],
     }
+
+
+def _apply_dedup_ledger(ctx: RunContext, digest: Digest) -> None:
+    """Annotate items whose evidence already backed a delivered item (EP-7, F8).
+
+    Annotate-only by design: suppression/down-ranking and the default flip are
+    owner decision D3. With ``memory.dedup_ledger`` off (the default) this is a
+    pure no-op — nothing is read or written, preserving privacy-via-not-storing.
+    The ledger persists hashed fingerprints only (see memory/ledger.py).
+    """
+    if not ctx.config.memory.dedup_ledger:
+        return
+    from digest_core.memory.ledger import DedupLedger, item_fingerprint
+
+    ledger_path = Path(ctx.config.ews.sync_state_path).expanduser().parent / "delivered-items.jsonl"
+    ledger = DedupLedger(ledger_path, ttl_days=ctx.config.memory.dedup_ttl_days)
+    # Two phases: "seen" means a PREVIOUS run delivered this evidence. Several
+    # items legitimately share one email within a single run (multiple actions
+    # per message) — that must not count as a repeat.
+    items_seen_before = 0
+    run_fingerprints = []
+    for section in digest.sections:
+        for item in section.items:
+            msg_id = (item.source_ref or {}).get("msg_id", "")
+            if not msg_id or item.evidence_id == "system":
+                continue  # status banners and system items carry no evidence identity
+            fingerprint = item_fingerprint(item.evidence_id, msg_id)
+            run_fingerprints.append(fingerprint)
+            if ledger.seen(fingerprint):
+                item.seen_before = True
+                items_seen_before += 1
+    for fingerprint in run_fingerprints:
+        ledger.record(fingerprint)
+    ledger.save()
+    ctx.run_meta["dedup_ledger"] = {
+        "items_seen_before": items_seen_before,
+        "entries": len(ledger),
+        "path": str(ledger_path),
+    }
+    logger.info(
+        "Dedup ledger applied",
+        items_seen_before=items_seen_before,
+        entries=len(ledger),
+        trace_id=ctx.trace_id,
+    )
 
 
 def _exporter_status_entry(metrics: Any) -> Dict[str, Any]:
