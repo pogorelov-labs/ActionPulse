@@ -25,6 +25,12 @@ dependencies = [
 [project.scripts]
 digest-core = "digest_core.cli:app"
 
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8.0",
@@ -32,6 +38,8 @@ dev = [
   "ruff>=0.4",
   "black>=24.0",
   "hypothesis>=6.155.2",
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
 ]
 
 [tool.hatch.build.targets.wheel]

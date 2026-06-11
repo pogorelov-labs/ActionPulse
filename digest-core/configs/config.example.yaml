@@ -62,6 +62,10 @@ deliver:
 observability:
   prometheus_port: 9108
   log_level: "INFO"
+  # OTel GenAI spans (EP-8): run -> stages -> gen_ai.* LLM call. Structural
+  # attributes only (no prompt/completion content, ever). Needs the 'otel' extra.
+  otel_enabled: false
+  # otel_export_path: "out/spans.jsonl"   # JSON-lines file; unset = console
 
 selection_buckets:
   threads_top: 10           # Minimum threads to cover (1 chunk each)

@@ -213,6 +213,22 @@ class ObservabilityConfig(BaseModel):
             " (default: log an error, record it in run_meta, continue)"
         ),
     )
+    otel_enabled: bool = Field(
+        default=False,
+        description=(
+            "Emit OpenTelemetry spans aligned to the GenAI semconv (EP-8):"
+            " run span -> stage spans -> gen_ai.* LLM-call span. Structural"
+            " attributes only - the spec's content capture stays off. Requires"
+            " the 'otel' extra; missing dependency degrades to no tracing."
+        ),
+    )
+    otel_export_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Write spans as JSON lines to this file (offline-verifiable)."
+            " None = console exporter. Corp collector wiring is a W3 decision."
+        ),
+    )
 
 
 class MattermostDeliverConfig(BaseModel):
