@@ -38,6 +38,7 @@ from digest_core.normalize.html import HTMLNormalizer
 from digest_core.normalize.quotes import QuoteCleaner
 from digest_core.observability.healthz import start_health_server
 from digest_core.observability.logs import setup_logging
+from digest_core.provenance import build_provenance, prompt_sha256
 from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
 from digest_core.threads.build import ThreadBuilder
@@ -230,6 +231,9 @@ def _init_context(
         "ews_fetch_stats": {},
         "llm_request_trace": {},
         "config_sanitized": _sanitize_config(config),
+        "provenance": build_provenance(
+            config, config_sha256=_config_sha256(config), pipeline_version=PIPELINE_VERSION
+        ),
         "status": "started",
         "partial": False,
     }
@@ -370,6 +374,10 @@ def _stage_llm(
         llm_error = None
     else:
         prompt_version, prompt_text = _load_extract_prompt(ctx.config.llm.model)
+        provenance = ctx.run_meta.get("provenance")
+        if isinstance(provenance, dict):
+            provenance["prompt_id"] = prompt_version
+            provenance["prompt_sha256"] = prompt_sha256(prompt_text)
         try:
             llm_response = llm_gateway.extract_actions(
                 evidence=selected_evidence,
