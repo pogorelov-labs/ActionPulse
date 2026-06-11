@@ -29,7 +29,7 @@ from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
-from digest_core.llm.gateway import LLMGateway
+from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
 from digest_core.llm.rate_broker import RateBroker
 from digest_core.llm.schemas import Digest, Section
@@ -397,13 +397,20 @@ def _stage_llm(
             )
             llm_error = None
         except Exception as exc:
-            ctx.metrics.record_degradation("llm_failed")
+            auth_failure = isinstance(exc, LLMAuthError)
+            ctx.metrics.record_degradation("llm_auth_failed" if auth_failure else "llm_failed")
             ctx.run_meta["partial"] = True
             ctx.run_meta["status"] = "partial"
             digest = _build_partial_digest(
                 digest_date=ctx.digest_date,
                 trace_id=ctx.trace_id,
                 error_message=str(exc),
+                title=(
+                    "LLM Gateway отклонил токен (401/403): обновите LLM_TOKEN. "
+                    "Дайджест неполный."
+                    if auth_failure
+                    else None
+                ),
             )
             llm_error = exc
             logger.warning(
