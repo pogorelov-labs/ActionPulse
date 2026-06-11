@@ -229,3 +229,11 @@ eval:
   # dashboard only; 'reference' = reference-anchored judging vs gold rows
   # (eval-judge-run). Nothing gates CI until κ >= 0.41 + CI floor (EP-15).
   judge_mode: "pointwise"
+
+extract:
+  # Best-of-N extraction selected by the citation gate (EP-10). 1 = today's
+  # single-shot path. Raising N requires raising llm.stage_call_budgets.extractor
+  # alongside (ADR-008 v2) — with the default budget of 2, sampling degrades
+  # back to N=1. Live N/temperature tuning happens in corp (EP-14).
+  best_of_n: 1
+  sample_temperature: 0.7    # candidates 2..N; candidate 1 stays deterministic

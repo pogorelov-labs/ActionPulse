@@ -1,0 +1,15 @@
+[
+  {
+    "case": "case01",
+    "n_candidates": 3,
+    "selected": 1,
+    "support_recall_n1": 0.5,
+    "support_recall_best": 1.0,
+    "scores": [
+      0.5,
+      1.0,
+      0.0
+    ],
+    "ok": true
+  }
+]

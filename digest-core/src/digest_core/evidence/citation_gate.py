@@ -26,6 +26,26 @@ from digest_core.llm.schemas import Digest, Item
 logger = structlog.get_logger()
 
 
+def support_recall(digest: Digest) -> tuple[float, int]:
+    """Fraction of evidence-backed items that are offset-verifiable; plus weak count.
+
+    Reads the annotations a :class:`CitationGate` left on the items — call it
+    after ``annotate``. Shared by the run pipeline (PR11 recall floor) and the
+    best-of-N candidate selector (EP-10).
+    """
+    backed = [
+        item
+        for section in digest.sections
+        for item in section.items
+        if item.evidence_id != "system"
+    ]
+    if not backed:
+        return 1.0, 0
+    verified = sum(1 for item in backed if getattr(item, "citation_fidelity_ok", False))
+    weak = sum(1 for item in backed if getattr(item, "weak_evidence", False))
+    return verified / len(backed), weak
+
+
 def normalize_confidence(value) -> float:
     """R6: map High/Med/Low (or a float) to a threshold-comparable float."""
     if isinstance(value, bool):
