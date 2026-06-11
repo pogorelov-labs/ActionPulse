@@ -278,7 +278,7 @@ The original tensions are preserved in git history; this table is the ruling.
 | D4 | PC-2 per-endpoint data handling | **YES for all three** fleet endpoints (reranker `/rerank`, embeddings, judge `qwen35-35b-a3b`) — same gateway host/key/trust domain as the approved extractor | unlocks fleet wiring (W3 work + corp validation); repair + real support scores + judge calibration |
 | D5 | Release-judge architecture | **Hybrid by job**: reference-anchored judge for the release/regression gate (calibrated vs gold, κ ≥ 0.41 + CI floor before it may gate); pairwise reserved for EP-10 best-of-N selection | EP-5 step 3 implementation (post fleet wiring) |
 | D6 | Best-of-N vs ADR-008 | **Rewrite ADR-008 around the real constraint ceilings** (per-stage RateBroker budgets, 15 RPM key budget, 3-parallel, token budget) — go up to the ceilings when needed — **plus visible call-count + token-budget reporting** to the operator every run | ADR-008 text rewritten (ARCHITECTURE.md); `llm_budget` summary in run_meta + log + MM trace footer |
-| D7 | Plane seeding | **Seed open items only** (post-decision survivors), sanitized | ~7 issues filed in ACTPULSE; ids recorded in BACKLOG.md |
+| D7 | Plane seeding | **Seed open items only** (post-decision survivors), sanitized | Approved; pending — the Plane MCP was not connected in the enactment session. Seed EP-10..15 from BACKLOG.md when it is |
 
 ---
 

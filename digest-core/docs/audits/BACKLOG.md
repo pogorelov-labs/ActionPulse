@@ -1,8 +1,9 @@
 # Quality-program backlog — ActionPulse digest-core
 
 Updated 2026-06-11 after the owner decision interview (D1–D7 resolved — see
-`ENHANCEMENT_PROGRAM.md`). Open items are seeded into Plane (ACTPULSE) per D7;
-issue ids recorded below when filed.
+`ENHANCEMENT_PROGRAM.md`). D7 approved seeding open items into Plane (ACTPULSE);
+the Plane MCP was offline in the enactment session — seed the rows below when
+connected and record the ids.
 
 ## Done (W1 + W2, PRs #62–#72 + decision enactment)
 
