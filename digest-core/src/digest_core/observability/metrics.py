@@ -182,7 +182,7 @@ class MetricsCollector:
         )
         self.reranker_calls_total = Counter(
             "reranker_calls_total",
-            "Total reranker (/v1/score) calls made by the P2 gate",
+            "Total reranker (/rerank) calls made by the P2 gate",
             registry=self.registry,
         )
 

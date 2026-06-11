@@ -4,14 +4,16 @@ One boundary, one Bearer, tokens unmetered — only the per-model RPM bucket cap
 throughput. This module adds the non-chat endpoints used by later PRs:
 
   * :class:`EmbeddingsClient` -> ``/v1/embeddings`` (relevance/threading, PR9/PR12)
-  * :class:`RerankerClient`   -> ``/v1/score``      (cross-encoder support, PR8/PR9)
+  * :class:`RerankerClient`   -> ``/rerank``        (cross-encoder support; path
+    per D4/PC-2, configurable via ``reranker.endpoint_path``)
   * :class:`TokenizerClient`  -> ``/v1/tokenize``   (exact token counts)
 
 All endpoints are derived from ``LLMConfig.endpoint`` and every request is paced
-through the shared :class:`~digest_core.llm.rate_broker.RateBroker`. The clients
-are **record/replay-aware and namespaced per endpoint**; in replay mode they make
-**zero network calls**. They are NOT wired into the live ``run.py`` path in PR2 —
-they are built and tested offline first, and their live flags stay off until PC-2.
+through the shared :class:`~digest_core.llm.rate_broker.RateBroker` (per-model
+RPM bucket + optional per-stage call budget). The clients are
+**record/replay-aware and namespaced per endpoint**; in replay mode they make
+**zero network calls**. The reranker is consumed by the P2 citation gate behind
+``reranker.enabled`` (default OFF — EP-12); the rest stay unwired until their PRs.
 """
 
 from __future__ import annotations
@@ -31,14 +33,20 @@ logger = structlog.get_logger()
 
 
 def derive_fleet_endpoint(chat_endpoint: str, name: str) -> str:
-    """Map the chat endpoint to a sibling fleet endpoint (``/v1/<name>``)."""
+    """Map the chat endpoint to a sibling fleet endpoint.
+
+    A plain ``name`` maps to ``/v1/<name>``; a leading-slash name (``/rerank``)
+    is absolute under the gateway host (the LiteLLM front mounts rerank at the
+    root, not under ``/v1`` — see ENDPOINT-FACTS §1).
+    """
     if not chat_endpoint:
         return ""
     if "/v1/" in chat_endpoint:
         base = chat_endpoint.split("/v1/")[0]
-        return f"{base}/v1/{name}"
+        return f"{base}{name}" if name.startswith("/") else f"{base}/v1/{name}"
     # Fallback: swap the last path segment (e.g. .../chat -> .../<name>).
-    return chat_endpoint.rsplit("/", 1)[0] + "/" + name
+    base = chat_endpoint.rsplit("/", 1)[0]
+    return f"{base}{name}" if name.startswith("/") else f"{base}/{name}"
 
 
 def _request_hash(endpoint_name: str, model: str, payload: Dict[str, Any]) -> str:
@@ -67,9 +75,11 @@ class FleetClient:
         record: Optional[str] = None,
         replay: Optional[str] = None,
         http_client: Optional[httpx.Client] = None,
+        stage: Optional[str] = None,
     ):
         self.config = config
         self._broker = rate_broker
+        self._stage = stage
         self._record_path = Path(record) if record else None
         self._replay_data: Optional[Dict[str, Any]] = None
         self._replay_consumed: Dict[str, set] = {}
@@ -92,6 +102,11 @@ class FleetClient:
 
     def _post(self, endpoint_name: str, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         req_hash = _request_hash(endpoint_name, model, payload)
+
+        # Per-stage call budget holds in replay too (parity with the gateway),
+        # so deterministic runs prove the same ceilings as live ones.
+        if self._broker is not None and self._stage is not None:
+            self._broker.note_call(self._stage)
 
         # ── REPLAY MODE (no network) ─────────────────────────────────
         if self._replay_data is not None:
@@ -167,17 +182,35 @@ class EmbeddingsClient(FleetClient):
 
 
 class RerankerClient(FleetClient):
-    """``/v1/score`` cross-encoder — the scarce, non-batchable fleet resource."""
+    """``/rerank`` cross-encoder — the scarce, non-batchable fleet resource.
 
-    def __init__(self, config: LLMConfig, *, model: str = "bge-reranker-v2-m3", **kwargs: Any):
+    Payload is the Cohere/LiteLLM rerank shape (``query`` + ``documents``);
+    the response parser tolerates both ``scores`` lists and ``results`` rows.
+    The exact corp path is configurable (``endpoint_path``) because only
+    ``/rerank`` was probe-verified — flipping to ``/v1/score`` is a config
+    change, not a code change (EP-14 confirms).
+    """
+
+    def __init__(
+        self,
+        config: LLMConfig,
+        *,
+        model: str = "bge-reranker-v2-m3",
+        endpoint_path: str = "/rerank",
+        **kwargs: Any,
+    ):
         super().__init__(config, **kwargs)
         self.model = model
+        self.endpoint_path = endpoint_path
+
+    def _endpoint(self, name: str) -> str:
+        return derive_fleet_endpoint(self.config.endpoint, self.endpoint_path or name)
 
     def score(self, query: str, docs: Sequence[str]) -> List[float]:
         if not docs:
             return []
         payload = {"model": self.model, "query": query, "documents": list(docs)}
-        data = self._post("score", self.model, payload)
+        data = self._post("rerank", self.model, payload)
         if "scores" in data:
             return [float(s) for s in data["scores"]]
         results = sorted(data.get("results", []), key=lambda r: r.get("index", 0))

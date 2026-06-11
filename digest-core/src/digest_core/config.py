@@ -534,6 +534,18 @@ class RerankerConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="Use the reranker for support scores")
+    model: str = Field(
+        default="bge-reranker-v2-m3", description="Reranker model (own RPM bucket, 10 RPM)"
+    )
+    endpoint_path: str = Field(
+        default="/rerank",
+        description=(
+            "Gateway path for support scoring. D4 approves the reranker at /rerank"
+            " (probe-verified on the LiteLLM front); exact path + response shape"
+            " still requires corp validation (EP-14). Leading slash = absolute"
+            " under the gateway host."
+        ),
+    )
     tau: float = Field(default=0.0, description="Support-score threshold for weak_evidence")
     budget_per_run: int = Field(default=10, description="Max reranker calls per run")
     low_confidence_threshold: float = Field(

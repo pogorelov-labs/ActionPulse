@@ -7,8 +7,10 @@ Annotates every evidence-backed digest item with:
     items only (the reranker is the scarce fleet resource, budgeted per run), and
   * ``weak_evidence`` — no offset-verifiable span, or support below tau.
 
-It NEVER drops an item (R3). The reranker is OFF by default (PC-2): with no
-reranker the gate is offset-only and makes zero network calls.
+It NEVER drops an item (R3). The reranker is OFF by default (``reranker.enabled``;
+D4 resolved PC-2 in its favor, the live flip waits for corp validation — EP-14):
+with no reranker the gate is offset-only and makes zero network calls. Any
+reranker failure mid-run degrades the gate back to offset-only, never crashes.
 """
 
 from __future__ import annotations
@@ -16,8 +18,12 @@ from __future__ import annotations
 import hashlib
 from typing import Dict, Optional
 
+import structlog
+
 from digest_core.config import RerankerConfig
 from digest_core.llm.schemas import Digest, Item
+
+logger = structlog.get_logger()
 
 
 def normalize_confidence(value) -> float:
@@ -94,7 +100,20 @@ class CitationGate:
         self.reranker_calls += 1
         if metrics is not None:
             metrics.record_reranker_call()
-        scores = self.reranker.score(item.title, quotes)
+        try:
+            scores = self.reranker.score(item.title, quotes)
+        except Exception as exc:
+            # Degrade-not-drop (R3): any scoring failure (429, timeout, stage
+            # budget) turns the gate fidelity-only for the REST of the run —
+            # no retries that could stall the pipeline, never a crash.
+            logger.warning(
+                "Reranker degraded to fidelity-only for the rest of the run",
+                error_type=type(exc).__name__,
+                evidence_id=item.evidence_id,
+                reranker_calls=self.reranker_calls,
+            )
+            self.reranker = None
+            return None
         return max(scores) if scores else None
 
     @staticmethod
