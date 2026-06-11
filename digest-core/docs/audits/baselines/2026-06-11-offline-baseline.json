@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "purpose": "W2 entry baseline (ENHANCEMENT_PROGRAM.md EP-5 step 1): every W2 quality change must show its before/after delta against these numbers.",
+    "generated": "2026-06-11",
+    "base_commit_origin_main": "712bb790cd91be3d55841433f43f9a55bfd22279",
+    "regenerate": "cd digest-core && make eval-replay  (offline, deterministic; synthetic corpus only)",
+    "honesty": "Offline numbers only. The judge-vs-gold baseline cannot be produced outside the corp network (the judge model lives on the corp gateway; the gold set grows from Mattermost reactions per RUNBOOK §8)."
+  },
+  "replay_corpus": {
+    "case01": {
+      "item_count": 2,
+      "section_counts": {"Мои действия": 2},
+      "span_coverage": 1.0,
+      "evidence_ids_unverifiable": 0,
+      "evidence_ids_checked": true
+    },
+    "_note": "Per-case committed baselines live next to the corpus (src/digest_core/eval/corpus/*.baseline.json); eval-replay exits 2 on regression. Corpus breadth (1 case) is a known gap — EP-9/EP-4 add adversarial cases."
+  },
+  "judge_gold": {
+    "status": "requires corp validation",
+    "next_step": "export MM reactions → cli eval-gold → cli eval-judge (now reports the EP-5 agreement block: Cohen κ, Krippendorff α, bootstrap CI, may_gate floor 0.41)"
+  },
+  "agreement_tooling": {
+    "module": "src/digest_core/eval/agreement.py (vendored from the quality-loop plugin script; deterministic, stdlib-only)",
+    "cli": "python -m digest_core.cli eval-agreement --labels labels.csv",
+    "gate_rule": "may_gate iff κ >= 0.41 — necessary, not sufficient; check the CI floor and per-class P/R. Gate architecture itself is open decision D5."
+  }
+}
