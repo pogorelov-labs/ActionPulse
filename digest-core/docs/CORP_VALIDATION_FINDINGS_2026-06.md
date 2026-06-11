@@ -224,10 +224,19 @@ stay offline.
 
 ### P2 — DX / docs / env-encoding
 
-**B-4. Dead-config cleanup** — delete `LLMConfig.max_retries` (no readers) + uncalled
-`parse_strict_json` + example line 48, and the dead `hierarchical:` example section
-(98–101) + `HierarchicalConfig` (CLAUDE.md already sanctions removal). Or wire
-`max_retries` if deemed useful — decide, don't keep the lie. *Size S.*
+**B-4. Dead-pipeline sweep** *(scope expanded by the 2026-06-11 prompts/JSON-harness
+review)* — delete or quarantine: `LLMConfig.max_retries` **and** `LLMConfig.strict_json`
+(both have zero readers) plus the example lines documenting them; uncalled
+`models.parse_strict_json` (it has green unit tests — dead code under test); the dead
+`hierarchical:` example section + `HierarchicalConfig` (CLAUDE.md sanctions removal);
+the dead **second digest pipeline** in `gateway.py` (`process_digest` /
+`_process_digest_internal` / `_build_inline_digest_prompt` — no callers) together with
+the `EnhancedDigest`/`EnhancedDigestV3` schema families, `degrade.extractive_fallback`
+(reachable only from that pipeline) and `summarize_digest` + unused `.j2` registry
+entries; `assemble/jsonout.py` (no importers); and the misleading package docstring
+`__init__.py:5` ("Schema version: 3.0 (EnhancedDigestV3), Prompt version: mvp.5" vs the
+live `Digest schema_version="1.0"` / prompt v1 — the corp report parroted exactly this
+docstring). *Size M (was S).*
 
 **B-5. Env-file hint in CLI errors** — when required ENV is missing and
 `~/.config/actionpulse/env` exists, the fail-fast error should say
