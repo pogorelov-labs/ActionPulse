@@ -153,7 +153,7 @@ def _run(monkeypatch, tmp_path, *, validate_citations=False, replay_ingest=None)
             out=str(out),
             model="qwen35-397b-a17b",
             window="calendar_day",
-            state=None,
+            state=str(tmp_path / "state"),
             force=True,
             validate_citations=validate_citations,
             replay_ingest=replay_ingest,
@@ -210,7 +210,7 @@ def test_live_ingest_missing_file_crashes(monkeypatch, tmp_path):
             out=str(tmp_path / "out"),
             model="qwen35-397b-a17b",
             window="calendar_day",
-            state=None,
+            state=str(tmp_path / "state"),
             force=True,
             replay_ingest=None,  # LIVE mode -> missing file is a config error
         )

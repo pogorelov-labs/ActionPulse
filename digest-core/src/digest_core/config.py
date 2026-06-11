@@ -547,6 +547,14 @@ class RerankerConfig(BaseModel):
     tau_repair: float = Field(
         default=0.0, description="Higher support bar a re-selected span must clear (PR11)"
     )
+    quarantine_weak: bool = Field(
+        default=True,
+        description=(
+            "Move weak_evidence items into a trailing «Не подтверждено» section"
+            " (decision D1): withheld from the main sections, still delivered with"
+            " their ⚠ badge — never dropped (R3). False = legacy shadow badges only."
+        ),
+    )
 
 
 class JudgeConfig(BaseModel):
@@ -569,10 +577,12 @@ class MemoryConfig(BaseModel):
     """
 
     dedup_ledger: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Annotate items whose evidence already backed a delivered item"
-            " (seen_before: true). Hashed fingerprints only; never suppresses."
+            " (seen_before: true, «↻ повтор» in MM). Hashed fingerprints only;"
+            " never suppresses. Default ON per decision D3; the TTL sweep is the"
+            " retention policy."
         ),
     )
     dedup_ttl_days: int = Field(

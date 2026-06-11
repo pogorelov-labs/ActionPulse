@@ -8,7 +8,7 @@ import tempfile
 import json
 
 
-def test_shortcut_when_no_evidence_selected():
+def test_shortcut_when_no_evidence_selected(tmp_path):
     """Test that LLM is skipped when selector returns empty list."""
     from digest_core import run as runner
 
@@ -73,7 +73,7 @@ def test_shortcut_when_no_evidence_selected():
                     out=tmpdir,
                     model="test-model",
                     window="calendar_day",
-                    state=None,
+                    state=str(tmp_path / "state"),
                 )
             except Exception:
                 # Some imports might fail in test environment, that's OK

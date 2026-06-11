@@ -317,7 +317,10 @@ def _run_pipeline_once(monkeypatch, out_dir, snapshot_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        # Per-run state isolation: with the dedup ledger ON by default (D3),
+        # determinism is f(input, state) — identical runs must start from
+        # identical (fresh) state, or run 2 is legitimately annotated.
+        state=str(out_dir / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )

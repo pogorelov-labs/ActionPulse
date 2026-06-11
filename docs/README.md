@@ -11,7 +11,7 @@ ActionPulse - это privacy-first система для автоматичес�
 ### Установка
 
 ```bash
-git clone https://github.com/ruspg/ActionPulse.git
+git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
 make setup    # установка зависимостей + интерактивный мастер (6 вопросов)
 ```
@@ -156,7 +156,7 @@ EWS → normalize → thread → evidence split → context select
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/ruspg/ActionPulse.git
+git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse
 
 # Установить зависимости

@@ -8,7 +8,7 @@ Daily corporate email digest with LLM-powered action extraction. Processes Excha
 
 ```bash
 # 1. Clone & install
-git clone https://github.com/ruspg/ActionPulse.git
+git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
 uv sync --native-tls
 

@@ -84,3 +84,6 @@ ehthumbs.db
 .fixtures/
 *.snapshot.json
 *-recording.json
+
+# Runtime state (sync cursor, dedup ledger) — retention via TTL, never commit
+.state/

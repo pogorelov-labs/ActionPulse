@@ -47,7 +47,8 @@ from digest_core.threads.build import ThreadBuilder
 PIPELINE_VERSION = "1.1.0"
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = PACKAGE_ROOT / "prompts"
-SECTION_ORDER = {"Мои действия": 0, "Срочное": 1, "К сведению": 2}
+SECTION_ORDER = {"Мои действия": 0, "Срочное": 1, "К сведению": 2, "Не подтверждено": 3}
+QUARANTINE_SECTION = "Не подтверждено"
 
 logger = structlog.get_logger()
 
@@ -840,6 +841,12 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         ctx.run_meta["items_weak"] = items_weak
         ctx.run_meta["items_repaired"] = items_repaired
 
+        # D1: withhold weak items from the main sections (quarantine, never drop).
+        # Only meaningful when citation validation ran — without it spans are never
+        # resolved and *every* item looks weak (quarantining all would be a drop).
+        if ctx.validate_citations and ctx.config.reranker.quarantine_weak:
+            ctx.run_meta["items_quarantined"] = _quarantine_weak_items(digest)
+
         # Cross-run dedup annotation (EP-7; no-op unless memory.dedup_ledger)
         _apply_dedup_ledger(ctx, digest)
 
@@ -1320,6 +1327,32 @@ def _build_evidence_summary(
             for thread in threads
         ],
     }
+
+
+def _quarantine_weak_items(digest: Digest) -> int:
+    """Move ``weak_evidence`` items into a trailing «Не подтверждено» section (D1).
+
+    Containment without loss: items the gate could not offset-verify leave the
+    main sections but stay in the digest with their ⚠ badge — never dropped (R3).
+    Returns the number of items moved. Sections emptied by the move are removed;
+    with no weak items the digest is unchanged (no quarantine section appears).
+    """
+    quarantined = []
+    surviving_sections = []
+    for section in digest.sections:
+        if section.title == QUARANTINE_SECTION:
+            quarantined.extend(section.items)
+            continue
+        kept = [item for item in section.items if not getattr(item, "weak_evidence", False)]
+        moved = [item for item in section.items if getattr(item, "weak_evidence", False)]
+        quarantined.extend(moved)
+        if kept:
+            section.items = kept
+            surviving_sections.append(section)
+    if quarantined:
+        surviving_sections.append(Section(title=QUARANTINE_SECTION, items=quarantined))
+    digest.sections = surviving_sections
+    return len(quarantined)
 
 
 def _apply_dedup_ledger(ctx: RunContext, digest: Digest) -> None:

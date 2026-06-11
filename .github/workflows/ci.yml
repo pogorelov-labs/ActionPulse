@@ -72,6 +72,31 @@ jobs:
         run: docker build -t digest-core:ci -f docker/Dockerfile .
         working-directory: digest-core
 
+  # Deterministic eval gate (decision D2): replay the synthetic corpus and FAIL on
+  # metric regression (cli exit 2). No LLM/network. recall_floor-based gating stays
+  # off until reactions-based calibration produces a defensible floor.
+  eval-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'digest-core/pyproject.toml'
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Replay corpus vs committed baseline
+        run: uv run python -m digest_core.cli eval-replay
+        env:
+          PYTHONPATH: src
+
   # Report-only dependency audit (EP-6, F12). Deliberately non-blocking until the
   # owner sets a gating policy — findings must be a recorded decision, not a
   # surprise inside the air-gap.
