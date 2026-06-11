@@ -25,7 +25,8 @@ from digest_core.assemble.markdown import MarkdownAssembler
 from digest_core.config import Config, RankerConfig
 from digest_core.deliver.mattermost import MattermostDeliverer
 from digest_core.eval.judge import LLMJudge
-from digest_core.evidence.citation_gate import CitationGate
+from digest_core.evidence.citation_gate import CitationGate, support_recall
+from digest_core.llm.best_of_n import best_of_n_meta, select_best_candidate
 from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
@@ -381,12 +382,16 @@ def _stage_select(
 
 
 def _stage_llm(
-    ctx: RunContext, selected_evidence: List[EvidenceChunk]
+    ctx: RunContext,
+    selected_evidence: List[EvidenceChunk],
+    normalized_messages: Sequence[NormalizedMessage] = (),
 ) -> tuple[Digest, Optional[Exception]]:
     """Stage 6: LLM — extract actions from evidence via the LLM gateway.
 
     Returns (digest, llm_error). On LLM failure, returns a partial digest
-    instead of raising.
+    instead of raising. With ``extract.best_of_n > 1`` (default 1 = off) and a
+    successful deterministic extraction, candidates 2..N are sampled and the
+    citation gate selects the winner (EP-10).
     """
     llm_gateway = LLMGateway(
         ctx.config.llm,
@@ -443,6 +448,14 @@ def _stage_llm(
                 error=str(exc),
             )
 
+    # EP-10: best-of-N sampling, only after a SUCCESSFUL deterministic
+    # candidate — a partial digest is never "improved" by sampling, and every
+    # sampling failure degrades back to the deterministic candidate.
+    if llm_error is None and selected_evidence and ctx.config.extract.best_of_n > 1:
+        digest = _sample_and_select(
+            ctx, digest, selected_evidence, prompt_version, prompt_text, normalized_messages
+        )
+
     _record_stage_duration(ctx.run_meta, ctx.metrics, "llm", llm_stage_start)
 
     # Record LLM trace metadata
@@ -472,6 +485,84 @@ def _stage_llm(
         pass
 
     return digest, llm_error
+
+
+def _sample_and_select(
+    ctx: RunContext,
+    primary_digest: Digest,
+    selected_evidence: List[EvidenceChunk],
+    prompt_version: str,
+    prompt_text: str,
+    normalized_messages: Sequence[NormalizedMessage],
+) -> Digest:
+    """EP-10: sample candidates 2..N and let the citation gate pick the winner.
+
+    Candidate 1 is the deterministic extraction already in hand; samples run at
+    ``extract.sample_temperature`` on the extractor's own RPM bucket and stage
+    budget (ADR-008 v2: raise ``llm.stage_call_budgets.extractor`` alongside the
+    flag — with the default budget, sampling degrades back to N=1). Disabled
+    under ``--replay-llm`` (recordings carry no sample channel — EP-14 design
+    item, same precedent as the fleet sidecar/judge channels). Any sampling
+    failure stops the loop and selection proceeds over the candidates gathered;
+    ties prefer the deterministic candidate.
+    """
+    if ctx.replay_llm:
+        logger.warning(
+            "Best-of-N sampling disabled under --replay-llm: no sample channel in recordings",
+            trace_id=ctx.trace_id,
+        )
+        return primary_digest
+
+    candidates = [primary_digest]
+    sample_llm = ctx.config.llm.model_copy(
+        update={"temperature": ctx.config.extract.sample_temperature}
+    )
+    sample_gateway = LLMGateway(
+        sample_llm,
+        metrics=ctx.metrics,
+        record_llm=ctx.record_llm,
+        rate_broker=ctx.rate_broker,
+        stage="extractor",
+    )
+    try:
+        for candidate_no in range(2, ctx.config.extract.best_of_n + 1):
+            try:
+                response = sample_gateway.extract_actions(
+                    evidence=selected_evidence,
+                    prompt_template=prompt_text,
+                    trace_id=ctx.trace_id,
+                )
+                candidates.append(
+                    Digest(
+                        schema_version="1.0",
+                        prompt_version=prompt_version,
+                        digest_date=ctx.digest_date,
+                        trace_id=ctx.trace_id,
+                        sections=_sort_sections(response.get("sections", [])),
+                    )
+                )
+            except Exception as exc:
+                # Budget exhausted / transport failure: stop sampling, keep
+                # what we have (degrade-not-drop — never worse than N=1).
+                logger.warning(
+                    "Best-of-N sampling stopped; selecting among gathered candidates",
+                    candidate=candidate_no,
+                    error_type=type(exc).__name__,
+                    trace_id=ctx.trace_id,
+                )
+                break
+    finally:
+        sample_gateway.close()
+
+    if len(candidates) == 1:
+        return primary_digest
+
+    msg_map = {m.msg_id: m.text_body for m in normalized_messages if m.msg_id}
+    selected, scores = select_best_candidate(candidates, msg_map)
+    summary = best_of_n_meta(scores, selected)
+    ctx.run_meta["best_of_n"] = summary
+    logger.info("Best-of-N selection", trace_id=ctx.trace_id, **summary)
+    return candidates[selected]
 
 
 def _ranker_weights_from_config(ranker_cfg: RankerConfig) -> Dict[str, float]:
@@ -670,18 +761,13 @@ def _build_repair_judge(ctx: RunContext) -> tuple[Optional[LLMJudge], Optional[L
 
 
 def _support_recall(digest: Digest) -> tuple[float, int]:
-    """Fraction of evidence-backed items that are offset-verifiable; plus weak count."""
-    backed = [
-        item
-        for section in digest.sections
-        for item in section.items
-        if item.evidence_id != "system"
-    ]
-    if not backed:
-        return 1.0, 0
-    verified = sum(1 for item in backed if getattr(item, "citation_fidelity_ok", False))
-    weak = sum(1 for item in backed if getattr(item, "weak_evidence", False))
-    return verified / len(backed), weak
+    """Fraction of evidence-backed items that are offset-verifiable; plus weak count.
+
+    Thin alias over :func:`digest_core.evidence.citation_gate.support_recall`
+    (the metric moved there so the EP-10 selector shares it; existing callers
+    and tests keep this name).
+    """
+    return support_recall(digest)
 
 
 def _build_reranker(ctx: RunContext) -> Optional[RerankerClient]:
@@ -931,7 +1017,7 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
             return RunDigestResult(True, True)
 
         # Stage 6: LLM
-        digest, llm_error = _stage_llm(ctx, selected_evidence)
+        digest, llm_error = _stage_llm(ctx, selected_evidence, normalized_messages)
 
         (
             digest,

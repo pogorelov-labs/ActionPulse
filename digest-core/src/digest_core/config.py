@@ -580,6 +580,31 @@ class JudgeConfig(BaseModel):
     )
 
 
+class ExtractConfig(BaseModel):
+    """Extraction-stage knobs (EP-10). ``best_of_n=1`` == today's single-shot path."""
+
+    best_of_n: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Sample N extraction candidates and keep the one with the best"
+            " offset-verifiable support recall (citation gate as selector)."
+            " Candidate 1 stays deterministic (llm.temperature); candidates 2..N"
+            " sample at extract.sample_temperature on the extractor's own RPM"
+            " bucket. Raise llm.stage_call_budgets.extractor alongside (ADR-008"
+            " v2: the budget raise lives in config, only together with this"
+            " flag) — with the default budget of 2, sampling degrades back to"
+            " N=1. Default 1 until corp N/RPM tuning (EP-14)."
+        ),
+    )
+    sample_temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature for candidates 2..N (candidate 1 stays deterministic)",
+    )
+
+
 class EvalConfig(BaseModel):
     """Eval-harness knobs (EP-5). Nothing here touches the live run path."""
 
@@ -644,6 +669,7 @@ class Config(BaseSettings):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     eval: EvalConfig = Field(default_factory=EvalConfig)
+    extract: ExtractConfig = Field(default_factory=ExtractConfig)
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
@@ -789,6 +815,8 @@ class Config(BaseSettings):
             self._merge_model(self.judge, yaml_config["judge"], env_prefix="JUDGE")
         if "eval" in yaml_config:
             self._merge_model(self.eval, yaml_config["eval"], env_prefix="EVAL")
+        if "extract" in yaml_config:
+            self._merge_model(self.extract, yaml_config["extract"], env_prefix="EXTRACT")
 
     def _merge_model(
         self,

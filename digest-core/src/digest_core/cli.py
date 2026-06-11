@@ -472,6 +472,45 @@ def eval_judge(
     typer.echo(json.dumps(compute_judge_metrics(rows), ensure_ascii=False, indent=2))
 
 
+@app.command("eval-best-of-n")
+def eval_best_of_n(
+    corpus_dir: str = typer.Option(
+        None, "--corpus-dir", help="Corpus dir (default: digest_core/eval/corpus)"
+    ),
+    out: str = typer.Option(None, "--out", help="Write the proof report JSON here"),
+):
+    """EP-10 offline proof: the gate-as-selector never loses to single-shot.
+
+    Builds controlled candidate sets over the frozen replay corpus and asserts
+    support-recall(selected) >= support-recall(N=1) per case. Offline and
+    deterministic (no LLM). Exit 0 (proof holds) or 2 (selector regressed).
+    Live sampling quality requires corp validation (EP-14).
+    """
+    from digest_core.eval.best_of_n_harness import evaluate_corpus_best_of_n
+    from digest_core.eval.corpus import CORPUS_DIR, load_corpus
+
+    cases = load_corpus(Path(corpus_dir) if corpus_dir else CORPUS_DIR)
+    if not cases:
+        typer.echo("No corpus cases found.", err=True)
+        raise typer.Exit(1)
+
+    ok, reports = evaluate_corpus_best_of_n(cases)
+    payload = json.dumps(reports, ensure_ascii=False, indent=2)
+    if out:
+        Path(out).write_text(payload, encoding="utf-8")
+        typer.echo(f"Proof report written to {out}")
+    typer.echo(payload)
+    typer.echo(
+        (
+            "PROOF OK: selected candidate never loses to N=1."
+            if ok
+            else "PROOF FAILED: a case selected a worse candidate than N=1."
+        ),
+        err=True,
+    )
+    raise typer.Exit(0 if ok else 2)
+
+
 @app.command("eval-judge-run")
 def eval_judge_run(
     digest: str = typer.Option(..., "--digest", help="Digest artifact JSON to judge"),

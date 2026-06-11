@@ -533,7 +533,8 @@ today's behavior, items are never dropped.
 | Reranker support scoring | `llm/fleet.py` `RerankerClient` | Behind `reranker.enabled` (default **off**; D4/PC-2 approved, live flip waits for EP-14). Endpoint `/rerank` (probe-verified; `reranker.endpoint_path` flips it without code). Spent on **low-confidence items only**, ≤ `budget_per_run` (10); model `bge-reranker-v2-m3` on its own 10 RPM bucket + stage budget via `RateBroker`. Any failure (429/timeout/budget) → gate turns fidelity-only for the rest of the run. |
 | Repair (quarantine rescue) | `evidence/repair.py` | Behind `judge.enabled` (default **off**). Re-selects a **verbatim** span (`reselect_span`, non-generative) and accepts it only if the **cross-model** judge (`judge.model` ≠ `llm.model`, R4) approves above `reranker.tau_repair`. Judge rides `LLMGateway.judge()` with a model override (R1), stage budget `judge=8`. Failures keep the weak badge; budget exhaustion stops further attempts. |
 | Quarantine | `run.py _quarantine_weak_items` | D1: items still `weak_evidence` after repair move to the trailing **«Не подтверждено»** section — withheld from main sections, still delivered. Repaired items escape it. |
-| Eval judge (offline only) | `eval/judge.py` | `eval.judge_mode` (default `pointwise` = advisory dashboard; **never a gate** — research-refuted pattern). `reference` = reference-anchored binary judging vs gold rows (`eval-judge-run`: calibration κ/α + regression report). Pairwise = library only, reserved for EP-10. **No-gate rule:** nothing gates CI until reactions-based calibration clears κ ≥ 0.41 with the bootstrap CI floor (D2/EP-15). |
+| Eval judge (offline only) | `eval/judge.py` | `eval.judge_mode` (default `pointwise` = advisory dashboard; **never a gate** — research-refuted pattern). `reference` = reference-anchored binary judging vs gold rows (`eval-judge-run`: calibration κ/α + regression report). Pairwise = library only, consumed by EP-10 selection. **No-gate rule:** nothing gates CI until reactions-based calibration clears κ ≥ 0.41 with the bootstrap CI floor (D2/EP-15). |
+| Best-of-N selection (EP-10) | `llm/best_of_n.py` | Behind `extract.best_of_n` (default **1** = single-shot). Candidate 1 deterministic; 2..N sampled at `extract.sample_temperature` on the extractor's bucket/budget (ADR-008 v2: raise `llm.stage_call_budgets.extractor` alongside — the default budget degrades sampling back to N=1). The gate selects by offset-verifiable support recall, fidelity-only (zero fleet spend); ties prefer the deterministic candidate; the pairwise judge breaks only EXACT ties when wired (corp). Sampling failures keep the gathered candidates; disabled under `--replay-llm`. Offline proof: `eval-best-of-n` (the selector never loses to N=1; archived under `docs/audits/baselines/`). Live N/temp tuning `requires corp validation` (EP-14). |
 
 Record/replay: fleet calls use a **`<recording>.fleet.json` sidecar** next to the
 LLM recording (namespaced per endpoint); under `--replay-llm` without a sidecar
@@ -600,6 +601,10 @@ judge:                                     # cross-model repair judge (EP-12, D1
 
 eval:
   judge_mode: "pointwise"                  # D5: pointwise (advisory) | reference
+
+extract:                                   # best-of-N extraction (EP-10, ADR-008 v2)
+  best_of_n: 1                             # 1 = today's single-shot (default)
+  sample_temperature: 0.7                  # candidates 2..N only
 ```
 
 ### 5.2 Config Precedence
@@ -927,9 +932,11 @@ digest-core/
 │   │   ├── gateway.py             # LLM HTTP client (+ judge() verdict call, §4.6)
 │   │   ├── fleet.py               # Fleet clients: embeddings / reranker / tokenizer (§4.6)
 │   │   ├── rate_broker.py         # Per-model RPM buckets + per-stage call budgets (ADR-008 v2)
+│   │   ├── best_of_n.py           # Gate-as-selector over N extraction candidates (EP-10, §4.6)
 │   │   └── schemas.py             # Pydantic output schemas
 │   ├── eval/                      # Offline eval harness (no live-run coupling)
 │   │   ├── replay_harness.py      # eval-replay: frozen corpus vs committed baseline
+│   │   ├── best_of_n_harness.py   # eval-best-of-n: EP-10 selector proof on the corpus
 │   │   ├── judge.py               # Hybrid judge: pointwise / reference-anchored / pairwise (D5)
 │   │   ├── agreement.py           # Cohen κ / Krippendorff α + may_gate floor (EP-5)
 │   │   ├── gold_set.py            # MM-reactions gold labels
