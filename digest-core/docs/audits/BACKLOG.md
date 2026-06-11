@@ -1,11 +1,12 @@
 # Quality-program backlog — ActionPulse digest-core
 
-Updated 2026-06-11 (second pass) after the EP-12/EP-5(3) wiring session: fleet
-PRs #81/#82/#83 opened, all flags off. D1–D7 resolved — see
-`ENHANCEMENT_PROGRAM.md`. Plane seeding (D7) still pending — the Plane MCP was
-offline again this session; issue ids recorded below when filed.
+Updated 2026-06-11 (third pass): fleet PRs #81/#82/#83 MERGED — composed main
+verified green (753 passed ×2, eval-replay baseline OK). All fleet flags remain
+off until EP-14 corp validation. D1–D7 resolved — see `ENHANCEMENT_PROGRAM.md`.
+Plane seeding (D7) still pending — the Plane MCP was offline again this
+session; issue ids recorded below when filed.
 
-## Done (W1 + W2, PRs #62–#72 + decision enactment + dep hygiene)
+## Done (W1 + W2 + fleet wiring, PRs #62–#72 + decision enactment + dep hygiene)
 
 | id | title | landed in |
 |---|---|---|
@@ -20,13 +21,8 @@ offline again this session; issue ids recorded below when filed.
 | EP-9 | HTML normalizer property fuzz | #69 |
 | D1/D2/D3/D6 | Quarantine section · CI eval-replay gate · ledger default-on + ↻ · ADR-008 v2 + llm_budget visibility | decision-enactment PRs (2026-06-11) |
 | EP-13 | Dependency bumps: all 9 pip-audit findings cleared + full regression | #80 |
-
-## In PR (offline part done; live behavior corp-gated)
-
-| id | title | PRs | corp-gated remainder |
-|---|---|---|---|
-| EP-12 | Fleet wiring (D4/PC-2): reranker support scores into the P2 gate; cross-model judge rescue for quarantine; flags default off, degrade-not-drop, replay sidecar channel | #81 (reranker→gate), #82 (judge→repair) | EP-14 items below; live flips only after corp validation |
-| EP-5 (3) | Hybrid judge per D5: reference-anchored eval vs gold (`eval-judge-run`, report-only) + pairwise library (EP-10 consumer); `eval.judge_mode` default `pointwise`; also fixes reranker/judge YAML sections never merging | #83 | first real calibration run (κ vs gold) inside corp |
+| EP-12 | Fleet wiring (D4/PC-2): reranker support scores into the P2 gate; cross-model judge rescue for quarantine; flags default off, degrade-not-drop, replay sidecar channel. Live behavior corp-gated (EP-14 ①–⑥) | #81, #82 |
+| EP-5 (3) | Hybrid judge per D5: reference-anchored eval vs gold (`eval-judge-run`, report-only) + pairwise library (EP-10 consumer); `eval.judge_mode` default `pointwise`; also fixed reranker/judge YAML sections never merging. First real calibration corp-gated (EP-14 ⑦) | #83 |
 
 ## Open
 
