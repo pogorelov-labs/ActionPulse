@@ -83,7 +83,7 @@ def test_pipeline_writes_actionable_partial_digest_on_auth_failure(monkeypatch, 
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )

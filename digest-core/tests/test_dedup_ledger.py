@@ -94,7 +94,16 @@ def _replay_run(monkeypatch, tmp_path, out_name: str):
     return json.loads((out_dir / "digest-2026-03-29.json").read_text(encoding="utf-8"))
 
 
-def test_flag_off_writes_nothing(monkeypatch, tmp_path):
+def test_default_is_on_per_decision_d3():
+    from digest_core.config import Config
+
+    assert Config().memory.dedup_ledger is True
+
+
+def test_explicit_off_writes_nothing(monkeypatch, tmp_path):
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text("memory:\n  dedup_ledger: false\n", encoding="utf-8")
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(config_yaml))
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
     payload = _replay_run(monkeypatch, tmp_path, "out-off")
     assert not (tmp_path / "state" / "delivered-items.jsonl").exists()
@@ -103,10 +112,7 @@ def test_flag_off_writes_nothing(monkeypatch, tmp_path):
             assert "seen_before" not in item  # exclude_none keeps artifacts unchanged
 
 
-def test_flag_on_annotates_second_run(monkeypatch, tmp_path):
-    config_yaml = tmp_path / "config.yaml"
-    config_yaml.write_text("memory:\n  dedup_ledger: true\n", encoding="utf-8")
-    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(config_yaml))
+def test_default_on_annotates_second_run(monkeypatch, tmp_path):
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
 
     first = _replay_run(monkeypatch, tmp_path, "out-1")
@@ -121,3 +127,28 @@ def test_flag_on_annotates_second_run(monkeypatch, tmp_path):
     ledger_raw = (tmp_path / "state" / "delivered-items.jsonl").read_text(encoding="utf-8")
     for line in ledger_raw.splitlines():
         assert re.fullmatch(r"[0-9a-f]{64}", json.loads(line)["fp"])
+
+
+def test_mm_trace_line_carries_repeat_marker():
+    from digest_core.config import Config
+    from digest_core.deliver.mattermost import MattermostDeliverer
+    from digest_core.llm.schemas import Item
+
+    deliverer = MattermostDeliverer(Config().deliver.mattermost)
+    item = Item(
+        title="Повторное действие",
+        evidence_id="ev-r",
+        confidence=0.8,
+        source_ref={"type": "email", "msg_id": "m-r"},
+        seen_before=True,
+    )
+    line = deliverer._format_trace_line(item, None)
+    assert "↻ повтор" in line
+
+    fresh = Item(
+        title="Новое действие",
+        evidence_id="ev-n",
+        confidence=0.8,
+        source_ref={"type": "email", "msg_id": "m-n"},
+    )
+    assert "↻" not in deliverer._format_trace_line(fresh, None)

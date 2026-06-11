@@ -202,8 +202,9 @@ degrade:
   mode: "extractive"        # Degradation mode: extractive | empty
 
 memory:
-  # Cross-run dedup ledger (EP-7). OFF = today's privacy-via-not-storing posture.
-  # When on: repeat items get seen_before:true (annotate only, never suppress);
-  # the ledger stores SHA-256 fingerprints only, in .state/delivered-items.jsonl.
-  dedup_ledger: false
-  dedup_ttl_days: 14        # Retention window — the TTL sweep IS the retention policy
+  # Cross-run dedup ledger (EP-7; default ON per decision D3). Repeat items get
+  # seen_before:true and «↻ повтор» in MM — annotate only, never suppress. The
+  # ledger stores SHA-256 fingerprints only, in .state/delivered-items.jsonl;
+  # the TTL sweep IS the retention policy (delete the file = forget everything).
+  dedup_ledger: true
+  dedup_ttl_days: 14

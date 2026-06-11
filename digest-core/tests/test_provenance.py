@@ -71,7 +71,7 @@ def test_trace_meta_carries_provenance(monkeypatch, tmp_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )

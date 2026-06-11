@@ -303,7 +303,7 @@ def test_pipeline_replay_runs_from_repo_root(monkeypatch, tmp_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )
@@ -338,7 +338,7 @@ def test_pipeline_validate_citations_replay(monkeypatch, tmp_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         validate_citations=True,
         force=True,
         replay_ingest=str(snapshot_path),
@@ -371,7 +371,7 @@ def test_pipeline_writes_partial_digest_on_llm_failure(monkeypatch, tmp_path):
         out=str(out_dir),
         model="qwen35-397b-a17b",
         window="calendar_day",
-        state=None,
+        state=str(tmp_path / "state"),
         force=True,
         replay_ingest=str(snapshot_path),
     )
