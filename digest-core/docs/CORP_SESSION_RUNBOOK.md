@@ -5,6 +5,10 @@
 >
 > **Результат:** снапшоты EWS + LLM для replay, первый дайджест в Mattermost DM,
 > eval-отчёт качества промпта.
+>
+> **Визит EP-14 (validation pack):** этот runbook — базовая процедура (§0–§5).
+> Пробы флота (reranker/judge/best-of-N, ①–⑧) и их read-out'ы — в
+> **`VISIT_CHECKLIST_EP14.md`** рядом: сначала пройди §1–§3 здесь, затем пробы там.
 
 ---
 
@@ -175,6 +179,10 @@ python -m digest_core.cli run \
   - `digest-YYYY-MM-DD.md` — markdown-версия
   - `trace-*.meta.json` — метаданные прогона (trace_id, timing, LLM stats)
 - [ ] LLM-запись: `/tmp/actionpulse/llm-recording-*.json` создана
+- [ ] Из `trace-*.meta.json` выписать read-out гейта (первый реальный baseline):
+  `support_recall`, `items_weak`, `items_quarantined`, `llm_budget`
+  (calls/tokens против бюджета — D6); при включённых fleet-флагах там же
+  `fleet_reranker_calls` / `fleet_judge_calls` / `best_of_n`
 
 **Если LLM timeout (120s):**
 - Модель qwen35-397b-a17b тяжёлая, 120s может не хватить при нагрузке
@@ -206,8 +214,15 @@ python -m digest_core.cli eval-prompt \
 - [ ] Действия реально адресованы тебе? (или чужие)
 - [ ] Срочное реально срочное? (или обычное)
 - [ ] К сведению — не потерялось ли что-то важное?
+- [ ] «Не подтверждено» (карантин D1) — пункты там действительно слабые,
+      или гейт зря придрался? (вход для tau/floor дома)
+- [ ] «↻ повтор» — пометки повторов корректны? (ledger D3)
 - [ ] Есть ли галлюцинации — пункты, которых нет в письмах?
 - [ ] Пропущены ли очевидные действия из сегодняшних писем?
+
+**Реакции в MM (вход EP-15):** поставь 👍/👎 на пункты дайджеста прямо сейчас —
+экспорт реакций потом превращается в gold-set (`eval-gold`), без них калибровка
+`recall_floor` и judge-κ не стартует.
 
 Запиши заметки — это вход для итерации промпта.
 
@@ -225,6 +240,11 @@ tar czf ~/actionpulse-corpus-$(date +%Y-%m-%d).tar.gz \
     /tmp/actionpulse/out/ \
     /tmp/actionpulse/eval-*.json
 ```
+
+> Если в сессии включался реранкер, рядом с LLM-записью лежит sidecar
+> `llm-recording-*.json.fleet.json` — добавь его в список выше (без реранкера
+> файла нет, и tar споткнётся о пустой glob). Для визита EP-14 полный список
+> выноса шире — см. `VISIT_CHECKLIST_EP14.md` §f.
 
 **Что в архиве и зачем:**
 
@@ -367,8 +387,11 @@ diff <(jq .scores ~/corpus/eval-2026-04-01.json) \
 □  diagnose — все ✓
 □  dry-run + dump-ingest → snapshot создан, N > 0 писем
 □  full run + record-llm → дайджест в MM
+□  read-out гейта выписан (support_recall / items_weak / items_quarantined / llm_budget)
+□  реакции 👍/👎 на пункты поставлены (вход EP-15)
 □  eval-prompt → baseline score
 □  tar.gz артефакты → скопированы наружу
+□  (визит EP-14) пробы ①–⑧ + I-1/E-1/M-1 по VISIT_CHECKLIST_EP14.md
 □  (однократно) §8 — валидация one-liner setup
 □  (бонус) systemd timer установлен
 ```
