@@ -2,16 +2,32 @@
 
 import yaml
 
+from digest_core.setup_autodetect import DetectedEnv
 from digest_core.setup_wizard import (
     _auto_detect_ca_path,
     _derive_from_email,
     _mask_secret,
+    _merge_aliases,
     _read_existing_env,
     _validate_email,
     _validate_url,
     _write_env_file,
     _write_config_yaml,
 )
+
+
+class TestMergeAliases:
+    """Detected real-name tokens + machine login extend the derived aliases."""
+
+    def test_adds_name_tokens_and_login(self):
+        det = DetectedEnv(login="ruapgr2", first_name="Ruslan", last_name="POGORELOV")
+        merged = _merge_aliases(["Ruslan", "ruslan.pogorelov@megacorp.ru"], det)
+        assert "Pogorelov" in merged  # caps surname title-cased
+        assert "ruapgr2" in merged  # machine login differs from email local
+        assert merged.count("Ruslan") == 1  # case-insensitive dedupe
+
+    def test_no_detection_is_identity(self):
+        assert _merge_aliases(["X"], None) == ["X"]
 
 
 class TestMaskSecret:

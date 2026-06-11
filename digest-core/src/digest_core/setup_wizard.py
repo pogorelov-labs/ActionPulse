@@ -22,12 +22,14 @@ import typer
 import yaml
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
 from digest_core.config import PROJECT_ROOT
+from digest_core.setup_autodetect import CONF_HIGH, DetectedEnv, detect_environment
 
 ENV_DIR = Path.home() / ".config" / "actionpulse"
 ENV_PATH = ENV_DIR / "env"
@@ -447,23 +449,82 @@ def _summary_table(env_values: dict[str, str], verify_ca: Optional[str]) -> Tabl
     return table
 
 
+def _print_detection(det: DetectedEnv) -> None:
+    if not det.has_findings():
+        console.print("[dim]Автообнаружение: ничего полезного не нашлось — спрошу всё явно.[/]")
+        return
+    lines = "\n".join(f"[green]✓[/] {escape(note)}" for note in det.notes)
+    console.print(
+        Panel(
+            lines,
+            title="[bold]Автообнаружение[/]",
+            box=box.ROUNDED,
+            border_style="dim cyan",
+            expand=False,
+        )
+    )
+
+
+def _merge_aliases(aliases: list[str], det: Optional[DetectedEnv]) -> list[str]:
+    """Append detected real-name tokens and the machine login to the aliases.
+
+    The email local part is not always name.surname, so the directory RealName
+    is the only reliable alias source; the ranker lowercases aliases, so
+    Title-case is enough.
+    """
+    if not det:
+        return aliases
+    extras: list[str] = []
+    for token in (det.first_name, det.last_name):
+        if token and len(token) > 1:
+            extras.append(token.capitalize())
+    if det.login:
+        extras.append(det.login)
+    merged = list(aliases)
+    seen = {a.lower() for a in merged}
+    for extra in extras:
+        if extra.lower() not in seen:
+            merged.append(extra)
+            seen.add(extra.lower())
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Main wizard
 # ---------------------------------------------------------------------------
 
 
-def run_setup() -> None:
-    """Interactive setup: 6 questions, 0 text editors."""
+def run_setup(no_autodetect: bool = False) -> None:
+    """Interactive setup: 6 questions, 0 text editors, auto-detected defaults."""
     try:
-        _run_setup_flow()
+        _banner()
+
+        det: Optional[DetectedEnv] = None
+        existing_env = _read_existing_env()
+        if not no_autodetect and not (
+            existing_env.get("EWS_USER_UPN") and existing_env.get("EWS_ENDPOINT")
+        ):
+            with console.status(
+                "[cyan]Автообнаружение: логин, имя, Keychain, домены сети…", spinner="dots"
+            ):
+                det = detect_environment()
+            _print_detection(det)
+
+        if _run_setup_flow(det=det, force_ask=False):
+            return
+        console.print()
+        console.rule("[bold]Изменить ответы[/]", align="left", style="dim yellow")
+        console.print("[dim]Пройдём вопросы заново; найденные значения — по умолчанию.[/]")
+        if not _run_setup_flow(det=det, force_ask=True):
+            console.print("[yellow]⚠ Отменено — файлы не изменены.[/]")
+            raise typer.Exit(1)
     except (KeyboardInterrupt, EOFError):
         console.print("\n[yellow]⚠ Настройка прервана — файлы не изменены.[/]")
         raise typer.Exit(130)
 
 
-def _run_setup_flow() -> None:
-    _banner()
-
+def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) -> bool:
+    """One pass over the questions; True when files were written, False on decline."""
     # Read existing values for defaults
     existing_env = _read_existing_env()
     existing_cfg = _read_existing_config()
@@ -473,14 +534,37 @@ def _run_setup_flow() -> None:
             "подставлены как ответы по умолчанию.[/]"
         )
 
+    det_upn = det.best_upn if det else None
+    det_host = det.ews_host if det else None
+
     # ── 1. Corp email ──
     _step(1, "Корпоративный email", "Из него выведем EWS endpoint, логин и алиасы.")
     default_upn = (
-        existing_env.get("EWS_USER_UPN") or existing_cfg.get("ews", {}).get("user_upn") or None
+        existing_env.get("EWS_USER_UPN")
+        or existing_cfg.get("ews", {}).get("user_upn")
+        or det_upn
+        or None
     )
-    user_upn = _ask("Email (login@corp-domain.ru)", default=default_upn, validate=_validate_email)
+    if (
+        not force_ask
+        and det_upn
+        and det is not None
+        and det.upn_confidence == CONF_HIGH
+        and not existing_env.get("EWS_USER_UPN")
+        and _validate_email(det_upn) is None
+    ):
+        user_upn = det_upn
+        console.print(
+            f"  [green]✓[/] Автоматически: [bold]{user_upn}[/] "
+            f"[dim](Keychain + имя + домен; поменять — «n» на финальном подтверждении)[/]"
+        )
+    else:
+        user_upn = _ask(
+            "Email (login@corp-domain.ru)", default=default_upn, validate=_validate_email
+        )
 
     derived = _derive_from_email(user_upn)
+    derived["aliases"] = _merge_aliases(derived["aliases"], det)
     console.print(
         f"  [green]✓[/] login [bold]{derived['user_login']}[/] · "
         f"домен [bold]{derived['user_domain']}[/]"
@@ -489,12 +573,27 @@ def _run_setup_flow() -> None:
 
     # ── 2. EWS endpoint ──
     _step(2, "Exchange (EWS)", "Адрес EWS-сервиса корпоративной почты.")
+    detected_ews = f"https://{det_host}/EWS/Exchange.asmx" if det_host else None
     default_ews = (
         existing_env.get("EWS_ENDPOINT")
         or existing_cfg.get("ews", {}).get("endpoint")
+        or detected_ews
         or derived["default_ews_endpoint"]
     )
-    ews_endpoint = _ask("EWS endpoint URL", default=default_ews, validate=_validate_url)
+    if (
+        not force_ask
+        and detected_ews
+        and det is not None
+        and det.ews_endpoint_verified
+        and not existing_env.get("EWS_ENDPOINT")
+        and not existing_cfg.get("ews", {}).get("endpoint")
+    ):
+        ews_endpoint = detected_ews
+        console.print(
+            f"  [green]✓[/] Автоматически: [bold]{ews_endpoint}[/] [dim](хост из Keychain, DNS ✓)[/]"
+        )
+    else:
+        ews_endpoint = _ask("EWS endpoint URL", default=default_ews, validate=_validate_url)
 
     # ── 3. EWS password ──
     _step(3, "Пароль Exchange", "Хранится только локально: ~/.config/actionpulse/env, chmod 600.")
@@ -542,8 +641,7 @@ def _run_setup_flow() -> None:
         )
     )
     if not Confirm.ask("[bold cyan]Сохранить конфигурацию?[/]", default=True):
-        console.print("[yellow]⚠ Отменено — файлы не изменены.[/]")
-        raise typer.Exit(1)
+        return False
 
     # ── Write files ──
     with console.status("[cyan]Генерация файлов…", spinner="dots"):
@@ -583,3 +681,4 @@ def _run_setup_flow() -> None:
             expand=False,
         )
     )
+    return True

@@ -20,7 +20,7 @@ cd ActionPulse/digest-core
 make setup    # установка зависимостей + интерактивный мастер (6 вопросов)
 ```
 
-Мастер спросит: корпоративный email, EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL. Сгенерирует:
+Мастер сначала сам находит логин, имя и корпоративный email (скан метаданных Keychain, всё локально; `--no-autodetect` отключает), затем спросит недостающее: EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL. Сгенерирует:
 - `~/.config/actionpulse/env` (chmod 600, systemd-compatible)
 - `configs/config.yaml`
 
