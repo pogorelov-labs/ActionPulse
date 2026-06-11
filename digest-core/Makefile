@@ -1,4 +1,4 @@
-.PHONY: setup test lint format run docker docker-run package ci smoke diagnose env-check clean
+.PHONY: setup test lint format run docker docker-run package bundle ci smoke diagnose env-check clean
 
 setup:
 	@echo "Installing dependencies with uv..."
@@ -41,6 +41,11 @@ docker-run:
 
 package:
 	uv build
+
+# Air-gap carry-in bundle: locked + audited + checksummed + manifested, with an
+# offline-install proof (EP-6, F12). See scripts/build_bundle.sh header.
+bundle:
+	bash scripts/build_bundle.sh
 
 eval-replay:
 	PYTHONPATH=src uv run python -m digest_core.cli eval-replay

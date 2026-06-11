@@ -18,3 +18,7 @@ configs/config.yaml
 .vscode/
 .idea/
 
+
+# Build artifacts (uv build, make bundle)
+dist/
+build/
