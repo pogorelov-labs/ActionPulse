@@ -208,3 +208,24 @@ memory:
   # the TTL sweep IS the retention policy (delete the file = forget everything).
   dedup_ledger: true
   dedup_ttl_days: 14
+
+reranker:
+  # P2-gate support scoring on the fleet reranker (EP-12, D4/PC-2 approved).
+  # Stays OFF until corp validation (EP-14); flag-off runs make zero fleet calls.
+  enabled: false
+  tau: 0.0                   # support-score threshold for weak_evidence
+  budget_per_run: 10         # the reranker is the scarce, non-batchable resource
+  low_confidence_threshold: 0.7  # only items below this confidence spend the budget
+  quarantine_weak: true      # D1: weak items go to «Не подтверждено», never dropped
+
+judge:
+  # Cross-model repair judge (EP-12, D1 rescue path). Must differ from llm.model
+  # (R4) — a same-model config disables the judge with a warning. OFF until EP-14.
+  enabled: false
+  model: "qwen35-35b-a3b"    # own RPM bucket; stage budget judge=8
+
+eval:
+  # Judge architecture for eval runs (D5, hybrid by job). 'pointwise' = advisory
+  # dashboard only; 'reference' = reference-anchored judging vs gold rows
+  # (eval-judge-run). Nothing gates CI until κ >= 0.41 + CI floor (EP-15).
+  judge_mode: "pointwise"

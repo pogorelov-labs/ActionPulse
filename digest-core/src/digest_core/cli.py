@@ -472,6 +472,97 @@ def eval_judge(
     typer.echo(json.dumps(compute_judge_metrics(rows), ensure_ascii=False, indent=2))
 
 
+@app.command("eval-judge-run")
+def eval_judge_run(
+    digest: str = typer.Option(..., "--digest", help="Digest artifact JSON to judge"),
+    gold: str = typer.Option(..., "--gold", help="Exported MM reactions JSONL (gold labels)"),
+    mode: str = typer.Option(
+        None, "--mode", help="Judge architecture override (default: eval.judge_mode from config)"
+    ),
+    out: str = typer.Option(None, "--out", help="Write judge records JSONL here"),
+):
+    """Run the reference-anchored judge over a digest vs gold rows (EP-5 step 3, D5).
+
+    Calibration records (judge-vs-human κ/α via the agreement block) plus a
+    regression report against human-approved exemplars. REPORT-ONLY: exit 0 on
+    success regardless of metrics — nothing gates CI until reactions-based
+    calibration clears κ >= 0.41 with the CI floor (D2/EP-15). Requires the
+    corp gateway (judge model) — offline runs fail fast with a clear error.
+    """
+    from digest_core.config import Config
+    from digest_core.eval.gold_set import load_gold_jsonl
+    from digest_core.eval.judge import JUDGE_MODES, make_judge, reference_eval
+    from digest_core.llm.gateway import LLMGateway
+    from digest_core.llm.rate_broker import RateBroker
+
+    digest_path, gold_path = Path(digest), Path(gold)
+    for path, label in ((digest_path, "Digest"), (gold_path, "Gold")):
+        if not path.exists():
+            typer.echo(f"{label} file not found: {path}", err=True)
+            raise typer.Exit(1)
+
+    config = Config()
+    judge_mode = (mode or config.eval.judge_mode).strip().lower()
+    if judge_mode not in JUDGE_MODES:
+        typer.echo(f"Unknown judge mode '{judge_mode}' (expected one of {JUDGE_MODES})", err=True)
+        raise typer.Exit(1)
+    if judge_mode != "reference":
+        typer.echo(
+            "eval.judge_mode is 'pointwise' — the advisory dashboard path (use eval-judge"
+            " over pre-judged records). eval-judge-run implements the reference-anchored"
+            " architecture (D5); flip eval.judge_mode or pass --mode reference.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    gold_set = load_gold_jsonl(gold_path)
+    if not len(gold_set):
+        typer.echo("Gold set is empty (no usable reactions).", err=True)
+        raise typer.Exit(1)
+
+    # The judge rides the gateway with a model override (R1) on its own RPM
+    # bucket and stage budget; broker limits match the live run's ceilings.
+    judge_llm = config.llm.model_copy(update={"model": config.judge.model})
+    broker = RateBroker(
+        fleet_rpm=config.llm.fleet_rpm,
+        burst=config.llm.fleet_burst,
+        default_rpm=config.llm.rate_limit_rpm,
+        stage_call_budgets={"judge": max(len(gold_set) * 2, 8)},
+    )
+    gateway = LLMGateway(judge_llm, rate_broker=broker, stage="judge")
+    try:
+        digest_json = json.loads(digest_path.read_text(encoding="utf-8"))
+        report = reference_eval(digest_json, gold_set, make_judge(judge_mode, gateway))
+    except Exception as exc:  # corp-only endpoint: offline runs land here
+        typer.echo(
+            f"Judge run failed ({type(exc).__name__}): the judge model needs the corp"
+            " gateway — run inside the corp network (EP-14).",
+            err=True,
+        )
+        raise typer.Exit(1)
+    finally:
+        gateway.close()
+
+    if out:
+        Path(out).write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in report["records"]) + "\n",
+            encoding="utf-8",
+        )
+        typer.echo(f"Judge records written to {out}")
+    typer.echo(
+        json.dumps(
+            {k: v for k, v in report.items() if k != "records"}, ensure_ascii=False, indent=2
+        )
+    )
+    agreement = (report.get("metrics") or {}).get("agreement")
+    if agreement:
+        typer.echo(agreement["verdict"], err=True)
+    typer.echo(
+        "Report-only: the no-gate rule holds until κ >= 0.41 with the CI floor (EP-15).",
+        err=True,
+    )
+
+
 @app.command("eval-agreement")
 def eval_agreement(
     labels: str = typer.Option(..., "--labels", help="CSV with human and judge label columns"),

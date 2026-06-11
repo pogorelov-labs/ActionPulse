@@ -580,6 +580,23 @@ class JudgeConfig(BaseModel):
     )
 
 
+class EvalConfig(BaseModel):
+    """Eval-harness knobs (EP-5). Nothing here touches the live run path."""
+
+    judge_mode: str = Field(
+        default="pointwise",
+        description=(
+            "Judge architecture for eval runs (decision D5, hybrid by job):"
+            " 'pointwise' = today's advisory dashboard scoring (research-refuted"
+            " AS A GATE — it never gates); 'reference' = reference-anchored"
+            " binary judging vs gold rows for the regression report (eval-judge-run)."
+            " The no-gate rule is hard either way: nothing gates CI until"
+            " reactions-based calibration clears kappa >= 0.41 with the bootstrap"
+            " CI floor (EP-15)."
+        ),
+    )
+
+
 class MemoryConfig(BaseModel):
     """Cross-run memory (EP-7). Everything OFF by default — privacy via not-storing.
 
@@ -626,6 +643,7 @@ class Config(BaseSettings):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    eval: EvalConfig = Field(default_factory=EvalConfig)
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
@@ -762,6 +780,15 @@ class Config(BaseSettings):
             self._merge_model(self.degrade, yaml_config["degrade"], env_prefix="DEGRADE")
         if "memory" in yaml_config:
             self._merge_model(self.memory, yaml_config["memory"], env_prefix="MEMORY")
+        # EP-12/EP-5: these sections existed in the schema but were never merged
+        # from YAML — the fleet flags were silently ENV-only. Fixed alongside the
+        # eval section so corp validation can flip flags in config.yaml.
+        if "reranker" in yaml_config:
+            self._merge_model(self.reranker, yaml_config["reranker"], env_prefix="RERANKER")
+        if "judge" in yaml_config:
+            self._merge_model(self.judge, yaml_config["judge"], env_prefix="JUDGE")
+        if "eval" in yaml_config:
+            self._merge_model(self.eval, yaml_config["eval"], env_prefix="EVAL")
 
     def _merge_model(
         self,
