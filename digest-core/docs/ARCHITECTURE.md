@@ -637,7 +637,7 @@ extract:                                   # best-of-N extraction (EP-10, ADR-00
 | `MM_BOT_TOKEN` | No | Mattermost bot token (Phase 1, alternative to webhook) |
 | `DIGEST_CONFIG_PATH` | No | Path to custom config YAML |
 
-Каталог вывода и state задаются флагами **`python -m digest_core.cli run --out`** и **`--state`** (см. Appendix B), а не отдельными `DIGEST_*_DIR` переменными — последние **не читаются** пайплайном (в шаблонах env могут встречаться закомментированные примеры). Уровень логирования: **`--log-level`**, не `DIGEST_LOG_LEVEL`.
+Каталог вывода и state по умолчанию живут в **data home** (U5, 2026-06-12): `<data home>/var/out` и `<data home>/var/state`, где data home = `$ACTIONPULSE_HOME` → корень checkout-а → `~/.local/share/actionpulse` (см. `digest_core/paths.py` и `actionpulse paths`). Флаги **`--out`** и **`--state`** (см. Appendix B) переопределяют дефолты; отдельные `DIGEST_*_DIR` переменные **не читаются** пайплайном (в шаблонах env могут встречаться закомментированные примеры). Уровень логирования: **`--log-level`**, не `DIGEST_LOG_LEVEL`.
 
 ---
 

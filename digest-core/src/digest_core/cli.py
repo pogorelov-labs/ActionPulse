@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from digest_core import paths
 from digest_core.diagnostics import export_diagnostics, _build_env_info
 from digest_core.deliver.mattermost import ping_mattermost_webhook
 from digest_core.run import run_digest, run_digest_dry_run
@@ -27,7 +28,7 @@ def _menu_run(dry: bool, choice: RunChoice | None = None) -> None:
     common = dict(
         from_date=choice.from_date,
         sources=["ews"],
-        out="./out",
+        out=str(paths.out_dir()),
         model="qwen35-397b-a17b",
         window=choice.window,
         state=None,
@@ -70,7 +71,7 @@ def _main(ctx: typer.Context) -> None:
         on_run=_safe(_menu_run),
         on_diagnose=_safe(diagnose),
         on_settings=_safe(lambda: setup(no_autodetect=False)),
-        on_read=_safe(lambda date: read(date=date, out="./out")),
+        on_read=_safe(lambda date: read(date=date, out=None)),
     )
     raise typer.Exit(code)
 
@@ -83,7 +84,9 @@ def run(
     sources: str = typer.Option(
         "ews", "--sources", help="Comma-separated source types (e.g., 'ews')"
     ),
-    out: str = typer.Option("./out", "--out", help="Output directory path"),
+    out: str = typer.Option(
+        None, "--out", help="Output directory path (default: <data home>/var/out)"
+    ),
     model: str = typer.Option("qwen35-397b-a17b", "--model", help="LLM model identifier"),
     window: str = typer.Option(
         "calendar_day", "--window", help="Time window: calendar_day or rolling_24h"
@@ -134,6 +137,7 @@ def run(
 ):
     """Run daily digest job."""
     try:
+        out = out or str(paths.out_dir())  # U5: one data home, not cwd-relative ./out
         progress = progress.lower()
         if progress not in ("auto", "live", "plain", "none"):
             typer.echo(f"Invalid --progress value: {progress}", err=True)
@@ -212,7 +216,9 @@ def read(
     date: str = typer.Option(
         None, "--date", help="Digest date to read (YYYY-MM-DD; default: newest)"
     ),
-    out: str = typer.Option("./out", "--out", help="Digest output directory"),
+    out: str = typer.Option(
+        None, "--out", help="Digest output directory (default: <data home>/var/out)"
+    ),
 ):
     """Browse a digest interactively: topics, authors, distilled items, quotes.
 
@@ -222,7 +228,7 @@ def read(
     """
     from digest_core.ui.reader import read_digest_interactive, render_digest_plain
 
-    out_dir = Path(out).expanduser()
+    out_dir = Path(out).expanduser() if out else paths.out_dir(create=False)
     if not stdin_is_tty() or not sys.stdout.isatty():
         text = render_digest_plain(out_dir, date)
         if text is None:
@@ -236,6 +242,20 @@ def read(
         # §5.5 abort contract: typed message, no traceback, exit 130.
         typer.echo("\nInterrupted.")
         raise typer.Exit(130)
+
+
+@app.command("paths")
+def paths_command():
+    """Show where ActionPulse keeps its files (one data home + the exceptions).
+
+    Everything regenerable lives under <data home>/var (digests, logs, state).
+    Secrets stay in ~/.config/actionpulse/env on purpose: inside the checkout,
+    `git clean -xdf` would delete them and an accidental commit could leak
+    them. Override the data home with the ACTIONPULSE_HOME env var.
+    """
+    for key, value in paths.describe().items():
+        mark = OK if Path(value).exists() else " "
+        typer.echo(f"  {mark} {paths.LABELS.get(key, key):<12} {value}")
 
 
 @app.command()

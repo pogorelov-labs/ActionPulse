@@ -561,7 +561,7 @@ class EWSIngest:
 
     def _load_sync_state(self) -> Optional[str]:
         """Load SyncState/watermark (ISO timestamp) from file."""
-        sync_state_path = Path(self.config.sync_state_path)
+        sync_state_path = Path(self.config.resolved_sync_state_path())
         if not sync_state_path.exists():
             logger.info("No SyncState file found, will perform full fetch")
             return None
@@ -579,7 +579,7 @@ class EWSIngest:
 
     def _update_sync_state(self, last_processed: datetime) -> None:
         """Update timestamp watermark for incremental processing."""
-        sync_state_path = Path(self.config.sync_state_path)
+        sync_state_path = Path(self.config.resolved_sync_state_path())
         sync_state_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:

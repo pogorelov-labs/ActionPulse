@@ -24,12 +24,16 @@ from typing import Callable, Optional
 
 from rich.console import Console
 
+from digest_core import paths
 from digest_core.ui.console import get_console
 from digest_core.ui.select import choose
 from digest_core.ui.theme import gradient_text
 
 ENV_PATH = Path.home() / ".config" / "actionpulse" / "env"
-LAST_RUN_PATH = Path.home() / ".config" / "actionpulse" / "last_run.json"
+# U5: run state lives in the data home; the pre-U5 location stays readable so
+# an upgrade does not forget the user's "Repeat last run" params.
+LAST_RUN_PATH = paths.state_dir(create=False) / "last_run.json"
+LEGACY_LAST_RUN_PATH = Path.home() / ".config" / "actionpulse" / "last_run.json"
 
 # Keys whose values must never be shown in full (Show config view).
 _SECRET_KEYS = {"EWS_PASSWORD", "LLM_TOKEN", "MM_WEBHOOK_URL"}
@@ -68,6 +72,8 @@ _WINDOW_WORDS = {"calendar_day": "calendar day", "rolling_24h": "rolling 24h"}
 def load_last_run(path: Optional[Path] = None) -> Optional[RunChoice]:
     """Last accepted run params, or None when absent/invalid (defensive)."""
     path = path or LAST_RUN_PATH  # resolved at call time (tests monkeypatch it)
+    if not path.exists() and path == LAST_RUN_PATH and LEGACY_LAST_RUN_PATH.exists():
+        path = LEGACY_LAST_RUN_PATH  # pre-U5 location (read-only migration)
     if not path.exists():
         return None
     try:
@@ -162,18 +168,24 @@ def choose_run_options(console: Console, last: Optional[RunChoice] = None) -> Op
 
 
 def _show_config(console: Console) -> None:
-    """Print the env file with secrets masked (read-only)."""
+    """Print the env file (secrets masked) + the full path map (read-only)."""
     console.print()
     if not _configured():
         console.print("[ap.warn]⚠[/] Not configured yet — run Settings first.")
-        return
-    console.print(f"[ap.dim]{ENV_PATH}[/]")
-    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        console.print(f"  [ap.dim]{key.strip()}[/] = {_mask(key.strip(), value.strip())}")
+    else:
+        console.print(f"[ap.dim]{ENV_PATH}[/]")
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            console.print(f"  [ap.dim]{key.strip()}[/] = {_mask(key.strip(), value.strip())}")
+    # U5: "where is everything" answered in one place (same map as
+    # `actionpulse paths`); everything regenerable lives under the data home.
+    console.print()
+    console.print("[ap.dim]Paths:[/]")
+    for key, value in paths.describe().items():
+        console.print(f"  [ap.dim]{paths.LABELS.get(key, key):<12}[/] {value}")
 
 
 def _banner(console: Console) -> None:

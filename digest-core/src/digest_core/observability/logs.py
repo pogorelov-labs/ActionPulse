@@ -89,10 +89,21 @@ def get_configured_log_file() -> Optional[Path]:
 
 
 def _resolve_log_dir() -> Path:
-    """Pick a writable directory for structured logs."""
-    candidates = [Path.home() / ".digest-logs", Path("/tmp/digest-logs")]
-    for candidate in candidates:
+    """Pick a writable directory for structured logs.
+
+    The data home (U5: ``<data home>/var/logs``) is the default; the legacy
+    locations remain as fallbacks for environments where it is unwritable.
+    """
+    from digest_core.paths import logs_dir
+
+    candidates = [
+        lambda: logs_dir(),
+        lambda: Path.home() / ".digest-logs",
+        lambda: Path("/tmp/digest-logs"),
+    ]
+    for make_candidate in candidates:
         try:
+            candidate = make_candidate()
             candidate.mkdir(parents=True, exist_ok=True)
             return candidate
         except OSError:

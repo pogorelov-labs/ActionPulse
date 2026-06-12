@@ -72,8 +72,11 @@ actionpulse run --dry-run # ingest + normalize only, no LLM
 actionpulse run           # full pipeline + delivery
 actionpulse read          # browse the latest digest (or --date YYYY-MM-DD)
 actionpulse diagnose      # check environment & config
+actionpulse paths         # where everything lives (data home + the exceptions)
 actionpulse setup         # re-run the configuration wizard
 ```
+
+Everything regenerable lives in **one data home**: `~/ActionPulse/var/` — `var/out` (digests), `var/logs`, `var/state` (EWS watermark) — no matter which directory you run from (override with `ACTIONPULSE_HOME`; explicit `--out`/`--state` always win). The one deliberate exception: secrets stay in `~/.config/actionpulse/env`, where `git clean` can never delete them and `git add` can never leak them.
 
 > If `actionpulse` isn't found, `~/.local/bin` isn't on your PATH yet — open a new terminal, or add it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec $SHELL`. The classic `cd ~/ActionPulse/digest-core && uv run python -m digest_core.cli …` invocation still works too.
 

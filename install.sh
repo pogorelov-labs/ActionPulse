@@ -354,6 +354,8 @@ summary() {
         "$C_GRN" "$G_OK" "$C_RST" "$C_BOLD" "$C_RST" "$C_DIM" "$SECONDS" "$C_RST"
     say ""
     printf '  %scode%s    %s\n' "$C_DIM" "$C_RST" "$dir_short"
+    printf '  %sdata%s    %s/var %s(digests · logs · state)%s\n' \
+        "$C_DIM" "$C_RST" "$dir_short" "$C_DIM" "$C_RST"
     printf '  %ssecrets%s %s %s(chmod 600)%s\n' "$C_DIM" "$C_RST" "$env_short" "$C_DIM" "$C_RST"
     say ""
     printf '  %sUse it from anywhere:%s\n' "$C_BOLD" "$C_RST"

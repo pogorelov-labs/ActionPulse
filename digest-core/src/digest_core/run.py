@@ -233,7 +233,9 @@ def _init_context(
     if state:
         state_dir = Path(state).expanduser()
         state_dir.mkdir(parents=True, exist_ok=True)
-        config.ews.sync_state_path = str(state_dir / Path(config.ews.sync_state_path).name)
+        config.ews.sync_state_path = str(
+            state_dir / Path(config.ews.resolved_sync_state_path()).name
+        )
 
     metrics = MetricsCollector(
         config.observability.prometheus_port,
@@ -1717,7 +1719,10 @@ def _apply_dedup_ledger(ctx: RunContext, digest: Digest) -> None:
         return
     from digest_core.memory.ledger import DedupLedger, item_fingerprint
 
-    ledger_path = Path(ctx.config.ews.sync_state_path).expanduser().parent / "delivered-items.jsonl"
+    ledger_path = (
+        Path(ctx.config.ews.resolved_sync_state_path()).expanduser().parent
+        / "delivered-items.jsonl"
+    )
     ledger = DedupLedger(ledger_path, ttl_days=ctx.config.memory.dedup_ttl_days)
     # Two phases: "seen" means a PREVIOUS run delivered this evidence. Several
     # items legitimately share one email within a single run (multiple actions

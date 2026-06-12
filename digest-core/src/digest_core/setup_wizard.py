@@ -30,6 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from digest_core.config import PROJECT_ROOT
+from digest_core.paths import data_home
 from digest_core.ui import SPINNER, choose, get_console, gradient_text
 from digest_core.setup_autodetect import (
     CONF_HIGH,
@@ -385,6 +386,11 @@ def _next_steps_text(state: LauncherState) -> Text:
             (f"  {'actionpulse':<29}", "ap.accent"),
             ("interactive menu · all options\n\n", "ap.dim"),
             (f"Secrets load automatically from {_tilde(ENV_PATH)} — no manual source.\n", "ap.dim"),
+            (
+                f"Digests, logs and state live under {_tilde(data_home())}/var"
+                " (see: actionpulse paths).\n",
+                "ap.dim",
+            ),
         ]
         if state.path_hint:
             parts += [
