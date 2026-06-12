@@ -188,6 +188,78 @@ def _show_config(console: Console) -> None:
         console.print(f"  [ap.dim]{paths.LABELS.get(key, key):<12}[/] {value}")
 
 
+def _maintenance(console: Console) -> None:
+    """Maintenance screen (U6): usage read-out, cleanup, logging toggle.
+
+    Cleaning only touches regenerable files (digests, logs — incl. the legacy
+    log dirs); state/config/secrets are never auto-cleaned. Telemetry honesty:
+    nothing phones home — logs and metrics ports are local, OTel is off by
+    default — so the screen states facts instead of faking a kill switch.
+    """
+    from digest_core import maintenance
+
+    while True:
+        console.print()
+        for entry in maintenance.collect_usage():
+            console.print(
+                f"  [ap.dim]{entry.label:<26}[/] {entry.files:>5} files"
+                f"  {maintenance.format_bytes(entry.size_bytes):>10}  [ap.dim]{entry.path}[/]",
+                highlight=False,
+            )
+        logging_on = maintenance.file_logging_enabled()
+        console.print(
+            "  [ap.dim]Local-only by design: no phone-home telemetry;"
+            " OTel tracing off unless enabled in config.[/]"
+        )
+        console.print()
+        action = choose(
+            "Maintenance",
+            [
+                ("logs", "Clean logs (incl. legacy log dirs)"),
+                ("old", f"Clean digests older than {maintenance.DEFAULT_KEEP_DAYS} days"),
+                ("all", "Clean ALL digests + logs…"),
+                (
+                    "logging",
+                    f"File logging: {'on' if logging_on else 'off'} — turn"
+                    f" {'off' if logging_on else 'on'}",
+                ),
+                ("back", "Back"),
+            ],
+            default_index=4,
+            console=console,
+            cancel_value="back",
+        )
+        if action == "back":
+            return
+        if action == "logging":
+            new_state = maintenance.set_file_logging(not logging_on)
+            console.print(
+                f"  [ap.ok]✓[/] File logging is now {'on' if new_state else 'off'}"
+                " [ap.dim](observability.log_to_file in configs/config.yaml)[/]"
+            )
+            continue
+        if action == "all":
+            confirm = choose(
+                "Delete ALL digests and logs?",
+                [("no", "No, keep everything"), ("yes", "Yes, delete")],
+                default_index=0,
+                console=console,
+                cancel_value="no",
+            )
+            if confirm != "yes":
+                continue
+            removed = freed = 0
+            for n, b in (maintenance.clean_logs(), maintenance.clean_digests(None)):
+                removed, freed = removed + n, freed + b
+        elif action == "logs":
+            removed, freed = maintenance.clean_logs()
+        else:  # old
+            removed, freed = maintenance.clean_digests(maintenance.DEFAULT_KEEP_DAYS)
+        console.print(
+            f"  [ap.ok]✓[/] Removed {removed} files, freed {maintenance.format_bytes(freed)}"
+        )
+
+
 def _banner(console: Console) -> None:
     title = gradient_text("⌁ ActionPulse")
     console.print()
@@ -220,6 +292,7 @@ def run_menu(
         ("read", "Read digest — topics · authors · quotes"),
         ("dry", "Dry run — ingest only, no LLM"),
         ("diagnose", "Diagnose — check environment & config"),
+        ("maintenance", "Maintenance — disk usage · cleanup · logging"),
         ("settings", "Settings — run the setup wizard"),
         ("config", "Show current config (masked)"),
         ("quit", "Quit"),
@@ -269,6 +342,9 @@ def run_menu(
                 on_run(True, None)
             elif choice == "diagnose":
                 on_diagnose()
+            elif choice == "maintenance":
+                _maintenance(out)
+                continue  # the screen has its own loop; no Enter gate needed
             elif choice == "settings":
                 on_settings()
             elif choice == "config":

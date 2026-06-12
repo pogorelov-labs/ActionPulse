@@ -219,6 +219,11 @@ class ObservabilityConfig(BaseModel):
 
     prometheus_port: int = Field(default=9108, description="Prometheus metrics port")
     log_level: str = Field(default="INFO", description="Log level")
+    # U6: the owner-facing logging switch (menu Maintenance / config). All
+    # logging is local-only; an explicit --log-file still forces a file.
+    log_to_file: bool = Field(
+        default=True, description="Write structured JSON run logs to <data home>/var/logs"
+    )
     fail_on_exporter_error: bool = Field(
         default=False,
         description=(

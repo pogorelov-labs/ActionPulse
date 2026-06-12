@@ -43,11 +43,11 @@ print("RESULT:" + json.dumps(payload), flush=True)
 """
 
 
-def _spawn(driver: str = DRIVER):
+def _spawn(driver: str = DRIVER, extra_args: tuple[str, ...] = ()):
     """Reusable pty spawner (test_reader.py imports this for its keypaths)."""
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        [sys.executable, "-c", driver],
+        [sys.executable, "-c", driver, *extra_args],
         stdin=slave,
         stdout=slave,
         stderr=slave,
@@ -130,3 +130,34 @@ class TestRunOptionsPty:
         out, code = _drive(b"", send_sigint=True)
         assert code == 130
         assert "RESULT:interrupted" in out
+
+
+MAINTENANCE_DRIVER = """
+import os, sys
+os.environ["ACTIONPULSE_HOME"] = sys.argv[1]
+from rich.console import Console
+from digest_core.ui import THEME
+from digest_core.ui.menu import _maintenance
+
+console = Console(theme=THEME, force_terminal=True, width=100)
+_maintenance(console)
+print("RESULT:done", flush=True)
+"""
+
+
+class TestMaintenancePty:
+    def test_back_exits_without_deleting(self, tmp_path):
+        proc, master = _spawn(MAINTENANCE_DRIVER, extra_args=(str(tmp_path),))
+        try:
+            screen = _read_until(master, proc, "Maintenance")
+            assert "no phone-home telemetry" in screen  # the honesty line renders
+            os.write(master, b"5")  # quick-select Back (also the safe default)
+            out = _read_until(master, proc, "RESULT:")
+            proc.wait(timeout=10)
+            assert proc.returncode == 0
+            assert "RESULT:done" in out
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            os.close(master)

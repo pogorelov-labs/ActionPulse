@@ -73,6 +73,7 @@ actionpulse run           # full pipeline + delivery
 actionpulse read          # browse the latest digest (or --date YYYY-MM-DD)
 actionpulse diagnose      # check environment & config
 actionpulse paths         # where everything lives (data home + the exceptions)
+actionpulse clean         # disk usage; --logs / --digests / --all to free space
 actionpulse setup         # re-run the configuration wizard
 ```
 
