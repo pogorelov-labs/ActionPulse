@@ -43,6 +43,13 @@ class Item(BaseModel):
     confidence: float
     source_ref: Dict[str, Any]
     email_subject: Optional[str] = Field(default=None)
+    # Reader enrichment (U4): populated at assemble time from the normalized
+    # message behind source_ref.msg_id — the artifact stays self-contained
+    # (no ingest snapshot needed to show who asked). exclude_none keeps older
+    # artifacts byte-compatible.
+    email_from: Optional[str] = Field(
+        default=None, description='Sender display, e.g. "Ivan Petrov <ivan.petrov@corp.ru>"'
+    )
     evidence_spans: List[EvidenceSpan] = Field(
         default_factory=list, description="Verbatim source-language spans supporting the item"
     )

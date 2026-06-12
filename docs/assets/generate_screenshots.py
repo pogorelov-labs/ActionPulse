@@ -71,6 +71,7 @@ def screenshot_menu() -> None:
     )
     options = [
         "Run digest — pick period, full pipeline + delivery",
+        "Read digest — topics · authors · quotes",
         "Dry run — ingest only, no LLM",
         "Diagnose — check environment & config",
         "Settings — run the setup wizard",
@@ -156,11 +157,37 @@ def screenshot_setup() -> None:
     _save(c, "setup.svg", "actionpulse setup")
 
 
+def screenshot_reader_card() -> None:
+    """A reader detail card — built by the REAL item_card renderer (U4)."""
+    from digest_core.llm.schemas import Item
+    from digest_core.ui.reader import item_card
+
+    item = Item(
+        title="Prepare the project status update for the steering committee",
+        due="2026-06-13",
+        evidence_id="ev-7f3a91c2",
+        confidence=0.86,
+        source_ref={"type": "email", "msg_id": "caf-1129@megacorp.ru"},
+        email_subject="RE: Project status — steering committee",
+        email_from="Ivan Petrov <ivan.petrov@megacorp.ru>",
+        evidence_spans=[
+            {
+                "msg_id": "caf-1129@megacorp.ru",
+                "quote": "Пожалуйста, подготовь обновление статуса проекта к четвергу",
+            }
+        ],
+    )
+    c = _console()
+    c.print(item_card(item, "My actions"))
+    _save(c, "reader-card.svg", "actionpulse read")
+
+
 def main() -> None:
     print("Generating README screenshots…")
     screenshot_run_progress()
     screenshot_menu()
     screenshot_run_options()
+    screenshot_reader_card()
     screenshot_setup()
     print("Done.")
 

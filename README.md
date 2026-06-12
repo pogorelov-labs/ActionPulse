@@ -18,6 +18,10 @@ Bare `actionpulse` opens an arrow-key menu; "Run digest" asks exactly one follow
   <img src="docs/assets/setup.svg" alt="actionpulse setup — the configuration wizard review screen" width="380">
 </p>
 
+`actionpulse read` browses any digest right in the terminal — drill down digest → section → item; every card shows the topic, the author, the distilled action, and the verbatim source quote with its evidence trace, and stays in your scrollback:
+
+<p align="center"><img src="docs/assets/reader-card.svg" alt="actionpulse read — an item detail card with author, subject, quote and evidence trace" width="560"></p>
+
 > These are real `Console.export_svg()` renders of the actual output (regenerate with `docs/assets/generate_screenshots.py`), not mockups. Terminal styling per [`docs/development/TERMINAL_DESIGN.md`](docs/development/TERMINAL_DESIGN.md).
 
 ---
@@ -63,9 +67,10 @@ make setup
 After installation the **`actionpulse`** command is available everywhere (a launcher in `~/.local/bin`). Secrets load automatically from `~/.config/actionpulse/env` — no manual `source` needed:
 
 ```bash
-actionpulse               # interactive menu: Run · Dry run · Diagnose · Settings · Show config
+actionpulse               # interactive menu: Run · Read · Dry run · Diagnose · Settings · Show config
 actionpulse run --dry-run # ingest + normalize only, no LLM
 actionpulse run           # full pipeline + delivery
+actionpulse read          # browse the latest digest (or --date YYYY-MM-DD)
 actionpulse diagnose      # check environment & config
 actionpulse setup         # re-run the configuration wizard
 ```

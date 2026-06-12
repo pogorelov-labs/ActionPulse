@@ -239,7 +239,7 @@ other useful params."*
 - Dry-run stays a separate one-shot menu item; `--out/--state/--model` stay config/CLI
   concerns (the menu is for the daily decision, not plumbing).
 
-#### U4 — interactive digest reader ☐ *(C4b)*
+#### U4 — interactive digest reader ☑ *(feat/digest-reader, 2026-06-12)*
 
 Owner: *"available digest result reading view inside actionpulse terminal …
 interactible, read message topics, authors names, distilled contents."*
