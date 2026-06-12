@@ -137,7 +137,7 @@ already computed for `stage_durations_ms`), `on_llm_attempt`, `on_delivery`. `Nu
 default — **zero visual change**, structlog untouched. Exit: event-sequence test from
 replay fixture asserts the full funnel.
 
-#### T3 — PlainSink + `--progress` flag ☐ *(S)* — first visible win
+#### T3 — PlainSink + `--progress` flag ☑ *(feat/progress-plain, 2026-06-12)* — first visible win
 Append-only line per transition (terraform model): `✓ INGEST  124 messages (3.1s)`.
 `--progress=auto|live|plain|none`, auto = TTY detection; CI ⇒ plain. Exit: `cli run
 --dry-run` reads like a build log instead of JSON; matrix row "non-TTY" satisfied.

@@ -12,6 +12,7 @@ from digest_core.diagnostics import export_diagnostics, _build_env_info
 from digest_core.deliver.mattermost import ping_mattermost_webhook
 from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
+from digest_core.ui import resolve_sink
 from digest_core.config import Config
 
 app = typer.Typer(add_completion=False)
@@ -63,11 +64,26 @@ def run(
     log_level: str = typer.Option(
         "INFO", "--log-level", help="Log level (DEBUG, INFO, WARNING, ERROR)"
     ),
+    progress: str = typer.Option(
+        "auto",
+        "--progress",
+        help=(
+            "Progress display: auto (plain for now; live on TTY arrives with T4),"
+            " plain (append-only build-log lines), none (JSON logs on console,"
+            " pre-T3 behavior)"
+        ),
+        case_sensitive=False,
+    ),
 ):
     """Run daily digest job."""
     try:
-        # Setup logging
-        setup_logging(log_level=log_level, log_file=log_file)
+        progress = progress.lower()
+        if progress not in ("auto", "plain", "none"):
+            typer.echo(f"Invalid --progress value: {progress}", err=True)
+            raise typer.Exit(1)
+        # A progress renderer owns the terminal: JSON logs go to the file only.
+        setup_logging(log_level=log_level, log_file=log_file, console=(progress == "none"))
+        sink = resolve_sink(progress, sys.stdout.isatty())
 
         if dry_run:
             typer.echo("Dry-run mode: ingest+normalize only")
@@ -84,6 +100,7 @@ def run(
                 replay_ingest=replay_ingest,
                 record_llm=record_llm,
                 replay_llm=replay_llm,
+                sink=sink,
             )
             exit_code = 0  # Dry-run completed successfully
         else:
@@ -100,6 +117,7 @@ def run(
                 replay_ingest=replay_ingest,
                 record_llm=record_llm,
                 replay_llm=replay_llm,
+                sink=sink,
             )
 
             # Exit with code 2 if citation validation failed

@@ -6,8 +6,9 @@ styles, consoles, or spinner names itself. `tests/test_terminal_conformance.py`
 guards this boundary.
 """
 
-from digest_core.ui.console import SPINNER, get_console
+from digest_core.ui.console import SPINNER, get_console, get_err_console
 from digest_core.ui.glyphs import ARROW, FAIL, OK, PULSE, WARN, glyphs_unicode_ok
+from digest_core.ui.sinks import PlainSink, resolve_sink
 from digest_core.ui.theme import THEME, gradient_text
 
 __all__ = [
@@ -15,10 +16,13 @@ __all__ = [
     "FAIL",
     "OK",
     "PULSE",
+    "PlainSink",
     "SPINNER",
     "THEME",
     "WARN",
     "get_console",
+    "get_err_console",
     "glyphs_unicode_ok",
     "gradient_text",
+    "resolve_sink",
 ]
