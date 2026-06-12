@@ -392,3 +392,4 @@ L2 (corp) — independent, gates calling EN reports production-grade
 | C3 | EN digest rendering in corp Mattermost (webhook, emoji, markdown) | L1 follow-up |
 | C4 | U2 intra-stage telemetry on a real run (paging counters, retry warming, `stage_health` read-out) + U4 reader over a real digest (Cyrillic subjects/authors, truncation) — runbook §9.4 | U2/U4 |
 | C5 | U7 `actionpulse explain` against a real failed/partial run (verdict quality on real telemetry; one extra gateway call) — runbook §9.4 | U7 |
+| C6 | Embedding-merge calibration (PR12a cosine tier on a real snapshot: enable `threading.embedding_merge`, record the fleet sidecar, judge merge precision, calibrate `similarity_threshold`) — **gates building the reranker band/LLM residual** — runbook §9.4 | fleet |

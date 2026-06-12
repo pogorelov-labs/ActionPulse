@@ -248,3 +248,102 @@ def test_fetch_retry_emits_stage_retry(ews_config, time_config):
     assert (stage, attempt, max_attempts) == ("ingest", 2, 8)
     assert "ConnectionError" in reason and "boom" in reason
     assert ingester._fetch_retries == 1
+
+
+class TestFolderResolution:
+    """PR12b remainder: EWSConfig.folders honored (default ["Inbox"])."""
+
+    def _account(self):
+        account = Mock()
+        account.inbox = Mock(name="inbox")
+        account.sent = Mock(name="sent")
+        account.inbox.parent = MagicMock()
+        return account
+
+    def test_inbox_case_insensitive(self, ingester):
+        account = self._account()
+        assert ingester._resolve_folder(account, "Inbox") is account.inbox
+        assert ingester._resolve_folder(account, "INBOX") is account.inbox
+
+    def test_well_known_names_map_to_account_attrs(self, ingester):
+        account = self._account()
+        assert ingester._resolve_folder(account, "Sent Items") is account.sent
+
+    def test_named_folder_resolves_under_inbox_parent(self, ingester):
+        account = self._account()
+        reports = Mock(name="reports")
+        account.inbox.parent.__truediv__ = Mock(return_value=reports)
+        assert ingester._resolve_folder(account, "Reports") is reports
+
+    def test_resolution_failure_returns_none(self, ingester):
+        account = self._account()
+        account.inbox.parent.__truediv__ = Mock(side_effect=KeyError("no such folder"))
+        assert ingester._resolve_folder(account, "Nope") is None
+
+
+class TestMultiFolderFetch:
+    def _normalized(self, ingester, monkeypatch):
+        from datetime import datetime, timezone
+
+        def fake_normalize(msg):
+            from digest_core.ingest.ews import NormalizedMessage
+
+            return NormalizedMessage(
+                msg_id=str(msg),
+                conversation_id="",
+                subject="s",
+                sender_email="a@corp.ru",
+                to_recipients=[],
+                cc_recipients=[],
+                datetime_received=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                text_body="b",
+            )
+
+        monkeypatch.setattr(ingester, "_normalize_message", fake_normalize)
+
+    def _wire(self, ingester, monkeypatch, per_folder):
+        account = Mock()
+        account.inbox = Mock(name="inbox")
+        reports = Mock(name="reports")
+        account.inbox.parent = MagicMock()
+        account.inbox.parent.__truediv__ = Mock(
+            side_effect=lambda name: (
+                reports if name == "Reports" else (_ for _ in ()).throw(KeyError(name))
+            )
+        )
+        monkeypatch.setattr(ingester, "_connect", lambda: account)
+        fetched = []
+
+        def fake_fetch(folder, start, end):
+            fetched.append(folder)
+            ingester._fetch_pages = 1  # what the paging loop records per call
+            return [f"m-{len(fetched)}-{i}" for i in range(per_folder)]
+
+        monkeypatch.setattr(ingester, "_fetch_messages_with_retry", fake_fetch)
+        self._normalized(ingester, monkeypatch)
+        return account, reports, fetched
+
+    def test_fetches_every_configured_folder_and_sums_pages(
+        self, ews_config, time_config, monkeypatch
+    ):
+        ews_config = ews_config.model_copy(update={"folders": ["Inbox", "Reports"]})
+        ingester = EWSIngest(ews_config, time_config=time_config)
+        account, reports, fetched = self._wire(ingester, monkeypatch, per_folder=2)
+
+        messages = ingester.fetch_messages("2026-06-01", time_config)
+
+        assert fetched == [account.inbox, reports]
+        assert len(messages) == 4
+        assert ingester.last_fetch_stats["pages"] == 2  # summed across folders
+
+    def test_unresolved_folder_is_skipped_others_still_fetch(
+        self, ews_config, time_config, monkeypatch
+    ):
+        ews_config = ews_config.model_copy(update={"folders": ["Inbox", "Nope"]})
+        ingester = EWSIngest(ews_config, time_config=time_config)
+        account, _, fetched = self._wire(ingester, monkeypatch, per_folder=1)
+
+        messages = ingester.fetch_messages("2026-06-01", time_config)
+
+        assert fetched == [account.inbox]  # the bad folder degraded, run survived
+        assert len(messages) == 1
