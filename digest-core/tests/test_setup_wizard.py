@@ -5,6 +5,7 @@ import yaml
 from digest_core.setup_autodetect import DetectedEnv
 from digest_core.setup_wizard import (
     _auto_detect_ca_path,
+    _resolve_ews_login,
     _derive_from_email,
     _mask_secret,
     _merge_aliases,
@@ -338,3 +339,21 @@ class TestSetupCommand:
         result = runner.invoke(app, ["setup", "--help"])
         assert result.exit_code == 0
         assert "setup" in result.output.lower() or "interactive" in result.output.lower()
+
+
+class TestResolveEwsLogin:
+    """EWS NTLM login = machine (AD) login, not the email local part."""
+
+    def test_machine_login_beats_email_local_part(self):
+        # The reference case: whoami=ruapgr2, email=Ruslan.POGORELOV@megacorp.ru
+        assert _resolve_ews_login(None, "ruapgr2", "ruslan.pogorelov") == "ruapgr2"
+
+    def test_existing_config_wins(self):
+        assert _resolve_ews_login("manual-login", "ruapgr2", "x") == "manual-login"
+
+    def test_falls_back_to_email_local_part(self):
+        assert _resolve_ews_login(None, None, "ivan.petrov") == "ivan.petrov"
+        assert _resolve_ews_login("", "", "ivan.petrov") == "ivan.petrov"
+
+    def test_strips_whitespace(self):
+        assert _resolve_ews_login(None, "  ruapgr2  ", "x") == "ruapgr2"

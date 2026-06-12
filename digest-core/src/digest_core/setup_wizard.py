@@ -29,7 +29,12 @@ from rich.text import Text
 
 from digest_core.config import PROJECT_ROOT
 from digest_core.ui import SPINNER, choose, get_console, gradient_text
-from digest_core.setup_autodetect import CONF_HIGH, DetectedEnv, detect_environment
+from digest_core.setup_autodetect import (
+    CONF_HIGH,
+    DetectedEnv,
+    _machine_login,
+    detect_environment,
+)
 
 ENV_DIR = Path.home() / ".config" / "actionpulse"
 ENV_PATH = ENV_DIR / "env"
@@ -79,10 +84,15 @@ def _derive_from_email(email: str) -> dict[str, str]:
     """Derive EWS fields from corp email address.
 
     ivan.petrov@megacorp.ru ->
-        user_login: ivan.petrov
+        user_login: ivan.petrov   (FALLBACK only — see _resolve_ews_login)
         user_domain: megacorp.ru
         default_ews_endpoint: https://owa.megacorp.ru/EWS/Exchange.asmx
         aliases: ["Ivan", "Petrov", "ivan.petrov@megacorp.ru", "ivan.petrov"]
+
+    NOTE: ``user_login`` here is the email local part and is only a last-resort
+    fallback. EWS NTLM authenticates with the *machine* (AD) login from
+    ``whoami`` — e.g. "ruapgr2" — which routinely differs from the email local
+    part ("ruslan.pogorelov"). The wizard overrides it via _resolve_ews_login.
     """
     login, _, domain = email.partition("@")
     parts = re.split(r"[._-]", login)
@@ -95,6 +105,15 @@ def _derive_from_email(email: str) -> dict[str, str]:
         "default_ews_endpoint": f"https://owa.{domain}/EWS/Exchange.asmx",
         "aliases": aliases,
     }
+
+
+def _resolve_ews_login(
+    existing_login: Optional[str], machine_login: Optional[str], email_local_part: str
+) -> str:
+    """EWS NTLM login: existing config wins, else the machine (AD) login from
+    ``whoami`` (the correct NTLM identity, e.g. "ruapgr2"), else the email
+    local part as a last resort."""
+    return (existing_login or "").strip() or (machine_login or "").strip() or email_local_part
 
 
 def _write_env_file(values: dict[str, str], ntlm_login_hint: Optional[str] = None) -> Path:
@@ -133,8 +152,8 @@ def _write_env_file(values: dict[str, str], ntlm_login_hint: Optional[str] = Non
     lines.append("# DIGEST_LOG_LEVEL=INFO")
     if ntlm_login_hint:
         lines.append("")
-        lines.append("# EWS NTLM auth uses the login derived from your email (user_login@domain).")
-        lines.append("# If EWS rejects auth, try the AD login of this machine:")
+        lines.append("# EWS NTLM auth uses user_login@user_domain from config.yaml.")
+        lines.append("# Override it here if EWS rejects the detected machine login:")
         lines.append(f"# EWS_USER_LOGIN={ntlm_login_hint}")
     lines.append("")
 
@@ -457,12 +476,17 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
 
 
 def _summary_table(
-    env_values: dict[str, str], verify_ca: Optional[str], report_language: str = "en"
+    env_values: dict[str, str],
+    verify_ca: Optional[str],
+    report_language: str = "en",
+    ews_login: Optional[str] = None,
 ) -> Table:
     table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
     table.add_column(style="dim", min_width=18)
     table.add_column()
     table.add_row("Email (UPN)", env_values["EWS_USER_UPN"])
+    if ews_login:
+        table.add_row("EWS login (NTLM)", ews_login)
     table.add_row("EWS endpoint", env_values["EWS_ENDPOINT"])
     table.add_row("EWS password", _mask_secret(env_values["EWS_PASSWORD"], show_tail=0))
     table.add_row("LLM endpoint", env_values["LLM_ENDPOINT"])
@@ -591,10 +615,30 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
 
     derived = _derive_from_email(user_upn)
     derived["aliases"] = _merge_aliases(derived["aliases"], det)
-    console.print(
-        f"  [ap.ok]✓[/] login [bold]{derived['user_login']}[/] · "
-        f"domain [bold]{derived['user_domain']}[/]"
+
+    # EWS NTLM login = the machine/AD login (whoami: "ruapgr2"), NOT the email
+    # local part ("ruslan.pogorelov"). whoami is cheap and reliable even with
+    # autodetection off; fall back to a prompt only if it is unavailable.
+    machine_login = _machine_login()
+    existing_login = existing_cfg.get("ews", {}).get("user_login") or existing_env.get(
+        "EWS_USER_LOGIN"
     )
+    if existing_login or machine_login:
+        derived["user_login"] = _resolve_ews_login(
+            existing_login, machine_login, derived["user_login"]
+        )
+    else:
+        derived["user_login"] = _ask(
+            "EWS login (NTLM username, e.g. ruapgr2)", default=derived["user_login"]
+        )
+    if machine_login and machine_login.lower() not in [a.lower() for a in derived["aliases"]]:
+        derived["aliases"].append(machine_login)
+
+    console.print(
+        f"  [ap.ok]✓[/] EWS login [bold]{derived['user_login']}[/] "
+        f"[dim](NTLM · machine login)[/] · domain [bold]{derived['user_domain']}[/]"
+    )
+    console.print(f"  [ap.ok]✓[/] email (UPN) [bold]{user_upn}[/]")
     console.print(f"  [ap.ok]✓[/] aliases: [dim]{', '.join(derived['aliases'])}[/]")
 
     # ── 2. EWS endpoint ──
@@ -681,7 +725,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     console.print()
     console.print(
         Panel(
-            _summary_table(env_values, verify_ca, report_language),
+            _summary_table(env_values, verify_ca, report_language, derived["user_login"]),
             title="[bold]Review the values[/]",
             box=box.ROUNDED,
             border_style="ap.accent",
@@ -692,11 +736,12 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
         return False
 
     # ── Write files ──
-    # Machine (AD) login differing from the email local part is the classic
-    # NTLM failure cause — leave the override at hand, commented out.
-    ntlm_hint = None
-    if det and det.login and det.login.lower() != derived["user_login"].lower():
-        ntlm_hint = det.login
+    # user_login is now the machine/AD login. If the email local part differs,
+    # leave it as a commented alternative in case NTLM wants that form instead.
+    email_local_part = user_upn.partition("@")[0]
+    ntlm_hint = (
+        email_local_part if email_local_part.lower() != derived["user_login"].lower() else None
+    )
 
     with console.status("[ap.accent]Writing files…", spinner=SPINNER):
         env_path = _write_env_file(env_values, ntlm_login_hint=ntlm_hint)
