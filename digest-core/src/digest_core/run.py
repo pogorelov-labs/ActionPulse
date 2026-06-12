@@ -53,6 +53,7 @@ from digest_core.assemble.labels import (
     stage_banner,
 )
 from digest_core.progress import NullSink, ProgressSink
+from digest_core.progress import emit as _sink_emit
 from digest_core.provenance import build_provenance, prompt_sha256
 from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
@@ -337,19 +338,28 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
     else:
         ingest_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "ingest")
-        ingest = EWSIngest(ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics)
+        ingest = EWSIngest(
+            ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics, sink=ctx.sink
+        )
         messages = ingest.fetch_messages(ctx.digest_date, ctx.config.time)
         ctx.metrics.record_emails_total(len(messages), "fetched")
-        _finish_stage(ctx, "ingest", ingest_start, messages=len(messages))
+        fetch_stats = dict(getattr(ingest, "last_fetch_stats", {}) or {})
+        ingest_counts: Dict[str, Any] = {"messages": len(messages)}
+        if fetch_stats.get("retries"):
+            ingest_counts["retries"] = fetch_stats["retries"]
+        if fetch_stats.get("skipped"):
+            ingest_counts["errors"] = fetch_stats["skipped"]
+        _finish_stage(ctx, "ingest", ingest_start, **ingest_counts)
         ctx.run_meta["ews_fetch_stats"] = {
             "source": "ews",
             "message_count": len(messages),
             "fetch_timestamp": datetime.now(timezone.utc).isoformat(),
+            **fetch_stats,
         }
 
         normalize_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "normalize")
-        messages = _normalize_messages(messages, ctx.config)
+        messages = _normalize_messages(messages, ctx.config, sink=ctx.sink)
         _finish_stage(ctx, "normalize", normalize_start, messages=len(messages))
 
     if ctx.dump_ingest:
@@ -384,10 +394,14 @@ def _stage_evidence(ctx: RunContext, threads: list, total_emails: int) -> List[E
         threads,
         total_emails=total_emails,
         total_threads=len(threads),
+        progress=lambda done, total: _emit(
+            ctx, "on_stage_progress", "evidence", done, total, "threads"
+        ),
     )
-    _finish_stage(
-        ctx, "evidence", evidence_start, threads=len(threads), chunks=len(evidence_chunks)
-    )
+    evidence_counts: Dict[str, Any] = {"threads": len(threads), "chunks": len(evidence_chunks)}
+    if getattr(evidence_splitter, "last_errors", 0):
+        evidence_counts["errors"] = evidence_splitter.last_errors
+    _finish_stage(ctx, "evidence", evidence_start, **evidence_counts)
     return evidence_chunks
 
 
@@ -429,6 +443,7 @@ def _stage_llm(
         record_llm=ctx.record_llm,
         replay_llm=ctx.replay_llm,
         rate_broker=ctx.rate_broker,
+        sink=ctx.sink,
     )
     llm_stage_start = time.perf_counter()
     _emit(ctx, "on_stage_start", "llm")
@@ -511,6 +526,14 @@ def _stage_llm(
         value = llm_trace.get(key)
         if isinstance(value, int) and value > 0:
             llm_counts[key] = value
+    # Stage health (U2): transport + quality retries from the gateway, plus
+    # items the strict validator dropped (both nonzero-only by vocabulary).
+    retries = int(llm_meta.get("run_retries") or 0)
+    validation_errors = int(llm_trace.get("validation_errors") or 0)
+    if retries:
+        llm_counts["retries"] = retries
+    if validation_errors:
+        llm_counts["errors"] = validation_errors
     _finish_stage(ctx, "llm", llm_stage_start, **llm_counts)
     if llm_error is not None:
         llm_trace["error"] = str(llm_error)
@@ -1269,7 +1292,7 @@ def _idem_content_skip(
 
 
 def _normalize_messages(
-    messages: Sequence[NormalizedMessage], config: Config
+    messages: Sequence[NormalizedMessage], config: Config, sink: ProgressSink | None = None
 ) -> List[NormalizedMessage]:
     normalizer = HTMLNormalizer()
     quote_cleaner = QuoteCleaner(
@@ -1278,7 +1301,7 @@ def _normalize_messages(
     )
 
     normalized_messages = []
-    for msg in messages:
+    for index, msg in enumerate(messages):
         text_body, _ = normalizer.html_to_text(msg.text_body)
         text_body = normalizer.truncate_text(text_body, max_bytes=200000)
         if config.email_cleaner.enabled:
@@ -1311,6 +1334,9 @@ def _normalize_messages(
                 received_at=msg.received_at,
             )
         )
+        if sink is not None:
+            # Bounded loop with an honest total — renderers throttle (§3).
+            _sink_emit(sink, "on_stage_progress", "normalize", index + 1, len(messages), "messages")
     return normalized_messages
 
 
@@ -1718,15 +1744,20 @@ def _record_stage_duration(
 
 def _emit(ctx: RunContext, method: str, *args, **kwargs) -> None:
     """Fire a sink event; a broken renderer must never break the pipeline."""
-    try:
-        getattr(ctx.sink, method)(*args, **kwargs)
-    except Exception as exc:  # noqa: BLE001 - sink errors are non-fatal by contract
-        logger.warning("Progress sink failed", method=method, error=str(exc))
+    _sink_emit(ctx.sink, method, *args, **kwargs)
 
 
 def _finish_stage(ctx: RunContext, stage: str, started_at: float, **counts: Any) -> None:
-    """Record the stage duration and emit on_stage_end with the funnel counts."""
+    """Record the stage duration and emit on_stage_end with the funnel counts.
+
+    The optional retries/errors keys (present only when nonzero) also land in
+    run_meta["stage_health"], so the trace meta carries the same numbers the
+    permanent ✓ line shows (U2 read-out).
+    """
     _record_stage_duration(ctx.run_meta, ctx.metrics, stage, started_at)
+    health = {key: counts[key] for key in ("retries", "errors") if counts.get(key)}
+    if health:
+        ctx.run_meta.setdefault("stage_health", {})[stage] = health
     _emit(ctx, "on_stage_end", stage, counts, ctx.run_meta["stage_durations_ms"].get(stage, 0))
 
 

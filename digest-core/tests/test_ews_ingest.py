@@ -190,3 +190,61 @@ def test_fetch_messages_with_retry_retries_connection_error(ingester):
 
     assert len(messages) == 1
     assert folder.filter.call_count == 2
+
+
+class _RecordingSink:
+    """Duck-typed ProgressSink capturing the U2 intra-stage events."""
+
+    def __init__(self):
+        self.events = []
+
+    def on_stage_progress(self, stage, done, total=None, unit="", detail=""):
+        self.events.append(("progress", stage, done, total, unit, detail))
+
+    def on_stage_retry(self, stage, attempt, max_attempts, reason):
+        self.events.append(("retry", stage, attempt, max_attempts, reason))
+
+
+def test_paging_emits_progress_events(ews_config, time_config):
+    """U2: each fetched page surfaces running message counts (no total)."""
+    sink = _RecordingSink()
+    ingester = EWSIngest(ews_config, time_config=time_config, sink=sink)
+    folder = Mock()
+    filtered = MagicMock()
+    filtered.__getitem__.side_effect = [
+        [Mock(), Mock()],  # full page (page_size=2) -> continue
+        [Mock()],  # short page -> stop
+    ]
+    folder.filter.return_value = filtered
+    start = datetime(2026, 3, 28, tzinfo=timezone.utc)
+    end = datetime(2026, 3, 29, tzinfo=timezone.utc)
+
+    messages = ingester._fetch_messages_with_retry(folder, start, end)
+
+    assert len(messages) == 3
+    progress = [e for e in sink.events if e[0] == "progress"]
+    assert progress[0] == ("progress", "ingest", 2, None, "messages", "page 1")
+    assert progress[1] == ("progress", "ingest", 3, None, "messages", "page 2")
+    assert ingester._fetch_pages == 2
+
+
+def test_fetch_retry_emits_stage_retry(ews_config, time_config):
+    """U2: a transient EWS failure surfaces as on_stage_retry and is counted."""
+    sink = _RecordingSink()
+    ingester = EWSIngest(ews_config, time_config=time_config, sink=sink)
+    folder = Mock()
+    filtered = MagicMock()
+    filtered.__getitem__.side_effect = [[Mock()]]
+    folder.filter.side_effect = [ConnectionError("boom"), filtered]
+    start = datetime(2026, 3, 28, tzinfo=timezone.utc)
+    end = datetime(2026, 3, 29, tzinfo=timezone.utc)
+
+    messages = ingester._fetch_messages_with_retry(folder, start, end)
+
+    assert len(messages) == 1
+    retries = [e for e in sink.events if e[0] == "retry"]
+    assert len(retries) == 1
+    _, stage, attempt, max_attempts, reason = retries[0]
+    assert (stage, attempt, max_attempts) == ("ingest", 2, 8)
+    assert "ConnectionError" in reason and "boom" in reason
+    assert ingester._fetch_retries == 1

@@ -132,3 +132,47 @@ class TestResolveSinkMatrix:
         monkeypatch.setenv("CI", "true")
         sink = resolve_sink("auto", True)
         assert isinstance(sink, PlainSink) and not isinstance(sink, RichLiveSink)
+
+
+class TestIntraStageFooter:
+    """U2: data progress and retry notes live in the footer only."""
+
+    def test_progress_shows_in_footer(self):
+        clock = FakeClock()
+        sink = RichLiveSink(console=_tty_console(), now=clock)
+        sink._stage = "ingest"
+        sink._stage_started = clock.t
+        sink.on_stage_progress("ingest", 247, None, "messages", "page 3")
+        clock.t += 3.1
+        assert "247 messages · page 3" in sink._footer().text.plain
+
+    def test_retry_warms_footer_immediately_and_adds_note(self):
+        clock = FakeClock()
+        sink = RichLiveSink(console=_tty_console(), now=clock)
+        sink._stage = "ingest"
+        sink._stage_started = clock.t
+        clock.t += 2.0  # well under the 10 s attention shift
+        sink.on_stage_retry("ingest", 2, 8, "ConnectionError: boom")
+        footer = sink._footer()
+        assert str(footer.renderables[0].style) == "ap.warn"
+        assert "retry 2/8 — ConnectionError: boom" in footer.renderables[1].plain
+
+    def test_resumed_progress_clears_the_retry_note(self):
+        clock = FakeClock()
+        sink = RichLiveSink(console=_tty_console(), now=clock)
+        sink._stage = "ingest"
+        sink._stage_started = clock.t
+        sink.on_stage_retry("ingest", 2, 8, "boom")
+        sink.on_stage_progress("ingest", 300, None, "messages", "page 4")
+        footer = sink._footer()  # back to a single calm spinner line
+        assert str(footer.style) == "ap.accent"
+        assert "300 messages" in footer.text.plain
+
+    def test_stage_end_resets_progress_state(self):
+        sink = RichLiveSink(console=_tty_console())
+        sink.on_stage_start("ingest")
+        sink.on_stage_progress("ingest", 10, None, "messages")
+        sink.on_stage_end("ingest", {"messages": 10}, 50)
+        sink.on_stage_start("threads")
+        assert "10 messages" not in sink._footer().text.plain
+        sink.on_run_end("ok")

@@ -166,6 +166,8 @@ def _fake_gateway_factory(constructed, responder):
 
 
 def _ctx(extract_cfg, *, replay_llm=None):
+    from digest_core.progress import NullSink
+
     return SimpleNamespace(
         config=SimpleNamespace(
             llm=LLMConfig(endpoint="https://gw.corp/api/v1/chat", model="qwen35-397b-a17b"),
@@ -179,6 +181,7 @@ def _ctx(extract_cfg, *, replay_llm=None):
         digest_date="2026-03-29",
         trace_id="t",
         run_meta={"stage_durations_ms": {}},
+        sink=NullSink(),
     )
 
 

@@ -202,6 +202,9 @@ python -m digest_core.cli run \
   `support_recall`, `items_weak`, `items_quarantined`, `llm_budget`
   (calls/tokens против бюджета — D6); при включённых fleet-флагах там же
   `fleet_reranker_calls` / `fleet_judge_calls` / `best_of_n`
+- [ ] Там же `stage_health` (U2): retries/errors по стадиям — ключ появляется
+  **только при ненулевых значениях** (нет ключа = стадии прошли чисто);
+  в `ews_fetch_stats` теперь есть `pages` / `retries` / `skipped`
 
 **Если LLM timeout (120s):**
 - Модель qwen35-397b-a17b тяжёлая, 120s может не хватить при нагрузке

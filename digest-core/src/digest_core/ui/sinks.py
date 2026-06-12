@@ -29,10 +29,25 @@ from rich.text import Text
 
 from digest_core.progress import NullSink, ProgressSink
 from digest_core.ui.console import SPINNER, get_err_console
-from digest_core.ui.glyphs import FAIL, OK, WARN
+from digest_core.ui.glyphs import FAIL, OK, RETRY, WARN
 
 #: Footer color warms after this many seconds (§3 attention shift).
 _WARM_AFTER_S = 10.0
+#: PlainSink prints a "still running" reassurance at most this often (§3:
+#: terraform's 10 s "Still creating…" model — progress without log spam).
+_REASSURE_EVERY_S = 10.0
+#: Retry reasons truncate end-ellipsis at this width (§6.2).
+_REASON_MAX = 60
+
+
+def _short_reason(reason: str) -> str:
+    reason = " ".join((reason or "").split())
+    return reason if len(reason) <= _REASON_MAX else reason[: _REASON_MAX - 1] + "…"
+
+
+def _progress_qty(done: int, total: Optional[int], unit: str) -> str:
+    qty = f"{done}/{total}" if total else f"{done}"
+    return f"{qty} {unit}" if unit else qty
 
 
 def _fmt_duration(duration_ms: int) -> str:
@@ -48,7 +63,20 @@ def _fmt_tokens(n: int) -> str:
 
 
 def _phrase(counts: Dict[str, Any]) -> str:
-    """Human funnel phrase for the known count shapes (§4.2 vocabulary)."""
+    """Human funnel phrase (§4.2): known count shapes + a warn suffix for the
+    optional retries/errors keys (present only when nonzero)."""
+    counts = dict(counts)
+    retries = counts.pop("retries", 0)
+    errors = counts.pop("errors", 0)
+    parts = [_phrase_base(counts)] if counts else []
+    if retries:
+        parts.append(f"[ap.warn]{RETRY}{retries} {'retry' if retries == 1 else 'retries'}[/]")
+    if errors:
+        parts.append(f"[ap.warn]{WARN}{errors} {'error' if errors == 1 else 'errors'}[/]")
+    return " · ".join(parts)
+
+
+def _phrase_base(counts: Dict[str, Any]) -> str:
     keys = set(counts)
     if keys == {"sections", "items", "tokens_in", "tokens_out"}:
         return (
@@ -90,10 +118,49 @@ def _delivery_line(target: str, ok: bool, detail: Optional[str]) -> str:
 
 
 class PlainSink(ProgressSink):
-    """Append-only build-log renderer; one line per event, scrollback-native."""
+    """Append-only build-log renderer; one line per event, scrollback-native.
 
-    def __init__(self, console: Optional[Console] = None):
+    Intra-stage progress is *throttled here, not at the producer*: a retry is
+    always printed (rare and meaningful), data progress collapses into one
+    "still running" reassurance line per ≥10 s (terraform model) so non-TTY/CI
+    logs stay quiet.
+    """
+
+    def __init__(
+        self,
+        console: Optional[Console] = None,
+        now: Callable[[], float] = time.monotonic,
+    ):
         self._console = console or get_err_console()
+        self._now = now
+        self._stage_started: float = 0.0
+        self._last_note: float = 0.0
+
+    def on_stage_start(self, stage: str) -> None:
+        self._stage_started = self._now()
+        self._last_note = self._stage_started
+
+    def on_stage_progress(
+        self, stage: str, done: int, total: Optional[int] = None, unit: str = "", detail: str = ""
+    ) -> None:
+        now = self._now()
+        if now - self._last_note < _REASSURE_EVERY_S:
+            return
+        self._last_note = now
+        qty = _progress_qty(done, total, unit)
+        extra = f" · {detail}" if detail else ""
+        elapsed = _fmt_duration(int((now - self._stage_started) * 1000))
+        self._console.print(
+            f"[ap.dim]· {stage.upper():<9} still running — {qty}{extra} ({elapsed})[/]",
+            highlight=False,
+        )
+
+    def on_stage_retry(self, stage: str, attempt: int, max_attempts: int, reason: str) -> None:
+        self._console.print(
+            f"[ap.warn]{RETRY} {stage.upper():<9} retry {attempt}/{max_attempts}"
+            f" — {_short_reason(reason)}[/]",
+            highlight=False,
+        )
 
     def on_stage_end(self, stage: str, counts: Dict[str, Any], duration_ms: int) -> None:
         self._console.print(_ok_line(stage, counts, duration_ms), highlight=False)
@@ -125,6 +192,8 @@ class RichLiveSink(ProgressSink):
         self._stage: Optional[str] = None
         self._stage_started: float = 0.0
         self._llm_note: str = ""
+        self._progress: str = ""  # latest intra-stage data phrase (footer only)
+        self._retry_note: str = ""  # active transient-retry note (warms the footer)
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -150,15 +219,21 @@ class RichLiveSink(ProgressSink):
         if not self._stage:
             return Text("")
         elapsed = self._now() - self._stage_started
-        style = "ap.warn" if elapsed > _WARM_AFTER_S else "ap.accent"
-        label = Text.assemble(
-            (f"{self._stage.upper():<9}", "ap.em"),
-            (f" {elapsed:.1f}s", style),
-        )
+        # A pending retry warms the footer immediately — error responsiveness
+        # must not wait for the 10 s attention shift.
+        style = "ap.warn" if (self._retry_note or elapsed > _WARM_AFTER_S) else "ap.accent"
+        label = Text.assemble((f"{self._stage.upper():<9}", "ap.em"))
+        if self._progress:
+            label.append(f" {self._progress}", "default")
+            label.append(" ·", "ap.dim")
+        label.append(f" {elapsed:.1f}s", style)
         line = Spinner(SPINNER, text=label, style=style)
+        notes = []
+        if self._retry_note:
+            notes.append(Text(f"  └ {self._retry_note}", style="ap.warn"))
         if self._llm_note:
-            return Group(line, Text(f"  └ {self._llm_note}", style="ap.dim"))
-        return line
+            notes.append(Text(f"  └ {self._llm_note}", style="ap.dim"))
+        return Group(line, *notes) if notes else line
 
     # -- events ---------------------------------------------------------------
 
@@ -167,16 +242,33 @@ class RichLiveSink(ProgressSink):
         self._stage = stage
         self._stage_started = self._now()
         self._llm_note = ""
+        self._progress = ""
+        self._retry_note = ""
+
+    def on_stage_progress(
+        self, stage: str, done: int, total: Optional[int] = None, unit: str = "", detail: str = ""
+    ) -> None:
+        qty = _progress_qty(done, total, unit)
+        self._progress = f"{qty} · {detail}" if detail else qty
+        # Data flowing again means the retry succeeded — clear the warn note.
+        self._retry_note = ""
+
+    def on_stage_retry(self, stage: str, attempt: int, max_attempts: int, reason: str) -> None:
+        self._retry_note = f"{RETRY} retry {attempt}/{max_attempts} — {_short_reason(reason)}"
 
     def on_stage_end(self, stage: str, counts: Dict[str, Any], duration_ms: int) -> None:
         self._print(_ok_line(stage, counts, duration_ms))
         self._stage = None
         self._llm_note = ""
+        self._progress = ""
+        self._retry_note = ""
 
     def on_stage_failed(self, stage: str, error: str) -> None:
         self._print(_fail_line(stage, error))
         self._stage = None
         self._llm_note = ""
+        self._progress = ""
+        self._retry_note = ""
 
     def on_llm_attempt(self, model: str, attempt: int, max_attempts: int) -> None:
         self._llm_note = f"attempt {attempt}/{max_attempts} · {model}"

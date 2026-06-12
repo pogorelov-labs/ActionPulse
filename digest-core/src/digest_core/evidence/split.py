@@ -5,7 +5,7 @@ Evidence splitting for LLM processing.
 import hashlib
 import re as _stdre
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import Any, Callable, Dict, List, Optional
 import structlog
 
 from digest_core.threads.build import ConversationThread
@@ -145,14 +145,21 @@ class EvidenceSplitter:
         self.user_aliases = user_aliases or []
         self.user_timezone = user_timezone
         self.important_senders = important_senders or []
+        self.last_errors = 0  # threads skipped by the last split (stage health)
 
     def split_evidence(
         self,
         threads: List[ConversationThread],
         total_emails: int = 0,
         total_threads: int = 0,
+        progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[EvidenceChunk]:
-        """Split threads into evidence chunks with adaptive chunking."""
+        """Split threads into evidence chunks with adaptive chunking.
+
+        ``progress(done, total)`` fires once per processed thread (the caller
+        wires it to the ProgressSink); threads that fail to split are skipped
+        and counted in ``self.last_errors``.
+        """
         logger.info(
             "Splitting evidence from threads",
             thread_count=len(threads),
@@ -161,18 +168,23 @@ class EvidenceSplitter:
         )
 
         all_chunks = []
+        self.last_errors = 0
 
-        for thread in threads:
+        for index, thread in enumerate(threads):
             try:
                 chunks = self._split_thread_evidence(thread, total_emails, total_threads)
                 all_chunks.extend(chunks)
             except Exception as e:
+                self.last_errors += 1
                 logger.warning(
                     "Failed to split thread evidence",
                     conversation_id=thread.conversation_id,
                     error=str(e),
                 )
                 continue
+            finally:
+                if progress is not None:
+                    progress(index + 1, len(threads))
 
         # Sort chunks by priority score
         all_chunks.sort(key=lambda c: c.priority_score, reverse=True)

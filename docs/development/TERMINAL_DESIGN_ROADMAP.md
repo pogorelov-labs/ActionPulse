@@ -191,7 +191,7 @@ or digest_core.cli — just print user friendly actionpulse command."*
   before that branch), README reconfigure hint. Deeper docs (`docs/testing/*`,
   `docs/operations/*`) are RU operator docs = L3 backlog, deliberately untouched.
 
-#### U2 — intra-stage liveness + retry/error counters ☐ *(C1+C2 together — same seam)*
+#### U2 — intra-stage liveness + retry/error counters ☑ *(feat/progress-intra-stage, 2026-06-12 — C1+C2 together, same seam)*
 
 Owner: *"stages should be responsive to errors and update the UI constantly with
 status"* + *"there should be counts of retries and errors for each stage."*
