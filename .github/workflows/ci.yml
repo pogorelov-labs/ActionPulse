@@ -40,6 +40,34 @@ jobs:
       - name: Black format check
         run: uv run black --check src/ tests/
 
+  terminal-matrix:
+    # Degradation-matrix guard (TERMINAL_DESIGN.md §7, roadmap T7): the
+    # progress/ui/conformance tests must hold under a hostile terminal env.
+    runs-on: ubuntu-latest
+    env:
+      TERM: dumb
+      NO_COLOR: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'digest-core/pyproject.toml'
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Progress + ui tests under TERM=dumb / NO_COLOR
+        run: >
+          uv run pytest tests/test_progress_sink.py tests/test_progress_plain.py
+          tests/test_progress_live.py tests/test_ui_tokens.py
+          tests/test_terminal_conformance.py tests/test_ui_select.py -q
+
   test:
     runs-on: ubuntu-latest
     steps:
