@@ -416,7 +416,7 @@ main() {
         run_wizard
     else
         note "Wizard skipped (--no-wizard). Run it later:"
-        note "  cd $INSTALL_DIR/digest-core && uv run python -m digest_core.cli setup"
+        note "  actionpulse setup"
     fi
 
     summary

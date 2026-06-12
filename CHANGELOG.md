@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Setup finale speaks `actionpulse`, never `python -m digest_core.cli`** (owner UX comment, U1): the wizard's "⌁ Done" panel now prints `actionpulse diagnose` / `actionpulse run --dry-run` / `actionpulse run` / bare `actionpulse` (menu) — and drops the obsolete `set -a && source …` line (the CLI auto-loads `~/.config/actionpulse/env`). The wizard is now **self-healing**: `make setup` from a bare checkout writes the `~/.local/bin/actionpulse` shim when it is missing (mirrors install.sh; never overwrites an existing launcher; requires `uv`), so the advertised command always exists; if `~/.local/bin` is off PATH the panel appends the one-line `~/.zshrc` fix, and without `uv` it falls back to the module form — the only place that form survives. Same sweep: env-file header comment, `install.sh --no-wizard` hint (`actionpulse setup`), README reconfigure hint. Design record: `TERMINAL_DESIGN_ROADMAP.md` gains the **U-track** (U1 ☑ here + U2–U4 design decisions for the remaining owner comments: intra-stage liveness/retry counters, menu run options, digest reader).
+
 ### Added
 - **Terminal-UI screenshots in the README**: authentic `Console.export_svg()` renders of the real output — the live run funnel + animated footer, the `actionpulse` launcher menu, and the setup wizard review screen — committed under `docs/assets/` with a reproducible generator (`generate_screenshots.py`). Runbook §1 de-staled for the `actionpulse` era: the command auto-loads `~/.config/actionpulse/env` (manual `source` no longer required), `diagnose`/`run` shown as `actionpulse <cmd>`, build-log output noted, and the §1.4 check now verifies `ews.user_login` is the machine login (`whoami`), not the email local part.
 
