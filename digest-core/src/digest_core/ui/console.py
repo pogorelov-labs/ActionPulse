@@ -20,6 +20,7 @@ from digest_core.ui.theme import THEME
 SPINNER = "dots"
 
 _console: Optional[Console] = None
+_err_console: Optional[Console] = None
 
 
 def get_console() -> Console:
@@ -28,3 +29,12 @@ def get_console() -> Console:
     if _console is None:
         _console = Console(theme=THEME)
     return _console
+
+
+def get_err_console() -> Console:
+    """Themed stderr Console — progress/diagnostics channel (cargo/uv/gh
+    convention: stdout stays clean for data)."""
+    global _err_console
+    if _err_console is None:
+        _err_console = Console(theme=THEME, stderr=True)
+    return _err_console

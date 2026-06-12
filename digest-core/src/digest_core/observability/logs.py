@@ -16,8 +16,13 @@ import structlog
 _CONFIGURED_LOG_FILE: Optional[Path] = None
 
 
-def setup_logging(log_level: str = "INFO", log_file: str = None) -> Path:
-    """Setup structured logging with structlog."""
+def setup_logging(log_level: str = "INFO", log_file: str = None, console: bool = True) -> Path:
+    """Setup structured logging with structlog.
+
+    console=False keeps JSON logs in the file only — used when a progress
+    renderer owns the terminal (TERMINAL_DESIGN.md P3: the live channel
+    renders state, log lines never scroll through it).
+    """
     global _CONFIGURED_LOG_FILE
 
     if _CONFIGURED_LOG_FILE is not None and logging.getLogger().handlers:
@@ -35,7 +40,7 @@ def setup_logging(log_level: str = "INFO", log_file: str = None) -> Path:
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Configure standard library logging with both console and file output
-    handlers = [logging.StreamHandler(sys.stdout)]
+    handlers = [logging.StreamHandler(sys.stdout)] if console else []
     try:
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     except OSError:
