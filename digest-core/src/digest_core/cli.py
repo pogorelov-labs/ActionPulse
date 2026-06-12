@@ -70,6 +70,7 @@ def _main(ctx: typer.Context) -> None:
         on_run=_safe(_menu_run),
         on_diagnose=_safe(diagnose),
         on_settings=_safe(lambda: setup(no_autodetect=False)),
+        on_read=_safe(lambda date: read(date=date, out="./out")),
     )
     raise typer.Exit(code)
 
@@ -204,6 +205,37 @@ def run(
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         sys.exit(1)  # Error
+
+
+@app.command()
+def read(
+    date: str = typer.Option(
+        None, "--date", help="Digest date to read (YYYY-MM-DD; default: newest)"
+    ),
+    out: str = typer.Option("./out", "--out", help="Digest output directory"),
+):
+    """Browse a digest interactively: topics, authors, distilled items, quotes.
+
+    Drill down digest → section → item; every opened card stays in scrollback
+    with its evidence trace. Non-TTY invocations print the markdown digest
+    instead (scriptable).
+    """
+    from digest_core.ui.reader import read_digest_interactive, render_digest_plain
+
+    out_dir = Path(out).expanduser()
+    if not stdin_is_tty() or not sys.stdout.isatty():
+        text = render_digest_plain(out_dir, date)
+        if text is None:
+            typer.echo(f"No digest found in {out_dir} — run `actionpulse run` first.", err=True)
+            raise typer.Exit(1)
+        typer.echo(text)
+        raise typer.Exit(0)
+    try:
+        raise typer.Exit(read_digest_interactive(out_dir, date=date))
+    except KeyboardInterrupt:
+        # §5.5 abort contract: typed message, no traceback, exit 130.
+        typer.echo("\nInterrupted.")
+        raise typer.Exit(130)
 
 
 @app.command()

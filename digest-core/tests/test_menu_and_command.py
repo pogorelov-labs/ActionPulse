@@ -83,24 +83,52 @@ class TestRunMenu:
         monkeypatch.setattr(menu_mod, "ENV_PATH", tmp_path / "env")
         monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
         (tmp_path / "env").write_text("EWS_USER_UPN=ivan@corp.ru\nLLM_TOKEN=tok-abcdef123456\n")
-        calls = {"run": [], "diag": 0, "settings": 0}
-        # "run" opens the U3 submenu — the next scripted answer is its choice.
+        calls = {"run": [], "diag": 0, "settings": 0, "read": []}
+        # "run" opens the U3 submenu, then the post-run "read now?" offer.
         self._scripted(
             monkeypatch,
-            ["run", "today", "dry", "diagnose", "settings", "config", "quit"],
+            ["run", "today", "menu", "dry", "diagnose", "settings", "config", "quit"],
         )
         code = run_menu(
             on_run=lambda dry, choice: calls["run"].append((dry, choice)),
             on_diagnose=lambda: calls.__setitem__("diag", calls["diag"] + 1),
             on_settings=lambda: calls.__setitem__("settings", calls["settings"] + 1),
+            on_read=lambda date: calls["read"].append(date),
             console=_console(),
         )
         assert code == 0
         assert calls["run"] == [(False, RunChoice()), (True, None)]  # run then dry
         assert calls["diag"] == 1
         assert calls["settings"] == 1
+        assert calls["read"] == []  # the post-run offer was declined
         # The accepted choice persisted for "Repeat last run".
         assert load_last_run(tmp_path / "last_run.json") == RunChoice()
+
+    def test_post_run_offer_opens_reader_with_absolute_date(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
+        calls = {"read": []}
+        self._scripted(monkeypatch, ["run", "yesterday", "read", "quit"])
+        run_menu(
+            on_run=lambda dry, choice: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            on_read=lambda date: calls["read"].append(date),
+            console=_console(),
+        )
+        # Yesterday resolved to an absolute date -> the reader opens that day.
+        assert len(calls["read"]) == 1 and calls["read"][0] is not None
+
+    def test_read_menu_item_opens_newest(self, monkeypatch):
+        calls = {"read": []}
+        self._scripted(monkeypatch, ["read", "quit"])
+        run_menu(
+            on_run=lambda dry, choice: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            on_read=lambda date: calls["read"].append(date),
+            console=_console(),
+        )
+        assert calls["read"] == [None]
 
     def test_run_submenu_back_returns_to_menu_without_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
@@ -110,6 +138,7 @@ class TestRunMenu:
             on_run=lambda dry, choice: calls.__setitem__("run", calls["run"] + 1),
             on_diagnose=lambda: None,
             on_settings=lambda: None,
+            on_read=lambda date: None,
             console=_console(),
         )
         assert code == 0
@@ -128,6 +157,7 @@ class TestRunMenu:
             on_run=boom,
             on_diagnose=lambda: None,
             on_settings=lambda: None,
+            on_read=lambda date: None,
             console=console,
         )
         assert code == 0
@@ -144,6 +174,7 @@ class TestRunMenu:
             on_run=lambda d, c: None,
             on_diagnose=lambda: None,
             on_settings=lambda: None,
+            on_read=lambda date: None,
             console=_console(),
         )
         assert code == 130
@@ -156,6 +187,7 @@ class TestRunMenu:
             on_run=lambda d, c: None,
             on_diagnose=lambda: None,
             on_settings=lambda: None,
+            on_read=lambda date: None,
             console=_console(),
         )
         assert seen and seen[0]["cancel_value"] == "quit"

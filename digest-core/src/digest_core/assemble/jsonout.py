@@ -68,6 +68,7 @@ class JSONAssembler:
                             "confidence": item.confidence,
                             "source_ref": item.source_ref,
                             "email_subject": item.email_subject,
+                            "email_from": item.email_from,
                         }
                         for item in section.items
                     ],
@@ -119,6 +120,7 @@ class JSONAssembler:
                     confidence=item_dict["confidence"],
                     source_ref=item_dict["source_ref"],
                     email_subject=item_dict.get("email_subject"),
+                    email_from=item_dict.get("email_from"),
                 )
                 items.append(item)
 
@@ -242,7 +244,7 @@ class JSONAssembler:
                 "confidence",
                 "source_ref",
             ],
-            "item_optional_fields": ["due", "email_subject"],
+            "item_optional_fields": ["due", "email_subject", "email_from"],
             "date_format": "YYYY-MM-DD",
             "confidence_range": [0, 1],
         }

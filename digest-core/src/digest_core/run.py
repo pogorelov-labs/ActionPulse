@@ -59,7 +59,9 @@ from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
 from digest_core.threads.build import ThreadBuilder
 
-PIPELINE_VERSION = "1.1.0"
+# 1.2.0: items carry email_subject/email_from (U4 reader enrichment) — the
+# bump forces one idempotency rebuild so existing artifacts gain the fields.
+PIPELINE_VERSION = "1.2.0"
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = PACKAGE_ROOT / "prompts"
 # Deprecated compat aliases (RU titles). Logic routes through assemble.labels
@@ -1124,6 +1126,10 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         # Cross-run dedup annotation (EP-7; no-op unless memory.dedup_ledger)
         _apply_dedup_ledger(ctx, digest)
 
+        # U4: items gain subject/author from the message behind their msg_id —
+        # the artifact stays self-contained for the reader (no snapshot join).
+        _enrich_items_from_messages(digest, normalized_messages)
+
         # Stage 7: ASSEMBLE
         _stage_assemble(ctx, digest)
 
@@ -1621,6 +1627,54 @@ def _build_evidence_summary(
             for thread in threads
         ],
     }
+
+
+def _sender_display(message: NormalizedMessage) -> str:
+    """Human sender line: 'Name <email>' when both exist, else whichever does."""
+    name = (message.from_name or "").strip()
+    email = (message.sender_email or message.from_email or "").strip()
+    if name and email:
+        return f"{name} <{email}>"
+    return email or name
+
+
+def _item_msg_id(item: Any) -> str:
+    """The message id an item is anchored to: source_ref first, then spans/citations."""
+    msg_id = (getattr(item, "source_ref", None) or {}).get("msg_id", "")
+    if msg_id:
+        return msg_id
+    for span in getattr(item, "evidence_spans", None) or []:
+        if span.msg_id:
+            return span.msg_id
+    for citation in getattr(item, "citations", None) or []:
+        if citation.msg_id:
+            return citation.msg_id
+    return ""
+
+
+def _enrich_items_from_messages(digest: Digest, messages: Sequence[NormalizedMessage]) -> None:
+    """Populate ``email_subject``/``email_from`` from the message behind each
+    item's msg_id (U4): the reader shows topics and authors without joining an
+    ingest snapshot. P2-aligned (msg_id is the evidence anchor already);
+    subjects/senders are report-class data — on disk and screen, never in logs.
+    Existing values are kept (the artifact stays append-only in spirit).
+    """
+    by_id = {m.msg_id: m for m in messages if m.msg_id}
+    if not by_id:
+        return
+    for section in digest.sections:
+        for item in section.items:
+            if item.evidence_id == "system":
+                continue  # status banners carry no source message
+            message = by_id.get(_item_msg_id(item))
+            if message is None:
+                continue
+            if not item.email_subject and message.subject:
+                item.email_subject = message.subject
+            if not item.email_from:
+                sender = _sender_display(message)
+                if sender:
+                    item.email_from = sender
 
 
 def _quarantine_weak_items(digest: Digest, language: str = DEFAULT_LANGUAGE) -> int:

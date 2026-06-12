@@ -204,6 +204,14 @@ ActionPulse stays **line-oriented Q&A** (wizard) + streaming output (run). No fu
 alt-buffer TUI: our sessions are short, scrollback is evidence (P2 of the product:
 traceability), and alt-screen discards it. Revisit only if a long-lived dashboard ships.
 
+**Reaffirmed for the U4 digest reader (2026-06-12)** after a three-way posture
+comparison: (i) line-oriented drill-down on the §5.2 selector; (ii) `$PAGER` handoff
+(non-interactive — fails the "interactible" requirement); (iii) bounded alt-screen
+browser (most app-like, but discards scrollback for a short-lived view). **(i) won**:
+the reader drills digest → section → item and prints each detail card *into scrollback*
+— every card the user opens stays behind as copyable evidence. Long lists page at 6 +
+nav rows so the 1–9 quick-select invariant holds. The revisit trigger stands unchanged.
+
 ### 5.2 Select menus (when a question has enumerable options)
 
 Conventions per the cross-library table ◐ (charm huh/bubbles/gum, questionary,
@@ -323,6 +331,7 @@ implements piped-stdin scripted mode (E2E-tested answer protocol).
 | `cli run` | ❌ **non-compliant** — prints raw structlog JSON | implement §4: ProgressSink + RichLiveSink/PlainSink + `--progress` flag (the next UX PR) |
 | `cli diagnose` | ◐ plain echo with ✓/✗ glyph tokens | colorize opportunistically |
 | `actionpulse` launcher menu | ✅ compliant (§5.2 selector, Esc=dismiss via `cancel_value`, Ctrl+C=130, glyph fallbacks, masked config view) | — |
+| `actionpulse read` (digest reader) | ✅ compliant (§5.1 drill-down posture, §5.2 paged selectors ≤9, Esc walks up one level, cards into scrollback, non-TTY prints the markdown) | — |
 | Fleet display | — (REDESIGN_PLAN PR2+) | build against §4.3 from day one |
 
 ---

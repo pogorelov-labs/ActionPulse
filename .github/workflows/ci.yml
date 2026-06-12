@@ -67,7 +67,7 @@ jobs:
           uv run pytest tests/test_progress_sink.py tests/test_progress_plain.py
           tests/test_progress_live.py tests/test_ui_tokens.py
           tests/test_terminal_conformance.py tests/test_ui_select.py
-          tests/test_menu_pty.py -q
+          tests/test_menu_pty.py tests/test_reader.py -q
 
   test:
     runs-on: ubuntu-latest

@@ -190,6 +190,7 @@ def run_menu(
     on_run: Callable[[bool, Optional[RunChoice]], None],
     on_diagnose: Callable[[], None],
     on_settings: Callable[[], None],
+    on_read: Callable[[Optional[str]], None],
     console: Optional[Console] = None,
 ) -> int:
     """Drive the launcher menu loop. Callbacks isolate the menu from the CLI
@@ -197,12 +198,14 @@ def run_menu(
 
     ``on_run(dry, choice)`` — choice is None for the one-shot dry run (today's
     defaults) and a RunChoice from the U3 selector for a full run.
+    ``on_read(date)`` — open the digest reader (None = newest digest).
     """
     out = console or get_console()
     _banner(out)
 
     options = [
         ("run", "Run digest — pick period, full pipeline + delivery"),
+        ("read", "Read digest — topics · authors · quotes"),
         ("dry", "Dry run — ingest only, no LLM"),
         ("diagnose", "Diagnose — check environment & config"),
         ("settings", "Settings — run the setup wizard"),
@@ -237,6 +240,19 @@ def run_menu(
                 on_run(False, run_choice)
                 # Persist only an accepted, completed-without-crash choice.
                 save_last_run(run_choice)
+                # U4 bridge: the digest is on disk — offer to read it now.
+                follow = choose(
+                    "Read the digest now?",
+                    [("read", "Read it now"), ("menu", "Back to the menu")],
+                    default_index=0,
+                    console=out,
+                    cancel_value="menu",
+                )
+                if follow == "read":
+                    on_read(run_choice.from_date if run_choice.from_date != "today" else None)
+                continue
+            elif choice == "read":
+                on_read(None)
             elif choice == "dry":
                 on_run(True, None)
             elif choice == "diagnose":

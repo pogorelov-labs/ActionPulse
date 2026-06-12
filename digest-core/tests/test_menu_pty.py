@@ -43,10 +43,11 @@ print("RESULT:" + json.dumps(payload), flush=True)
 """
 
 
-def _spawn():
+def _spawn(driver: str = DRIVER):
+    """Reusable pty spawner (test_reader.py imports this for its keypaths)."""
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        [sys.executable, "-c", DRIVER],
+        [sys.executable, "-c", driver],
         stdin=slave,
         stdout=slave,
         stderr=slave,
