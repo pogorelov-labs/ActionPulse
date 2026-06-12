@@ -94,6 +94,9 @@ def test_event_sequence_with_funnel_counts(monkeypatch, tmp_path):
     assert ended["select"][2]["of"] == ended["evidence"][2]["chunks"]
     assert ended["llm"][2]["sections"] == 2
     assert ended["llm"][2]["items"] == 2
+    # T5: token spend from the gateway meta rides the llm stage counts.
+    assert ended["llm"][2]["tokens_in"] == 123
+    assert ended["llm"][2]["tokens_out"] == 45
     assert ended["assemble"][2] == {"items": 2}
 
     for event in sink.events:

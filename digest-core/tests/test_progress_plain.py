@@ -25,6 +25,12 @@ def _recording_console() -> Console:
 
 
 class TestFormatters:
+    def test_tokens(self):
+        from digest_core.ui.sinks import _fmt_tokens
+
+        assert _fmt_tokens(123) == "123"
+        assert _fmt_tokens(6400) == "6.4k"
+
     def test_durations(self):
         assert _fmt_duration(312) == "0.3s"
         assert _fmt_duration(3120) == "3.1s"
@@ -37,6 +43,10 @@ class TestFormatters:
         assert _phrase({"selected": 28, "of": 41}) == "28/41 chunks selected"
         assert _phrase({"sections": 3, "items": 7}) == "3 sections · 7 items"
         assert _phrase({"items": 7}) == "7 items"
+        assert (
+            _phrase({"sections": 3, "items": 7, "tokens_in": 6400, "tokens_out": 450})
+            == "3 sections · 7 items · ↑6.4k ↓450 tok"
+        )
 
     def test_fallback_phrase(self):
         assert _phrase({"foo": 1, "bar": 2}) == "foo=1 · bar=2"
