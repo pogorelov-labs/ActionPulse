@@ -21,7 +21,6 @@ from typing import Callable, Optional
 import typer
 import yaml
 from rich import box
-from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -29,6 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from digest_core.config import PROJECT_ROOT
+from digest_core.ui import SPINNER, get_console, gradient_text
 from digest_core.setup_autodetect import CONF_HIGH, DetectedEnv, detect_environment
 
 ENV_DIR = Path.home() / ".config" / "actionpulse"
@@ -40,12 +40,7 @@ DEFAULT_CA_CHAIN_EXPORT_PATH = Path.home() / ".ssl" / "corp-ca-chain.pem"
 
 TOTAL_STEPS = 7
 
-console = Console()
-
-# Brand gradient stops (cyan -> violet), used for the banner pulse line.
-_GRAD_START = (34, 211, 238)
-_GRAD_END = (167, 139, 250)
-
+console = get_console()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -328,21 +323,8 @@ def _validate_url(value: str) -> Optional[str]:
     return None
 
 
-def _gradient_text(s: str) -> Text:
-    """Brand gradient (cyan -> violet) across a string."""
-    text = Text()
-    n = max(len(s) - 1, 1)
-    for i, ch in enumerate(s):
-        t = i / n
-        r = int(_GRAD_START[0] + (_GRAD_END[0] - _GRAD_START[0]) * t)
-        g = int(_GRAD_START[1] + (_GRAD_END[1] - _GRAD_START[1]) * t)
-        b = int(_GRAD_START[2] + (_GRAD_END[2] - _GRAD_START[2]) * t)
-        text.append(ch, style=f"bold rgb({r},{g},{b})")
-    return text
-
-
 def _banner() -> None:
-    title = _gradient_text("⌁ ActionPulse")
+    title = gradient_text("⌁ ActionPulse")
     title.append(" · setup", style="bold default")
     body = Text.assemble(
         title,
@@ -350,13 +332,15 @@ def _banner() -> None:
         ("7 questions · secrets hidden while typing · safe to re-run", "dim"),
     )
     console.print()
-    console.print(Panel(body, box=box.ROUNDED, border_style="cyan", padding=(0, 2), expand=False))
+    console.print(
+        Panel(body, box=box.ROUNDED, border_style="ap.accent", padding=(0, 2), expand=False)
+    )
     console.print()
 
 
 def _step(num: int, title: str, hint: Optional[str] = None) -> None:
     console.print()
-    console.rule(f"[bold]Step {num}/{TOTAL_STEPS} · {title}[/]", align="left", style="dim cyan")
+    console.rule(f"[bold]Step {num}/{TOTAL_STEPS} · {title}[/]", align="left", style="ap.rule")
     if hint:
         console.print(f"[dim]{hint}[/]")
 
@@ -369,14 +353,14 @@ def _ask(
 ) -> str:
     """Prompt until non-empty and valid; Enter accepts the default."""
     while True:
-        value = Prompt.ask(f"[bold cyan]{label}[/]", default=default, console=console)
+        value = Prompt.ask(f"[ap.accent.bold]{label}[/]", default=default, console=console)
         value = (value or "").strip()
         if not value:
-            console.print("  [red]✗[/] The value cannot be empty")
+            console.print("  [ap.err]✗[/] The value cannot be empty")
             continue
         error = validate(value) if validate else None
         if error:
-            console.print(f"  [red]✗[/] {error}")
+            console.print(f"  [ap.err]✗[/] {error}")
             continue
         return value
 
@@ -386,7 +370,7 @@ def _ask_secret(label: str, *, existing: str = "") -> str:
     keep_hint = " [dim](Enter — keep current)[/]" if existing else ""
     while True:
         value = Prompt.ask(
-            f"[bold cyan]{label}[/]{keep_hint}",
+            f"[ap.accent.bold]{label}[/]{keep_hint}",
             password=True,
             default="",
             show_default=False,
@@ -394,12 +378,12 @@ def _ask_secret(label: str, *, existing: str = "") -> str:
         ).strip()
         if not value:
             if existing:
-                console.print("  [green]✓[/] Kept the current secret")
+                console.print("  [ap.ok]✓[/] Kept the current secret")
                 return existing
-            console.print("  [red]✗[/] The value cannot be empty")
+            console.print("  [ap.err]✗[/] The value cannot be empty")
             continue
         confirm = Prompt.ask(
-            "[bold cyan]  Repeat to confirm[/]",
+            "[ap.accent.bold]  Repeat to confirm[/]",
             password=True,
             default="",
             show_default=False,
@@ -407,21 +391,21 @@ def _ask_secret(label: str, *, existing: str = "") -> str:
         ).strip()
         if value == confirm:
             return value
-        console.print("  [red]✗[/] The values did not match, try again")
+        console.print("  [ap.err]✗[/] The values did not match, try again")
 
 
 def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
     """CA certificate flow: auto-detect -> Keychain export (macOS) -> manual path."""
     verify_ca: Optional[str] = _auto_detect_ca_path(existing_cfg)
     if verify_ca:
-        console.print(f"  [green]✓[/] Auto-detected CA certificate: [bold]{verify_ca}[/]")
-        if Confirm.ask("[bold cyan]Use this CA for EWS?[/]", default=True):
+        console.print(f"  [ap.ok]✓[/] Auto-detected CA certificate: [bold]{verify_ca}[/]")
+        if Confirm.ask("[ap.accent.bold]Use this CA for EWS?[/]", default=True):
             return verify_ca
         verify_ca = None
     else:
         console.print("  [dim]No CA certificate found in the standard paths.[/]")
         if sys.platform == "darwin" and Confirm.ask(
-            f"[bold cyan]Export the CA chain from Keychain to "
+            f"[ap.accent.bold]Export the CA chain from Keychain to "
             f"{DEFAULT_CA_CHAIN_EXPORT_PATH}?[/]",
             default=True,
         ):
@@ -437,7 +421,7 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
             )
             intermediate_alias: Optional[str] = (
                 Prompt.ask(
-                    f"[bold cyan]  Intermediate CA name[/] [dim]{intermediate_hint}[/]",
+                    f"[ap.accent.bold]  Intermediate CA name[/] [dim]{intermediate_hint}[/]",
                     default=intermediate_default,
                     show_default=False,
                     console=console,
@@ -445,7 +429,9 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
                 or None
             )
 
-            with console.status("[cyan]Exporting the CA chain from Keychain…", spinner="dots"):
+            with console.status(
+                "[ap.accent]Exporting the CA chain from Keychain…", spinner=SPINNER
+            ):
                 ok, cert_count = _export_ca_chain_from_keychain(
                     cert_name,
                     DEFAULT_CA_CHAIN_EXPORT_PATH,
@@ -453,16 +439,18 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
                 )
             if ok:
                 verify_ca = str(DEFAULT_CA_CHAIN_EXPORT_PATH)
-                console.print(f"  [green]✓[/] CA chain exported: {verify_ca} ({cert_count} cert)")
+                console.print(f"  [ap.ok]✓[/] CA chain exported: {verify_ca} ({cert_count} cert)")
             else:
-                console.print("  [yellow]⚠[/] Failed to export the CA chain from Keychain.")
+                console.print("  [ap.warn]⚠[/] Failed to export the CA chain from Keychain.")
 
     if not verify_ca and Confirm.ask(
-        "[bold cyan]Provide a CA certificate path manually?[/]", default=False
+        "[ap.accent.bold]Provide a CA certificate path manually?[/]", default=False
     ):
         verify_ca = _ask("  Path to the CA certificate (.pem)")
         if verify_ca and not Path(verify_ca).expanduser().exists():
-            console.print(f"  [yellow]⚠[/] File not found: {verify_ca} (keeping the path as given)")
+            console.print(
+                f"  [ap.warn]⚠[/] File not found: {verify_ca} (keeping the path as given)"
+            )
         elif verify_ca:
             verify_ca = str(Path(verify_ca).expanduser())
     return verify_ca
@@ -489,13 +477,13 @@ def _print_detection(det: DetectedEnv) -> None:
     if not det.has_findings():
         console.print("[dim]Autodetection: nothing useful found — asking everything explicitly.[/]")
         return
-    lines = "\n".join(f"[green]✓[/] {escape(note)}" for note in det.notes)
+    lines = "\n".join(f"[ap.ok]✓[/] {escape(note)}" for note in det.notes)
     console.print(
         Panel(
             lines,
             title="[bold]Autodetection[/]",
             box=box.ROUNDED,
-            border_style="dim cyan",
+            border_style="ap.rule",
             expand=False,
         )
     )
@@ -541,7 +529,7 @@ def run_setup(no_autodetect: bool = False) -> None:
             existing_env.get("EWS_USER_UPN") and existing_env.get("EWS_ENDPOINT")
         ):
             with console.status(
-                "[cyan]Autodetecting: login, name, Keychain, network domains…", spinner="dots"
+                "[ap.accent]Autodetecting: login, name, Keychain, network domains…", spinner=SPINNER
             ):
                 det = detect_environment()
             _print_detection(det)
@@ -549,15 +537,15 @@ def run_setup(no_autodetect: bool = False) -> None:
         if _run_setup_flow(det=det, force_ask=False):
             return
         console.print()
-        console.rule("[bold]Change answers[/]", align="left", style="dim yellow")
+        console.rule("[bold]Change answers[/]", align="left", style="ap.rule.attn")
         console.print(
             "[dim]Going through the questions again; detected values are the defaults.[/]"
         )
         if not _run_setup_flow(det=det, force_ask=True):
-            console.print("[yellow]⚠ Cancelled — no files were changed.[/]")
+            console.print("[ap.warn]⚠ Cancelled — no files were changed.[/]")
             raise typer.Exit(1)
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[yellow]⚠ Setup interrupted — no files were changed.[/]")
+        console.print("\n[ap.warn]⚠ Setup interrupted — no files were changed.[/]")
         raise typer.Exit(130)
 
 
@@ -593,7 +581,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     ):
         user_upn = det_upn
         console.print(
-            f"  [green]✓[/] Automatic: [bold]{user_upn}[/] "
+            f"  [ap.ok]✓[/] Automatic: [bold]{user_upn}[/] "
             f'[dim](Keychain + name + domain; to change it, answer "n" at the final confirmation)[/]'
         )
     else:
@@ -604,10 +592,10 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     derived = _derive_from_email(user_upn)
     derived["aliases"] = _merge_aliases(derived["aliases"], det)
     console.print(
-        f"  [green]✓[/] login [bold]{derived['user_login']}[/] · "
+        f"  [ap.ok]✓[/] login [bold]{derived['user_login']}[/] · "
         f"domain [bold]{derived['user_domain']}[/]"
     )
-    console.print(f"  [green]✓[/] aliases: [dim]{', '.join(derived['aliases'])}[/]")
+    console.print(f"  [ap.ok]✓[/] aliases: [dim]{', '.join(derived['aliases'])}[/]")
 
     # ── 2. EWS endpoint ──
     _step(2, "Exchange (EWS)", "Address of the corporate EWS mail service.")
@@ -628,7 +616,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     ):
         ews_endpoint = detected_ews
         console.print(
-            f"  [green]✓[/] Automatic: [bold]{ews_endpoint}[/] [dim](host from Keychain, DNS ✓)[/]"
+            f"  [ap.ok]✓[/] Automatic: [bold]{ews_endpoint}[/] [dim](host from Keychain, DNS ✓)[/]"
         )
     else:
         ews_endpoint = _ask("EWS endpoint URL", default=default_ews, validate=_validate_url)
@@ -657,7 +645,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     _step(7, "Report language", "Digest output language; everything else stays English.")
     default_lang = existing_cfg.get("report", {}).get("language") or "en"
     report_language = Prompt.ask(
-        "[bold cyan]Report language[/]",
+        "[ap.accent.bold]Report language[/]",
         choices=["en", "ru"],
         default=default_lang,
         console=console,
@@ -665,7 +653,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
 
     # ── Optional: CA certificate (auto-first) ──
     console.print()
-    console.rule("[bold]TLS · corporate CA[/]", align="left", style="dim cyan")
+    console.rule("[bold]TLS · corporate CA[/]", align="left", style="ap.rule")
     console.print(
         "[dim]Needed when corp certificates are not trusted by the system (EWS behind a proxy).[/]"
     )
@@ -686,11 +674,11 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             _summary_table(env_values, verify_ca, report_language),
             title="[bold]Review the values[/]",
             box=box.ROUNDED,
-            border_style="cyan",
+            border_style="ap.accent",
             expand=False,
         )
     )
-    if not Confirm.ask("[bold cyan]Save the configuration?[/]", default=True):
+    if not Confirm.ask("[ap.accent.bold]Save the configuration?[/]", default=True):
         return False
 
     # ── Write files ──
@@ -700,7 +688,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     if det and det.login and det.login.lower() != derived["user_login"].lower():
         ntlm_hint = det.login
 
-    with console.status("[cyan]Writing files…", spinner="dots"):
+    with console.status("[ap.accent]Writing files…", spinner=SPINNER):
         env_path = _write_env_file(env_values, ntlm_login_hint=ntlm_hint)
         config_path = _write_config_yaml(
             user_upn=user_upn,
@@ -710,8 +698,8 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             verify_ca=verify_ca,
             report_language=report_language,
         )
-    console.print(f"  [green]✓[/] {env_path}  [dim](chmod 600)[/]")
-    console.print(f"  [green]✓[/] {config_path}")
+    console.print(f"  [ap.ok]✓[/] {env_path}  [dim](chmod 600)[/]")
+    console.print(f"  [ap.ok]✓[/] {config_path}")
 
     # ── Load env into current process ──
     for key, val in env_values.items():
@@ -720,15 +708,15 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     # ── Live check: Mattermost is the one endpoint reachable from anywhere ──
     # TTY-gated so scripted/piped runs keep a stable answer protocol.
     if sys.stdin.isatty() and Confirm.ask(
-        "[bold cyan]Send a test message to Mattermost?[/]", default=True
+        "[ap.accent.bold]Send a test message to Mattermost?[/]", default=True
     ):
-        with console.status("[cyan]Checking the webhook…", spinner="dots"):
+        with console.status("[ap.accent]Checking the webhook…", spinner=SPINNER):
             mm_ok, mm_detail = _test_mm_webhook(mm_webhook)
         if mm_ok:
-            console.print("  [green]✓[/] Webhook works — the test message is in the channel")
+            console.print("  [ap.ok]✓[/] Webhook works — the test message is in the channel")
         else:
             console.print(
-                f"  [yellow]⚠[/] Webhook did not respond ({mm_detail}). Mattermost is reachable even "
+                f"  [ap.warn]⚠[/] Webhook did not respond ({mm_detail}). Mattermost is reachable even "
                 f"outside the corp network — check the URL (re-run setup to fix)."
             )
 
@@ -747,9 +735,9 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     console.print(
         Panel(
             next_steps,
-            title=_gradient_text("⌁ Done"),
+            title=gradient_text("⌁ Done"),
             box=box.ROUNDED,
-            border_style="green",
+            border_style="ap.ok",
             padding=(1, 2),
             expand=False,
         )

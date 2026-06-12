@@ -19,8 +19,8 @@ The design system binds at five layers. Documents alone rot; the structural laye
 |---|-------|---------|--------|
 | 1 | **Agent/dev rules** | Root `CLAUDE.md` Golden Rule: "All terminal output follows `docs/development/TERMINAL_DESIGN.md`". `digest-core/CLAUDE.md` Code Style bullet pointing here. Key Documents lists both docs. | ☑ this PR |
 | 2 | **Review gate** | `CONTRIBUTING.md` → "Terminal output checklist" (5 checks below) — reviewers apply it to any PR that touches user-visible output. | ☑ this PR |
-| 3 | **Structural: the `ui` module** | All tokens/glyphs/console construction live in `digest_core/ui/` (T1). Feature code imports tokens; it never constructs styles. A rule that lives in code cannot be forgotten — this is the Lip Gloss "structure vs style" lesson applied. | ☐ T1 |
-| 4 | **Conformance test** | `tests/test_terminal_conformance.py` (T1): greps the source tree for violations — hex colors outside `ui/`, `print(` in pipeline modules, `Console(` constructed outside the factory, spinner literals outside `ui/`. Runs in `make test` → CI. | ☐ T1 |
+| 3 | **Structural: the `ui` module** | All tokens/glyphs/console construction live in `digest_core/ui/` (T1). Feature code imports tokens; it never constructs styles. A rule that lives in code cannot be forgotten — this is the Lip Gloss "structure vs style" lesson applied. | ☑ T1 |
+| 4 | **Conformance test** | `tests/test_terminal_conformance.py` (T1): walks the source tree — RGB/hex outside `ui/`, `Console(`/`Theme(` outside the factory, spinner literals outside `ui/`, inline Cyrillic in renderer files (labels.py exempt; deliberate bilingual lines carry `# i18n-ok`). Runs in `make test` → CI. | ☑ T1 |
 | 5 | **Architecture law** | `ARCHITECTURE.md` ADR — "Terminal surfaces follow the design system; live displays use the split-region ProgressSink architecture" (next free ADR number, verify at PR time — ADR-012 is the latest known). | ☐ T7 |
 
 ### Reviewer checklist (the §2 of CONTRIBUTING.md)
@@ -75,7 +75,7 @@ T-track first would build pretty output around strings about to change.
 
 ### L-track — English by default
 
-#### L1 — `feat/english-default` *(one PR, this session)* ◐
+#### L1 — `feat/english-default` *(shipped: #91 → restacked as #92 after the stacked-merge incident, merged 2026-06-12)* ☑
 
 Decision (owner, 2026-06-12): English is the default for README, controls (installer +
 wizard + CLI), prompts, and reports. **Reports switchable to Russian via user settings**
@@ -125,7 +125,7 @@ the new default; runbooks last — they are operator-facing and currently RU-flu
 
 ### T-track — terminal UX implementation
 
-#### T1 — `ui` module + tokens + conformance test ☐ *(S)*
+#### T1 — `ui` module + tokens + conformance test ☑ *(feat/ui-tokens, 2026-06-12)*
 `digest_core/ui/`: `theme.py` (rich `Theme` with §2 tokens), `glyphs.py` (✓/✗/⚠/⌁ +
 ASCII fallbacks), `console.py` (factory honoring the §2.2 env contract; single shared
 `Console`), spinner constant. Wizard + cli adopt it (mechanical). Conformance test
@@ -180,6 +180,11 @@ L2 (corp) — independent, gates calling EN reports production-grade
 3. `make eval-replay` green (RU-pinned after L1).
 4. Wizard/installer changes: piped-protocol E2E in isolated `$HOME` re-run.
 5. Single focused commit per PR; this roadmap's status column updated in the same PR.
+6. **No stacked PRs in this repo.** CI fires only on base=`main` PRs, and the #91 incident
+   proved the merge-order hazard: the child merged into its base 14 s after the base merged
+   to main → MERGED label, commit unreachable from main (restacked as #92). If a stack is
+   unavoidable: merge bottom-up child-first, then verify with
+   `git merge-base --is-ancestor <sha> origin/main`.
 
 ## E. Corp-validation items (require the perimeter)
 
