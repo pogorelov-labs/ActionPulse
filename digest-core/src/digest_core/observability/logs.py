@@ -16,17 +16,32 @@ import structlog
 _CONFIGURED_LOG_FILE: Optional[Path] = None
 
 
-def setup_logging(log_level: str = "INFO", log_file: str = None, console: bool = True) -> Path:
+def setup_logging(
+    log_level: str = "INFO", log_file: str = None, console: bool = True, enabled: bool = True
+) -> Optional[Path]:
     """Setup structured logging with structlog.
 
     console=False keeps JSON logs in the file only — used when a progress
     renderer owns the terminal (TERMINAL_DESIGN.md P3: the live channel
     renders state, log lines never scroll through it).
+
+    enabled=False (U6: ``observability.log_to_file`` off) writes no file at
+    all and returns None; an explicit ``log_file`` from the caller wins over
+    the flag (the user asked for that file by name).
     """
     global _CONFIGURED_LOG_FILE
 
     if _CONFIGURED_LOG_FILE is not None and logging.getLogger().handlers:
         return _CONFIGURED_LOG_FILE
+
+    if not enabled and log_file is None:
+        logging.basicConfig(
+            format="%(message)s",
+            handlers=[logging.StreamHandler(sys.stdout)] if console else [],
+            level=getattr(logging, log_level.upper()),
+        )
+        _configure_structlog()
+        return None
 
     # Create log directory if it doesn't exist
     log_dir = _resolve_log_dir()
@@ -60,7 +75,12 @@ def setup_logging(log_level: str = "INFO", log_file: str = None, console: bool =
     # Log the log file location
     print(f"Log file: {log_file}")
 
-    # Configure structlog
+    _configure_structlog()
+
+    return _CONFIGURED_LOG_FILE
+
+
+def _configure_structlog() -> None:
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -79,8 +99,6 @@ def setup_logging(log_level: str = "INFO", log_file: str = None, console: bool =
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
-    return _CONFIGURED_LOG_FILE
 
 
 def get_configured_log_file() -> Optional[Path]:

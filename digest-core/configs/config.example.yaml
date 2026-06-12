@@ -69,6 +69,10 @@ deliver:
 observability:
   prometheus_port: 9108
   log_level: "INFO"
+  # Structured JSON run logs in <data home>/var/logs (U6; toggle via the menu
+  # Maintenance screen or `log_to_file: false`). Everything stays local —
+  # there is no phone-home telemetry.
+  log_to_file: true
   # OTel GenAI spans (EP-8): run -> stages -> gen_ai.* LLM call. Structural
   # attributes only (no prompt/completion content, ever). Needs the 'otel' extra.
   otel_enabled: false

@@ -300,7 +300,7 @@ Decision — a single **data home** for everything regenerable:
 - Config-default change (`sync_state_path`) changes `config_sha256` → one idempotency
   rebuild after upgrade (expected, same class as the U4 version bump).
 
-#### U6 — maintenance: cleanup + logging toggle in the menu ☐ *(batch 2)*
+#### U6 — maintenance: cleanup + logging toggle in the menu ☑ *(feat/maintenance-menu, 2026-06-12)*
 
 Owner: *"provide a way through menu to clean temp and log files, or to turn off
 logging/telemetry (default ON)."*

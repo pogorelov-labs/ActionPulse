@@ -21,6 +21,13 @@ from digest_core.config import Config
 app = typer.Typer(add_completion=False)
 
 
+def _file_logging_enabled() -> bool:
+    """observability.log_to_file with a safe default (U6 logging toggle)."""
+    from digest_core.maintenance import file_logging_enabled
+
+    return file_logging_enabled()
+
+
 def _menu_run(dry: bool, choice: RunChoice | None = None) -> None:
     """Run the pipeline from the menu; the U3 selector decides period/force."""
     sink = resolve_sink("auto", sys.stdout.isatty())
@@ -35,7 +42,7 @@ def _menu_run(dry: bool, choice: RunChoice | None = None) -> None:
         force=choice.force,
         sink=sink,
     )
-    setup_logging(console=False)
+    setup_logging(console=False, enabled=_file_logging_enabled())
     if dry:
         run_digest_dry_run(**common)
     else:
@@ -143,7 +150,13 @@ def run(
             typer.echo(f"Invalid --progress value: {progress}", err=True)
             raise typer.Exit(1)
         # A progress renderer owns the terminal: JSON logs go to the file only.
-        setup_logging(log_level=log_level, log_file=log_file, console=(progress == "none"))
+        # U6: observability.log_to_file off -> no file; explicit --log-file wins.
+        setup_logging(
+            log_level=log_level,
+            log_file=log_file,
+            console=(progress == "none"),
+            enabled=_file_logging_enabled() or bool(log_file),
+        )
         sink = resolve_sink(progress, sys.stdout.isatty())
 
         if dry_run:
@@ -242,6 +255,44 @@ def read(
         # §5.5 abort contract: typed message, no traceback, exit 130.
         typer.echo("\nInterrupted.")
         raise typer.Exit(130)
+
+
+@app.command()
+def clean(
+    logs: bool = typer.Option(False, "--logs", help="Delete run logs (incl. legacy dirs)"),
+    digests: bool = typer.Option(
+        False, "--digests", help="Delete digest artifacts older than --older-than days"
+    ),
+    all_files: bool = typer.Option(
+        False, "--all", help="Delete ALL digests and logs (state/config/secrets untouched)"
+    ),
+    older_than: int = typer.Option(
+        14, "--older-than", help="Retention for --digests, in days (by digest date)"
+    ),
+):
+    """Free disk space in the data home; with no flags, just show usage.
+
+    Cleaning only ever touches regenerable files (digests, logs) — never the
+    EWS sync state, config, or secrets.
+    """
+    from digest_core import maintenance
+
+    if not (logs or digests or all_files):
+        for entry in maintenance.collect_usage():
+            typer.echo(
+                f"  {entry.label:<26} {entry.files:>5} files"
+                f"  {maintenance.format_bytes(entry.size_bytes):>10}  {entry.path}"
+            )
+        typer.echo("\nNothing deleted. Use --logs / --digests / --all.")
+        return
+    removed = freed = 0
+    if logs or all_files:
+        n, b = maintenance.clean_logs()
+        removed, freed = removed + n, freed + b
+    if digests or all_files:
+        n, b = maintenance.clean_digests(None if all_files else older_than)
+        removed, freed = removed + n, freed + b
+    typer.echo(f"{OK} Removed {removed} files, freed {maintenance.format_bytes(freed)}.")
 
 
 @app.command("paths")

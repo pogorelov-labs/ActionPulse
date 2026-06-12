@@ -74,6 +74,7 @@ def screenshot_menu() -> None:
         "Read digest — topics · authors · quotes",
         "Dry run — ingest only, no LLM",
         "Diagnose — check environment & config",
+        "Maintenance — disk usage · cleanup · logging",
         "Settings — run the setup wizard",
         "Show current config (masked)",
         "Quit",
