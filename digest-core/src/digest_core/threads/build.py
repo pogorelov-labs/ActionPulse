@@ -40,16 +40,20 @@ class ConversationThread(NamedTuple):
 class ThreadBuilder:
     """Build conversation threads from normalized messages."""
 
-    def __init__(self, semantic_similarity_threshold: float = 0.7):
+    def __init__(self, semantic_similarity_threshold: float = 0.7, embedding_merger=None):
         """
         Initialize ThreadBuilder.
 
         Args:
             semantic_similarity_threshold: Threshold for semantic merging (0.0-1.0)
+            embedding_merger: optional EmbeddingThreadMerger (PR12a cosine tier);
+                None (the default) keeps grouping byte-identical to the
+                heuristic path — the flag lives in ThreadingConfig.
         """
         self.max_thread_age_hours = 48
         self.max_messages_per_thread = 50
         self.semantic_similarity_threshold = semantic_similarity_threshold
+        self.embedding_merger = embedding_merger
 
         # Initialize subject normalizer
         self.subject_normalizer = SubjectNormalizer()
@@ -60,6 +64,7 @@ class ThreadBuilder:
             "threads_merged_by_id": 0,
             "threads_merged_by_subject": 0,
             "threads_merged_by_semantic": 0,
+            "threads_merged_by_embedding": 0,
             "duplicates_found": 0,
         }
 
@@ -81,6 +86,12 @@ class ThreadBuilder:
 
         # Step 4: Merge threads by semantic similarity (fallback)
         thread_groups = self._merge_by_semantic_similarity(thread_groups)
+
+        # Step 4b (PR12a, behind ThreadingConfig.embedding_merge): cosine tier
+        # over the heuristic-weak groups — may only merge, never lose messages.
+        if self.embedding_merger is not None:
+            thread_groups = self.embedding_merger.merge(thread_groups)
+            self.stats["threads_merged_by_embedding"] = self.embedding_merger.merges_made
 
         # Step 5: Build thread objects
         threads = []

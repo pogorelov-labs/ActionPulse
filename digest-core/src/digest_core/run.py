@@ -377,10 +377,61 @@ def _stage_threads(ctx: RunContext, messages: List[NormalizedMessage]) -> list:
     """Stage 3: THREADS — group messages into conversation threads."""
     threads_start = time.perf_counter()
     _emit(ctx, "on_stage_start", "threads")
-    thread_builder = ThreadBuilder()
-    threads = thread_builder.build_threads(messages)
+    embeddings = _build_thread_embeddings(ctx)
+    merger = None
+    if embeddings is not None:
+        from digest_core.threads.embedding_merge import EmbeddingThreadMerger
+
+        merger = EmbeddingThreadMerger(
+            embeddings,
+            similarity_threshold=ctx.config.threading.similarity_threshold,
+            max_candidates=ctx.config.threading.max_candidates,
+        )
+    try:
+        thread_builder = ThreadBuilder(embedding_merger=merger)
+        threads = thread_builder.build_threads(messages)
+    finally:
+        if embeddings is not None:
+            embeddings.close()
     _finish_stage(ctx, "threads", threads_start, messages=len(messages), threads=len(threads))
     return threads
+
+
+def _build_thread_embeddings(ctx: RunContext):
+    """EmbeddingsClient for the PR12a cosine tier when ``threading.embedding_merge``.
+
+    Same replay discipline as the reranker (fidelity-only gate): under
+    ``--replay-llm`` the tier runs only when the fleet sidecar recording
+    exists — otherwise it is disabled for the run, logged, and the heuristic
+    grouping stands. ``--record-llm`` records embeddings into the same
+    ``<recording>.fleet.json`` sidecar. Live use is gated by PC-2 (flag
+    default off).
+    """
+    cfg = ctx.config.threading
+    if not cfg.embedding_merge:
+        return None
+    from digest_core.llm.fleet import EmbeddingsClient
+
+    replay = None
+    if ctx.replay_llm:
+        sidecar = Path(f"{ctx.replay_llm}.fleet.json")
+        if not sidecar.exists():
+            logger.warning(
+                "Embedding merge disabled for this replay run: no fleet sidecar recording",
+                sidecar=str(sidecar),
+                trace_id=ctx.trace_id,
+            )
+            return None
+        replay = str(sidecar)
+    return EmbeddingsClient(
+        ctx.config.llm,
+        model=cfg.embedding_model,
+        rate_broker=ctx.rate_broker,
+        record=f"{ctx.record_llm}.fleet.json" if ctx.record_llm else None,
+        replay=replay,
+        stage="embeddings",
+        sink=ctx.sink,
+    )
 
 
 def _stage_evidence(ctx: RunContext, threads: list, total_emails: int) -> List[EvidenceChunk]:

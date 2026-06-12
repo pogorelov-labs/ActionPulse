@@ -25,7 +25,7 @@
 | PR11 gate default-on + repair | ☑ | `--validate-citations` default ON; `evidence/repair.py`; recall-floor exit 2; `RunDigestResult` |
 | Cleanup: `hierarchical/` | ☑ | deleted (CLAUDE.md gotcha). Deviation: `assemble/jsonout.py` was NOT deleted — it stayed wired for tests and now carries the U4 reader fields |
 | PR12b source adapters | ◐ | `ingest/envelope.py` + `ingest/source_adapter.py` shipped; **open:** `EWSIngest` still fetches hardcoded `account.inbox` (`EWSConfig.folders` not honored) |
-| PR12a embedding threading | ☐ | `threads/build.py` still subj-hash + text-similarity clustering; build behind a flag on `EmbeddingsClient` (replay-sidecar testable offline) |
+| PR12a embedding threading | ◐ | **Cosine tier shipped** (`threads/embedding_merge.py` behind `threading.embedding_merge`, default off): one batched embed over the heuristic-weak `subj_`/`single_` groups, deterministic union–find (smallest id wins), merge-only/degrade-not-drop, fleet-sidecar replay, lanes via the embeddings stage. **Remaining:** reranker-pairwise band + LLM adjudication residual (need their own budget design — the P2 gate owns the ≤10/run reranker budget), last-50 thread-cap removal (now logged, not silent) |
 | §4.3 fleet lane display ("PR2 gateway hooks" in the terminal roadmap) | ☑ | `on_lane_update` emitted by `LLMGateway`/`FleetClient` around real network calls (never replay); broker `usage_snapshot()` (trailing-60s RPM + 429 cool-down); RichLiveSink lanes (cap 4 + aggregate, cleared on stage end). Multi-lane shows live once fleet flags flip (PC-2) |
 | PC-1 (service-account model) / PC-2 (per-endpoint data-handling ADR) | ☐ | **corp-only**; all fleet live-flags stay off until then (`reranker.enabled`, `enable_relevance`, `judge.enabled`) |
 

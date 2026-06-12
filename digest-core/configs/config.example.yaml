@@ -66,6 +66,15 @@ deliver:
     max_message_length: 16383
     include_trace_footer: true
 
+# Embedding-assisted thread merging (REDESIGN PR12a, cosine tier). OFF by
+# default: enabling sends thread-representative text to /v1/embeddings —
+# live use is gated by PC-2; offline replay via the fleet sidecar is safe.
+# threading:
+#   embedding_merge: true
+#   embedding_model: "bge-m3"
+#   similarity_threshold: 0.85
+#   max_candidates: 64
+
 observability:
   prometheus_port: 9108
   log_level: "INFO"
