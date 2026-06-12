@@ -68,9 +68,9 @@ def run(
         "auto",
         "--progress",
         help=(
-            "Progress display: auto (plain for now; live on TTY arrives with T4),"
-            " plain (append-only build-log lines), none (JSON logs on console,"
-            " pre-T3 behavior)"
+            "Progress display: auto (live footer on a TTY, plain otherwise/CI),"
+            " live, plain (append-only build-log lines), none (JSON logs on"
+            " console)"
         ),
         case_sensitive=False,
     ),
@@ -78,7 +78,7 @@ def run(
     """Run daily digest job."""
     try:
         progress = progress.lower()
-        if progress not in ("auto", "plain", "none"):
+        if progress not in ("auto", "live", "plain", "none"):
             typer.echo(f"Invalid --progress value: {progress}", err=True)
             raise typer.Exit(1)
         # A progress renderer owns the terminal: JSON logs go to the file only.

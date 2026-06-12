@@ -96,10 +96,11 @@ class TestPlainSinkRendering:
 
 
 class TestResolveSink:
-    def test_matrix(self):
+    def test_matrix(self, monkeypatch):
+        # The full auto matrix (TTY/CI/live) lives in test_progress_live.py.
+        monkeypatch.delenv("CI", raising=False)
         assert isinstance(resolve_sink("none", True), NullSink)
         assert isinstance(resolve_sink("plain", True), PlainSink)
-        assert isinstance(resolve_sink("auto", True), PlainSink)
         assert isinstance(resolve_sink("auto", False), PlainSink)
 
 
