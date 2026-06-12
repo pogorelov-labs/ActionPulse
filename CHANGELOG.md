@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Terminal-UI screenshots in the README**: authentic `Console.export_svg()` renders of the real output — the live run funnel + animated footer, the `actionpulse` launcher menu, and the setup wizard review screen — committed under `docs/assets/` with a reproducible generator (`generate_screenshots.py`). Runbook §1 de-staled for the `actionpulse` era: the command auto-loads `~/.config/actionpulse/env` (manual `source` no longer required), `diagnose`/`run` shown as `actionpulse <cmd>`, build-log output noted, and the §1.4 check now verifies `ews.user_login` is the machine login (`whoami`), not the email local part.
+
 ### Fixed
 - **Launcher menu synced with TERMINAL_DESIGN.md**: Esc at the menu now **dismisses** (exit 0) instead of committing the highlighted action — previously Esc would have launched a full digest run with delivery, inverting §5.2's cancel semantics (`choose()` gains `cancel_value`; wizard questions keep Esc-restores-default). Ctrl+C at the menu now honors the §5.5 abort contract (exit 130, was 0). The `❯` pointer and `↑↓` hint gain ASCII fallbacks per the §7 degradation matrix; the post-action "Back to menu" one-option menu is replaced by a single dim Enter prompt (P3: tidier scrollback). Design doc updated: §5.2 top-level-menu Esc clarification, §9 compliance row for the launcher.
 

@@ -4,6 +4,21 @@
 
 Every morning — an automatic digest of your corporate email: what people expect from you, what is urgent, what was decided without you. Every item traces back to the original email.
 
+## What it looks like
+
+A run shows every pipeline stage funnelling the inbox down to actions, live on one footer:
+
+<p align="center"><img src="docs/assets/run-progress.svg" alt="actionpulse run — live stage funnel with a single animated footer" width="760"></p>
+
+Bare `actionpulse` opens an arrow-key menu; the setup wizard auto-detects what it can and asks only for the rest:
+
+<p align="center">
+  <img src="docs/assets/menu.svg" alt="actionpulse — interactive launcher menu" width="380">
+  <img src="docs/assets/setup.svg" alt="actionpulse setup — the configuration wizard review screen" width="380">
+</p>
+
+> These are real `Console.export_svg()` renders of the actual output (regenerate with `docs/assets/generate_screenshots.py`), not mockups. Terminal styling per [`docs/development/TERMINAL_DESIGN.md`](docs/development/TERMINAL_DESIGN.md).
+
 ---
 
 ## What it is
@@ -56,7 +71,7 @@ actionpulse setup         # re-run the configuration wizard
 
 > If `actionpulse` isn't found, `~/.local/bin` isn't on your PATH yet — open a new terminal, or add it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec $SHELL`. The classic `cd ~/ActionPulse/digest-core && uv run python -m digest_core.cli …` invocation still works too.
 
-The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook URL, and the report language (`en` default / `ru`). Before asking, it auto-detects your login, name, and corp-email candidates (a local Keychain metadata scan — Keychain secrets stay encrypted and unreadable) and auto-confirms validated values; the final review screen is always shown (`--no-autodetect` disables detection). It generates `~/.config/actionpulse/env` (chmod 600) and `configs/config.yaml`. To reconfigure: `make setup` or directly `uv run python -m digest_core.cli setup` from `digest-core/` (both call the same wizard).
+The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook URL, and the report language (`en` default / `ru`). Before asking, it auto-detects your machine login (the EWS NTLM identity, e.g. `ruapgr2` — note this differs from the email local part), your name, and corp-email candidates (a local Keychain metadata scan — Keychain secrets stay encrypted and unreadable) and auto-confirms validated values; the final review screen is always shown (`--no-autodetect` disables detection). It generates `~/.config/actionpulse/env` (chmod 600) and `configs/config.yaml`. To reconfigure: `make setup` or directly `uv run python -m digest_core.cli setup` from `digest-core/` (both call the same wizard).
 
 If you see `No module named 'digest_core'`, the command ran under the system Python outside the project environment. Use `uv run python -m ...` (as in the examples above) or activate `.venv` manually.
 
