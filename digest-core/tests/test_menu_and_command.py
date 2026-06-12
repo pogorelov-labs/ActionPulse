@@ -8,7 +8,15 @@ from typer.testing import CliRunner
 import digest_core.cli as cli_mod
 from digest_core.cli import app
 from digest_core.ui import menu as menu_mod
-from digest_core.ui.menu import _mask, load_env_file, run_menu
+from digest_core.ui.menu import (
+    RunChoice,
+    _mask,
+    choose_run_options,
+    load_env_file,
+    load_last_run,
+    run_menu,
+    save_last_run,
+)
 
 
 def _console() -> Console:
@@ -73,28 +81,46 @@ class TestRunMenu:
 
     def test_dispatches_each_action_then_quits(self, tmp_path, monkeypatch):
         monkeypatch.setattr(menu_mod, "ENV_PATH", tmp_path / "env")
+        monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
         (tmp_path / "env").write_text("EWS_USER_UPN=ivan@corp.ru\nLLM_TOKEN=tok-abcdef123456\n")
         calls = {"run": [], "diag": 0, "settings": 0}
-        # menu shows the action, then a "back" prompt; script both.
+        # "run" opens the U3 submenu — the next scripted answer is its choice.
         self._scripted(
             monkeypatch,
-            ["run", "dry", "diagnose", "settings", "config", "quit"],
+            ["run", "today", "dry", "diagnose", "settings", "config", "quit"],
         )
         code = run_menu(
-            on_run=lambda dry: calls["run"].append(dry),
+            on_run=lambda dry, choice: calls["run"].append((dry, choice)),
             on_diagnose=lambda: calls.__setitem__("diag", calls["diag"] + 1),
             on_settings=lambda: calls.__setitem__("settings", calls["settings"] + 1),
             console=_console(),
         )
         assert code == 0
-        assert calls["run"] == [False, True]  # run then dry
+        assert calls["run"] == [(False, RunChoice()), (True, None)]  # run then dry
         assert calls["diag"] == 1
         assert calls["settings"] == 1
+        # The accepted choice persisted for "Repeat last run".
+        assert load_last_run(tmp_path / "last_run.json") == RunChoice()
 
-    def test_action_error_keeps_menu_alive(self, monkeypatch):
-        self._scripted(monkeypatch, ["run", "quit"])
+    def test_run_submenu_back_returns_to_menu_without_running(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
+        calls = {"run": 0}
+        self._scripted(monkeypatch, ["run", "back", "quit"])
+        code = run_menu(
+            on_run=lambda dry, choice: calls.__setitem__("run", calls["run"] + 1),
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            console=_console(),
+        )
+        assert code == 0
+        assert calls["run"] == 0  # backing out never runs anything
+        assert not (tmp_path / "last_run.json").exists()
 
-        def boom(_dry):
+    def test_failed_run_does_not_persist_last_choice(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
+        self._scripted(monkeypatch, ["run", "today", "quit"])
+
+        def boom(_dry, _choice):
             raise RuntimeError("ews unreachable")
 
         console = _console()
@@ -106,6 +132,7 @@ class TestRunMenu:
         )
         assert code == 0
         assert "ews unreachable" in console.export_text()
+        assert not (tmp_path / "last_run.json").exists()
 
     def test_keyboardinterrupt_at_menu_aborts_130(self, monkeypatch):
         # §5.5 abort contract: Ctrl+C -> 130 everywhere.
@@ -114,7 +141,7 @@ class TestRunMenu:
 
         monkeypatch.setattr(menu_mod, "choose", interrupt)
         code = run_menu(
-            on_run=lambda d: None,
+            on_run=lambda d, c: None,
             on_diagnose=lambda: None,
             on_settings=lambda: None,
             console=_console(),
@@ -126,7 +153,7 @@ class TestRunMenu:
         seen = []
         self._scripted(monkeypatch, ["quit"], seen_kwargs=seen)
         run_menu(
-            on_run=lambda d: None,
+            on_run=lambda d, c: None,
             on_diagnose=lambda: None,
             on_settings=lambda: None,
             console=_console(),
@@ -156,7 +183,131 @@ class TestBareInvocation:
         # then falls through to help. Autoload must have fired.
         seen = {"loaded": False}
         monkeypatch.setattr(
-            cli_mod, "load_env_file", lambda *a, **k: seen.__setitem__("loaded", True) or 0
+            cli_mod,
+            "load_env_file",
+            lambda *a, **k: seen.__setitem__("loaded", True) or 0,
         )
         CliRunner().invoke(app, [])
         assert seen["loaded"] is True
+
+
+class TestRunChoicePersistence:
+    """U3: the accepted run params persist for "Repeat last run"."""
+
+    def test_round_trip(self, tmp_path):
+        path = tmp_path / "last_run.json"
+        save_last_run(RunChoice(from_date="2026-06-10", window="rolling_24h", force=True), path)
+        loaded = load_last_run(path)
+        assert loaded == RunChoice(from_date="2026-06-10", window="rolling_24h", force=True)
+
+    def test_missing_file_is_none(self, tmp_path):
+        assert load_last_run(tmp_path / "nope.json") is None
+
+    def test_invalid_json_is_none(self, tmp_path):
+        path = tmp_path / "last_run.json"
+        path.write_text("{not json")
+        assert load_last_run(path) is None
+
+    def test_unknown_window_is_none(self, tmp_path):
+        path = tmp_path / "last_run.json"
+        path.write_text('{"from_date": "today", "window": "fortnight"}')
+        assert load_last_run(path) is None
+
+
+class TestChooseRunOptions:
+    """U3 selector: one menu, smart defaults, Esc/Back never runs."""
+
+    def _scripted_choose(self, monkeypatch, value, seen=None):
+        def fake_choose(label, options, default_index=0, console=None, cancel_value=None):
+            if seen is not None:
+                seen.append({"options": options, "cancel_value": cancel_value})
+            return value
+
+        monkeypatch.setattr(menu_mod, "choose", fake_choose)
+
+    def test_mappings(self, monkeypatch):
+        cases = {
+            "today": RunChoice(),
+            "24h": RunChoice(window="rolling_24h"),
+            "force": RunChoice(force=True),
+            "back": None,
+        }
+        for value, expected in cases.items():
+            self._scripted_choose(monkeypatch, value)
+            assert choose_run_options(_console(), last=None) == expected
+
+    def test_yesterday_uses_absolute_date(self, monkeypatch):
+        self._scripted_choose(monkeypatch, "yesterday")
+        choice = choose_run_options(_console(), last=None)
+        assert choice.window == "calendar_day"
+        # An actual YYYY-MM-DD, not the word "yesterday" (run.py validates).
+        from datetime import datetime
+
+        datetime.strptime(choice.from_date, "%Y-%m-%d")
+
+    def test_repeat_last_offered_only_when_present(self, monkeypatch):
+        seen = []
+        self._scripted_choose(monkeypatch, "back", seen=seen)
+        choose_run_options(_console(), last=None)
+        values = [v for v, _ in seen[0]["options"]]
+        assert "last" not in values
+        assert len(values) <= 9  # the §5.2 quick-select invariant
+
+        last = RunChoice(from_date="2026-06-10", window="rolling_24h", force=True)
+        choose_run_options(_console(), last=last)
+        labels = dict(seen[1]["options"])
+        assert "last" in labels
+        # The label shows the absolute stored params — no silent drift.
+        assert "2026-06-10" in labels["last"]
+        assert "rolling 24h" in labels["last"]
+        assert "force" in labels["last"]
+        assert len(seen[1]["options"]) <= 9
+
+    def test_submenu_esc_backs_out(self, monkeypatch):
+        seen = []
+        self._scripted_choose(monkeypatch, "back", seen=seen)
+        assert choose_run_options(_console(), last=None) is None
+        assert seen[0]["cancel_value"] == "back"  # Esc dismisses, never runs
+
+    def test_pick_a_date_validates(self, monkeypatch):
+        self._scripted_choose(monkeypatch, "date")
+        answers = iter(["06/11/2026", "2026-06-11"])
+        monkeypatch.setattr(
+            menu_mod.Console,
+            "input",
+            lambda self, *a, **k: next(answers),
+            raising=False,
+        )
+        console = _console()
+        choice = choose_run_options(console, last=None)
+        assert choice == RunChoice(from_date="2026-06-11", window="calendar_day")
+        assert "Expected YYYY-MM-DD" in console.export_text()
+
+    def test_pick_a_date_empty_backs_out(self, monkeypatch):
+        self._scripted_choose(monkeypatch, "date")
+        monkeypatch.setattr(menu_mod.Console, "input", lambda self, *a, **k: "", raising=False)
+        assert choose_run_options(_console(), last=None) is None
+
+
+class TestMenuRunWiring:
+    """cli._menu_run forwards the U3 choice into the pipeline call."""
+
+    def test_choice_params_reach_run_digest(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli_mod, "run_digest", lambda **k: captured.update(k) or True)
+        monkeypatch.setattr(cli_mod, "setup_logging", lambda **k: None)
+        cli_mod._menu_run(
+            False, RunChoice(from_date="2026-06-10", window="rolling_24h", force=True)
+        )
+        assert captured["from_date"] == "2026-06-10"
+        assert captured["window"] == "rolling_24h"
+        assert captured["force"] is True
+
+    def test_dry_run_defaults_without_choice(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli_mod, "run_digest_dry_run", lambda **k: captured.update(k))
+        monkeypatch.setattr(cli_mod, "setup_logging", lambda **k: None)
+        cli_mod._menu_run(True, None)
+        assert captured["from_date"] == "today"
+        assert captured["window"] == "calendar_day"
+        assert captured["force"] is False

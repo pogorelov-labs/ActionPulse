@@ -10,10 +10,11 @@ A run shows every pipeline stage funnelling the inbox down to actions, live on o
 
 <p align="center"><img src="docs/assets/run-progress.svg" alt="actionpulse run — live stage funnel with a single animated footer" width="760"></p>
 
-Bare `actionpulse` opens an arrow-key menu; the setup wizard auto-detects what it can and asks only for the rest:
+Bare `actionpulse` opens an arrow-key menu; "Run digest" asks exactly one follow-up — the time period (with `--force`, a specific date, and "repeat last run" one keystroke away); the setup wizard auto-detects what it can and asks only for the rest:
 
 <p align="center">
   <img src="docs/assets/menu.svg" alt="actionpulse — interactive launcher menu" width="380">
+  <img src="docs/assets/run-options.svg" alt="actionpulse — run time-period selector" width="380">
   <img src="docs/assets/setup.svg" alt="actionpulse setup — the configuration wizard review screen" width="380">
 </p>
 
