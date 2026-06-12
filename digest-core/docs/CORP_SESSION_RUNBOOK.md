@@ -100,34 +100,46 @@ cd digest-core
 uv sync --native-tls
 ```
 
-### 1.3 Загрузить секреты
+### 1.3 Команда `actionpulse` + секреты
+
+После установки доступна глобальная команда **`actionpulse`** (лаунчер в `~/.local/bin`).
+CLI **сам подгружает** `~/.config/actionpulse/env` при старте — ручной `source` больше
+не нужен (запасной вариант ниже, если `~/.local/bin` не в PATH):
 
 ```bash
-set -a
-source ~/.config/actionpulse/env
-set +a
+actionpulse diagnose          # глобальная команда; секреты загружаются автоматически
+# Запасной вариант (PATH без ~/.local/bin или из чекаута):
+#   cd ~/ActionPulse/digest-core
+#   set -a && source ~/.config/actionpulse/env && set +a   # обычно НЕ требуется
+#   uv run python -m digest_core.cli diagnose
 ```
+
+Без аргументов `actionpulse` открывает интерактивное меню (Run · Dry run · Diagnose ·
+Settings · Show config · Quit); все примеры ниже одинаково работают как
+`actionpulse <cmd>` и как `uv run python -m digest_core.cli <cmd>`.
 
 ### 1.4 Проверить среду
 
 ```bash
-python -m digest_core.cli diagnose
+actionpulse diagnose
 ```
 
 Убедиться:
-- ✓ EWS_PASSWORD: set
-- ✓ LLM_TOKEN: set
-- ✓ MM_WEBHOOK_URL: set
+- ✓ EWS_PASSWORD / LLM_TOKEN / MM_WEBHOOK_URL: set (подхватились из env-файла без `source`)
 - ✓ EWS endpoint reachable (если diagnose проверяет)
+- ✓ В `configs/config.yaml` `ews.user_login` = **машинный логин** (`whoami`, напр. `ruapgr2`),
+  НЕ локальная часть email. `user_upn` = полный email. Если NTLM не пускает — см. §8.3
+  (формат логина: `ruapgr2` / `ruapgr2@megacorp.ru` / `DOMAIN\ruapgr2` — корп-вопрос).
 
 ---
 
 ## 2. Первый прогон: dry-run + snapshot (~5 мин)
 
-Цель: убедиться, что EWS отдаёт письма, и захватить снапшот.
+Цель: убедиться, что EWS отдаёт письма, и захватить снапшот. Вывод — build-log на stderr
+(`✓ INGEST    N messages (…)`); JSON-логи только в файл (путь печатается первой строкой).
 
 ```bash
-python -m digest_core.cli run \
+actionpulse run \
     --dry-run \
     --force \
     --dump-ingest /tmp/actionpulse/ews-snapshot-$(date +%Y-%m-%d).json \
