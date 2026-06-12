@@ -42,6 +42,9 @@ class RecordingSink(ProgressSink):
     def on_delivery(self, target, ok, detail=None):
         self.events.append(("delivery", target, ok))
 
+    def on_run_end(self, status):
+        self.events.append(("run_end", status))
+
 
 class BrokenSink(ProgressSink):
     def on_stage_start(self, stage):
@@ -99,6 +102,7 @@ def test_event_sequence_with_funnel_counts(monkeypatch, tmp_path):
 
     assert ("llm_attempt", "qwen35-397b-a17b", 1, 2) in sink.events
     assert ("delivery", "mattermost", True) in sink.events
+    assert sink.events[-1][0] == "run_end"  # lifecycle hook fires last (finally)
 
     # Every start has a matching end, and start precedes end.
     for stage in started:

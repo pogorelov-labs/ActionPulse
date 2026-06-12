@@ -142,7 +142,7 @@ Append-only line per transition (terraform model): `✓ INGEST  124 messages (3.
 `--progress=auto|live|plain|none`, auto = TTY detection; CI ⇒ plain. Exit: `cli run
 --dry-run` reads like a build log instead of JSON; matrix row "non-TTY" satisfied.
 
-#### T4 — RichLiveSink ☐ *(M)* — the §4.1 footer
+#### T4 — RichLiveSink ☑ *(feat/progress-live, 2026-06-12)* — the §4.1 footer
 History funnel lines + one ≤8-line Live footer (`refresh_per_second=10`,
 `vertical_overflow="ellipsis"`, 1-col margin), spinner + elapsed + stage counters,
 amber-after-10s, failure freeze with log tail. Exit: pty-captured E2E of a replay run;

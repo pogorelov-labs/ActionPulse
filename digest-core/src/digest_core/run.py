@@ -960,6 +960,7 @@ def _run_pipeline(
         return _run_pipeline_traced(ctx, sources)
     finally:
         tracing.end_run_span(ctx.run_meta.get("status"))
+        _emit(ctx, "on_run_end", ctx.run_meta.get("status") or "unknown")
 
 
 def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestResult:

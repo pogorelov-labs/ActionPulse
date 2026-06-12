@@ -53,6 +53,13 @@ class ProgressSink:
     ) -> None:  # pragma: no cover - no-op
         pass
 
+    def on_run_end(self, status: str) -> None:  # pragma: no cover - no-op
+        """The pipeline finished (ok/partial/skipped/failed) — release the
+        terminal: live renderers stop their region and restore the cursor
+        here. Emitted from the same finally block as the OTel run span, so
+        it fires on every exit path."""
+        pass
+
 
 #: Default sink — explicit name for call sites and signatures.
 NullSink = ProgressSink
