@@ -13,7 +13,7 @@ time:
 ews:
   endpoint: "https://owa.corp-domain.ru/EWS/Exchange.asmx"  # <-- CHANGE
   user_upn: "login@corp-domain.ru"      # <-- CHANGE: your corp email
-  user_login: "login"                   # <-- CHANGE: your NTLM login
+  user_login: "ruapgr2"                 # <-- CHANGE: your MACHINE login (whoami), NOT the email local part
   user_domain: "corp-domain.ru"         # <-- CHANGE: your domain
   password_env: "EWS_PASSWORD"
   verify_ca: "/etc/ssl/corp-ca.pem"     # <-- CHANGE or remove if not needed
