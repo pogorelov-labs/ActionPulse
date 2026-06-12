@@ -131,7 +131,8 @@ MM_WEBHOOK_URL=...        # Mattermost incoming webhook URL
 DIGEST_REPORT_LANGUAGE=ru # Report language override (default en)
 DIGEST_CONFIG_PATH=...    # Custom config YAML path
 ACTIONPULSE_CA_CERT_NAME=...  # macOS setup helper: Keychain certificate alias for auto-export
-# Output/state: use CLI flags --out and --state (not separate DIGEST_* env vars in current code)
+ACTIONPULSE_HOME=...       # Data home override (default: the checkout root; everything regenerable in <home>/var)
+# Output/state default to <data home>/var/{out,state} (U5); CLI flags --out and --state override
 ```
 
 ## Offline Development (outside corp network)

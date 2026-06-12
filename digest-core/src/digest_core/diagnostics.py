@@ -119,7 +119,9 @@ def _find_metadata(*, trace_id: Optional[str], date: Optional[str]) -> Path:
 
 def _iter_search_roots() -> tuple[Path, ...]:
     """Compute search roots at call time so cwd-sensitive commands work."""
-    return (Path.cwd(), PACKAGE_ROOT, PACKAGE_ROOT.parent)
+    from digest_core.paths import out_dir
+
+    return (out_dir(create=False), Path.cwd(), PACKAGE_ROOT, PACKAGE_ROOT.parent)
 
 
 def _copy_if_exists(source: Path, target: Path) -> None:

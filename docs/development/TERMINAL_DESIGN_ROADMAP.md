@@ -268,6 +268,97 @@ interactible, read message topics, authors names, distilled contents."*
 - Reader chrome is English (terminal surface); digest content renders as stored
   (`report.language` artifacts unchanged); no new report-bound strings.
 
+#### U5 — one data home: stop scattering runtime files ☑ *(feat/data-home, 2026-06-12)*
+
+Owner: *"why temp files, logs, configs, etc. are all scattered across different
+directories that are NOT INSIDE ~/ActionPulse? Keep all relative files in one place."*
+
+Audited scatter (live run from an arbitrary cwd): digests/trace-meta/idem sidecars →
+**cwd-relative `./out`**; logs → `~/.digest-logs/run-*.log` (one file per run, unbounded;
+`/tmp/digest-logs` fallback); EWS sync watermark + dedup ledger → **cwd-relative
+`.state/`** (a real correctness bug — the incremental watermark silently resets when the
+user runs from a different directory); `last_run.json` → `~/.config/actionpulse/`.
+
+Decision — a single **data home** for everything regenerable:
+
+- `paths.py`: `data_home()` = `$ACTIONPULSE_HOME` → the install checkout root (when
+  running from a git checkout — the `~/ActionPulse` the owner means) → XDG fallback
+  `~/.local/share/actionpulse` (wheel installs must not write into site-packages).
+  Subdirs `var/out`, `var/logs`, `var/state` (gitignored).
+- Defaults rewired (explicit `--out`/`--state`/config always win): CLI `run`/`read`,
+  menu run/read, log dir, `sync_state_path` (config default becomes unset → resolved
+  into `var/state`), `last_run.json` (legacy location read as fallback), diagnostics
+  search roots.
+- **Deliberate exceptions, documented:** secrets env stays at `~/.config/actionpulse/env`
+  — inside the checkout, `git clean -xdf` would delete the only copy of the user's
+  tokens and an accidental `git add -f`/archive could leak them; systemd units want a
+  path that survives re-clones. CA chain stays in `~/.ssl` (TLS convention); the
+  launcher must stay on PATH (`~/.local/bin`). `configs/config.yaml` already lives in
+  the checkout.
+- Legibility: new **`actionpulse paths`** command + the menu config view print the full
+  path map, so "where is everything" has a one-keystroke answer.
+- Config-default change (`sync_state_path`) changes `config_sha256` → one idempotency
+  rebuild after upgrade (expected, same class as the U4 version bump).
+
+#### U6 — maintenance: cleanup + logging toggle in the menu ☐ *(batch 2)*
+
+Owner: *"provide a way through menu to clean temp and log files, or to turn off
+logging/telemetry (default ON)."*
+
+- Menu item **Maintenance** → one §5.2 selector: disk usage read-out (var/out, var/logs,
+  var/state + legacy `~/.digest-logs`, `/tmp/digest-logs`) · clean logs (incl. legacy
+  dirs) · clean digests older than 14 days · clean everything regenerable (confirm; never
+  touches secrets/config) · toggle file logging.
+- `actionpulse clean` CLI twin (scriptable; the menu calls the same helpers).
+- **Logging toggle** = new `observability.log_to_file` (default **true** — matches the
+  owner's "default ON"); `setup_logging(enabled=False)` keeps the console contract but
+  writes no file; toggling rewrites `configs/config.yaml` (wizard-generated, comment-free
+  — safe to round-trip).
+- **Telemetry honesty:** there is no phone-home telemetry to turn off — logs and
+  Prometheus/healthz ports are local, OTel tracing is **off by default**. The maintenance
+  screen states this instead of pretending to disable something.
+
+#### U7 — LLM failure explainer ☐ *(batch 2)*
+
+Owner: *"if something goes wrong but LLM endpoint is working — send logs and useful data
+to LLM in a well-structured prompt, print a short explanation."*
+
+- **`actionpulse explain [--trace-id|--date]`** (default: the most recent run) + a menu
+  offer after a failed/partial menu run (mirrors the U4 "read now?" offer): collect the
+  run's `trace-*.meta.json` (status/error/degraded_stages/`stage_health`/llm trace/
+  budget) + the tail of its **already-redacted** structured log + env facts → one
+  compact JSON-mode call (`prompts/explain_failure.v1.txt`) → render
+  `likely cause / explanation / next steps` as a card. Answer language follows
+  `report.language`.
+- Rides the existing `LLMGateway.judge()`-style generic call on its own stage budget
+  (`explain`) and the shared RateBroker — retries, 429 penalties, auth classification,
+  record/replay all inherited. Privacy: payloads/secrets never reach the prompt (logs
+  are redacted at write time; meta is sanitized already); the prompt embeds *our* run
+  telemetry, never email bodies.
+- **Agent-CLI-under-the-hood: analyzed and rejected.** An opencode-style headless agent
+  would need its own LLM access (corp gateway is the only reachable endpoint, ADR-012),
+  would receive `LLM_TOKEN` as a third-party binary (supply-chain + secret-handling
+  surface), and brings agentic tool-use we don't need for a single deterministic
+  collect→ask→print step. Our gateway already owns retries/rate-limits/recording. If a
+  future feature genuinely needs multi-step tool use, revisit with a pinned, vendored
+  runtime — not for this.
+- ADR-008 note: explain is a separate command, not a pipeline stage — it never competes
+  with the run's 2-call budget; RPM broker still applies. Corp-only by nature (ADR-012):
+  offline it fails fast with a clear message. Corp validation: runbook §9 gains a C5 row.
+
+#### U8 — "chat with your inbox" ☐ *(analysis only — deliberately deferred)*
+
+Owner: *"analyze how to take that even further — to chat with your inbox/messages."*
+
+Shape: `actionpulse ask "<question>"` over the latest ingest snapshot/digest with
+citation-quoting answers (Extract-over-Generate holds: answers must quote evidence).
+**Why not now:** honest retrieval is the blocker — today's SELECT ranks by digest
+priority, not query relevance, so ask would stuff the same top chunks regardless of the
+question and hallucination pressure rises exactly where P1/P2 forbid it. Query-relevance
+retrieval is the fleet's embeddings/reranker work (REDESIGN PR2); build `ask` on top of
+that, reusing the U7 prompt/gateway plumbing and the dump-ingest snapshot as the corpus.
+Interactive multi-turn also re-opens the §5.1 posture question — design there first.
+
 ### Dependency graph
 
 ```

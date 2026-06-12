@@ -87,3 +87,6 @@ ehthumbs.db
 
 # Runtime state (sync cursor, dedup ledger) — retention via TTL, never commit
 .state/
+
+# ActionPulse data home (U5): digests, logs, state — regenerable runtime files
+/var/

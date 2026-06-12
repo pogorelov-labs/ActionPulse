@@ -21,7 +21,9 @@ ews:
   folders: ["Inbox"]
   lookback_hours: 24
   page_size: 100
-  sync_state_path: ".state/ews.syncstate"
+  # sync_state_path: unset by default — the watermark lives in the data home
+  # (<data home>/var/state/ews.syncstate; see `actionpulse paths`). Set only to
+  # pin a custom location; cwd-relative values bring back the pre-U5 reset bug.
   user_aliases: ["Name", "Surname", "Name.Surname@corp-domain.ru", "login"]  # <-- CHANGE
 
 llm:

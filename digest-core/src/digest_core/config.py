@@ -51,11 +51,24 @@ class EWSConfig(BaseModel):
     folders: List[str] = Field(default=["Inbox"], description="Folders to process")
     lookback_hours: int = Field(default=24, description="Hours to look back")
     page_size: int = Field(default=100, description="Page size for pagination")
-    sync_state_path: str = Field(default=".state/ews.syncstate", description="Sync state file path")
+    # U5: unset resolves into the data home (var/state) — the old cwd-relative
+    # ".state/" default silently reset the incremental watermark whenever the
+    # user ran from a different directory. An explicit value still wins.
+    sync_state_path: Optional[str] = Field(
+        default=None, description="Sync state file path (default: <data home>/var/state)"
+    )
     user_aliases: List[str] = Field(
         default_factory=list,
         description="User email aliases for AddressedToMe detection",
     )
+
+    def resolved_sync_state_path(self) -> str:
+        """Effective sync-state path: explicit config wins, else the data home."""
+        if self.sync_state_path:
+            return self.sync_state_path
+        from digest_core.paths import state_dir
+
+        return str(state_dir() / "ews.syncstate")
 
     def __init__(self, **kwargs):
         # Читаем значения из переменных окружения если они не заданы
