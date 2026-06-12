@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Global `actionpulse` command + interactive menu**: the installer drops a launcher in `~/.local/bin/actionpulse`, so the tool runs from anywhere. Bare `actionpulse` on a terminal opens an arrow-key menu (Run · Dry run · Diagnose · Settings · Show config (masked) · Quit) built on the §5.2 selector, looping until Quit; non-TTY/piped invocation prints help instead, so scripting is unaffected. The CLI now **auto-loads `~/.config/actionpulse/env`** at startup, so `actionpulse run` works without `set -a && source …`. `actionpulse` entry point added to the package; subcommands (`run`, `setup`, `diagnose`, …) work identically through the command.
+
 ### Fixed
 - **EWS NTLM login is the machine (AD) login, not the email local part**: the wizard now sets `user_login` from `whoami` (e.g. `ruapgr2`) instead of the email local part (`ruslan.pogorelov`) — the two routinely differ and the old value broke EWS auth. The email is still discovered/kept as the UPN (`Ruslan.POGORELOV@megacorp.ru`); `user_domain` and the EWS host still come from it. `whoami` is read directly so it works even with `--no-autodetect`; existing config wins, email local part is the last-resort fallback, and the wizard prompts only if `whoami` is somehow unavailable. New "EWS login (NTLM)" row in the review screen; the email local part is left as a commented `EWS_USER_LOGIN` alternative in case NTLM wants that form.
 

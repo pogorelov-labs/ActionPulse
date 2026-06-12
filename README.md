@@ -44,21 +44,17 @@ make setup
 
 </details>
 
-After installation:
+After installation the **`actionpulse`** command is available everywhere (a launcher in `~/.local/bin`). Secrets load automatically from `~/.config/actionpulse/env` — no manual `source` needed:
 
 ```bash
-cd ~/ActionPulse/digest-core
-
-# Load secrets into the current session and check the configuration
-set -a && source ~/.config/actionpulse/env && set +a
-uv run python -m digest_core.cli diagnose
-
-# Dry run (no LLM, ingest + normalize only)
-uv run python -m digest_core.cli run --dry-run
-
-# Full run
-uv run python -m digest_core.cli run
+actionpulse               # interactive menu: Run · Dry run · Diagnose · Settings · Show config
+actionpulse run --dry-run # ingest + normalize only, no LLM
+actionpulse run           # full pipeline + delivery
+actionpulse diagnose      # check environment & config
+actionpulse setup         # re-run the configuration wizard
 ```
+
+> If `actionpulse` isn't found, `~/.local/bin` isn't on your PATH yet — open a new terminal, or add it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec $SHELL`. The classic `cd ~/ActionPulse/digest-core && uv run python -m digest_core.cli …` invocation still works too.
 
 The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook URL, and the report language (`en` default / `ru`). Before asking, it auto-detects your login, name, and corp-email candidates (a local Keychain metadata scan — Keychain secrets stay encrypted and unreadable) and auto-confirms validated values; the final review screen is always shown (`--no-autodetect` disables detection). It generates `~/.config/actionpulse/env` (chmod 600) and `configs/config.yaml`. To reconfigure: `make setup` or directly `uv run python -m digest_core.cli setup` from `digest-core/` (both call the same wizard).
 

@@ -14,9 +14,63 @@ from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
 from digest_core.ui import resolve_sink
 from digest_core.ui.glyphs import FAIL, OK
+from digest_core.ui.menu import load_env_file, run_menu, stdin_is_tty
 from digest_core.config import Config
 
 app = typer.Typer(add_completion=False)
+
+
+def _menu_run(dry: bool) -> None:
+    """Run the pipeline from the menu with the run-command defaults."""
+    sink = resolve_sink("auto", sys.stdout.isatty())
+    common = dict(
+        from_date="today",
+        sources=["ews"],
+        out="./out",
+        model="qwen35-397b-a17b",
+        window="calendar_day",
+        state=None,
+        force=False,
+        sink=sink,
+    )
+    setup_logging(console=False)
+    if dry:
+        run_digest_dry_run(**common)
+    else:
+        run_digest(validate_citations=True, **common)
+
+
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context) -> None:
+    """ActionPulse — daily digest of actions from your corporate inbox.
+
+    Run a subcommand, or run `actionpulse` with no arguments on a terminal to
+    open the interactive menu.
+    """
+    # Auto-load ~/.config/actionpulse/env so secrets need no manual `source`.
+    load_env_file()
+    if ctx.invoked_subcommand is not None:
+        return
+    if not stdin_is_tty():
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
+    def _safe(fn):
+        # In the menu, a subcommand's exit/abort ends that action, not the app.
+        def wrapped(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except (typer.Exit, SystemExit):
+                return None
+
+        return wrapped
+
+    code = run_menu(
+        on_run=_safe(_menu_run),
+        on_diagnose=_safe(diagnose),
+        on_settings=_safe(lambda: setup(no_autodetect=False)),
+    )
+    raise typer.Exit(code)
 
 
 @app.command()

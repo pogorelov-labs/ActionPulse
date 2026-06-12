@@ -25,6 +25,7 @@ dependencies = [
 
 [project.scripts]
 digest-core = "digest_core.cli:app"
+actionpulse = "digest_core.cli:app"
 
 [project.optional-dependencies]
 otel = [
