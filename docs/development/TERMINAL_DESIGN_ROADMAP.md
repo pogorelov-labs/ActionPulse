@@ -318,7 +318,7 @@ logging/telemetry (default ON)."*
   Prometheus/healthz ports are local, OTel tracing is **off by default**. The maintenance
   screen states this instead of pretending to disable something.
 
-#### U7 — LLM failure explainer ☐ *(batch 2)*
+#### U7 — LLM failure explainer ☑ *(feat/explain-failure, 2026-06-12)*
 
 Owner: *"if something goes wrong but LLM endpoint is working — send logs and useful data
 to LLM in a well-structured prompt, print a short explanation."*
@@ -390,4 +390,5 @@ L2 (corp) — independent, gates calling EN reports production-grade
 | C1 | EN extraction quality vs RU baseline (replay corpus + one live day) | L2 |
 | C2 | Token palette on Terminal.app 256-color (visual pass of wizard + T4 footer) | T4 |
 | C3 | EN digest rendering in corp Mattermost (webhook, emoji, markdown) | L1 follow-up |
-| C4 | U2 intra-stage telemetry on a real run (paging counters, retry warming, `stage_health` read-out) + U4 reader over a real digest (Cyrillic subjects/authors, truncation) — runbook §9.5 | U2/U4 |
+| C4 | U2 intra-stage telemetry on a real run (paging counters, retry warming, `stage_health` read-out) + U4 reader over a real digest (Cyrillic subjects/authors, truncation) — runbook §9.4 | U2/U4 |
+| C5 | U7 `actionpulse explain` against a real failed/partial run (verdict quality on real telemetry; one extra gateway call) — runbook §9.4 | U7 |
