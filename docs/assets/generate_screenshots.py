@@ -46,7 +46,9 @@ def screenshot_run_progress() -> None:
     c = _console()
     c.print(gradient_text("⌁ ActionPulse"))
     c.print()
-    c.print(_ok_line("ingest", {"messages": 124, "retries": 1}, 14_300), highlight=False)
+    c.print(
+        _ok_line("ingest", {"messages": 124, "retries": 1}, 14_300), highlight=False
+    )
     c.print(_ok_line("normalize", {"messages": 124}, 410), highlight=False)
     c.print(_ok_line("threads", {"messages": 124, "threads": 37}, 230), highlight=False)
     c.print(_ok_line("evidence", {"threads": 37, "chunks": 41}, 820), highlight=False)
@@ -68,7 +70,7 @@ def screenshot_menu() -> None:
         highlight=False,
     )
     options = [
-        "Run digest — full pipeline + delivery",
+        "Run digest — pick period, full pipeline + delivery",
         "Dry run — ingest only, no LLM",
         "Diagnose — check environment & config",
         "Settings — run the setup wizard",
@@ -81,6 +83,31 @@ def screenshot_menu() -> None:
         else:
             c.print(f"   [ap.dim]{i + 1}. {text}[/]", highlight=False)
     _save(c, "menu.svg", "actionpulse")
+
+
+def screenshot_run_options() -> None:
+    """The U3 run selector: one menu for the daily decision."""
+    c = _console()
+    c.print(
+        "[ap.accent.bold]Run digest — time period[/] "
+        "[ap.dim](↑↓/jk · Enter · Esc = cancel)[/]",
+        highlight=False,
+    )
+    options = [
+        "Today (calendar day)",
+        "Today (rolling 24h window)",
+        "Yesterday (2026-06-11)",
+        "Pick a date…",
+        "Re-run today (--force, bypass the idempotency skip)",
+        "Repeat last run (2026-06-10 · rolling 24h)",
+        "Back",
+    ]
+    for i, text in enumerate(options):
+        if i == 0:
+            c.print(f" [ap.accent]❯[/] [ap.em]{i + 1}. {text}[/]", highlight=False)
+        else:
+            c.print(f"   [ap.dim]{i + 1}. {text}[/]", highlight=False)
+    _save(c, "run-options.svg", "actionpulse · run")
 
 
 def screenshot_setup() -> None:
@@ -104,7 +131,9 @@ def screenshot_setup() -> None:
         "· domain [bold]megacorp.ru[/]",
         highlight=False,
     )
-    c.print("[ap.ok]✓[/] email (UPN) [bold]Ruslan.POGORELOV@megacorp.ru[/]", highlight=False)
+    c.print(
+        "[ap.ok]✓[/] email (UPN) [bold]Ruslan.POGORELOV@megacorp.ru[/]", highlight=False
+    )
     c.print()
     rows = [
         ("Email (UPN)", "Ruslan.POGORELOV@megacorp.ru"),
@@ -114,12 +143,7 @@ def screenshot_setup() -> None:
         ("LLM token", "••••a1b2"),
         ("Report language", "en"),
     ]
-    body = Group(
-        *[
-            Text.assemble((f"{k:<17}", "dim"), (v, "default"))
-            for k, v in rows
-        ]
-    )
+    body = Group(*[Text.assemble((f"{k:<17}", "dim"), (v, "default")) for k, v in rows])
     c.print(
         Panel(
             body,
@@ -136,6 +160,7 @@ def main() -> None:
     print("Generating README screenshots…")
     screenshot_run_progress()
     screenshot_menu()
+    screenshot_run_options()
     screenshot_setup()
     print("Done.")
 

@@ -223,7 +223,7 @@ Design (amends `TERMINAL_DESIGN.md` §4.2/§4.4 in the same PR):
 - Fleet-ready: events carry the stage string; §4.3 lanes add `on_lane_update` later
   without touching this vocabulary.
 
-#### U3 — thought-out run options in the menu ☐ *(C4a)*
+#### U3 — thought-out run options in the menu ☑ *(feat/menu-run-options, 2026-06-12)*
 
 Owner: *"main option run should propose most thought-out options — time period and
 other useful params."*

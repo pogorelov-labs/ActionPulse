@@ -14,23 +14,24 @@ from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
 from digest_core.ui import resolve_sink
 from digest_core.ui.glyphs import FAIL, OK
-from digest_core.ui.menu import load_env_file, run_menu, stdin_is_tty
+from digest_core.ui.menu import RunChoice, load_env_file, run_menu, stdin_is_tty
 from digest_core.config import Config
 
 app = typer.Typer(add_completion=False)
 
 
-def _menu_run(dry: bool) -> None:
-    """Run the pipeline from the menu with the run-command defaults."""
+def _menu_run(dry: bool, choice: RunChoice | None = None) -> None:
+    """Run the pipeline from the menu; the U3 selector decides period/force."""
     sink = resolve_sink("auto", sys.stdout.isatty())
+    choice = choice or RunChoice()
     common = dict(
-        from_date="today",
+        from_date=choice.from_date,
         sources=["ews"],
         out="./out",
         model="qwen35-397b-a17b",
-        window="calendar_day",
+        window=choice.window,
         state=None,
-        force=False,
+        force=choice.force,
         sink=sink,
     )
     setup_logging(console=False)
