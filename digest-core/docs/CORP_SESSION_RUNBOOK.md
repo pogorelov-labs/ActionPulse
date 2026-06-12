@@ -491,6 +491,15 @@ digest_core.cli run …` (в настоящем Terminal `script` работае
 - [ ] Esc-навигация вверх по уровням; пагинация на секции >6 пунктов
 - [ ] скриншот карточки → `/tmp/actionpulse/visual/`
 
+**Fleet — калибровка embedding-merge (C6, гейтит reranker-band):**
+- [ ] на снапшоте дня включить `threading.embedding_merge: true` (PC-2: эмбеддинги
+      корп-only; один батч-вызов `/v1/embeddings`) + `--record-llm` → fleet-sidecar
+- [ ] сравнить треды с/без флага: каждое слияние — правда один разговор?
+      (точность глазами; записать precision и порог)
+- [ ] при необходимости подобрать `threading.similarity_threshold` (дефолт 0.85);
+      вынести вердикт: пригоден ли cosine-tier как база для reranker-band
+- [ ] sidecar забрать наружу — оффлайн-калибровка порога без сети
+
 **U7 — `actionpulse explain` на реальном прогоне (C5):**
 - [ ] после любого partial/failed прогона: `actionpulse explain` — карточка
       likely cause / explanation / next steps; вердикт согласуется с

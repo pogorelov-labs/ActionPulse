@@ -491,6 +491,34 @@ class EWSIngest:
             received_at=datetime_received,
         )
 
+    def _resolve_folder(self, account: Account, name: str):
+        """Resolve a configured folder name to an exchangelib folder.
+
+        "Inbox" (any case) is the canonical inbox; a few well-known mailbox
+        folders map to their locale-independent account attributes; anything
+        else resolves by display name under the inbox's parent (the message
+        root) — display names are locale-dependent, so unresolved names skip
+        with a warning rather than crash the run.
+        """
+        well_known = {
+            "inbox": "inbox",
+            "sent": "sent",
+            "sent items": "sent",
+            "drafts": "drafts",
+            "junk": "junk",
+            "archive": "archive",
+            "trash": "trash",
+            "deleted items": "trash",
+        }
+        attr = well_known.get((name or "").strip().lower())
+        if attr:
+            return getattr(account, attr, None)
+        try:
+            return account.inbox.parent / name
+        except Exception as e:  # noqa: BLE001 - unresolved folder degrades, never crashes
+            logger.warning("Failed to resolve EWS folder", folder=name, error=str(e))
+            return None
+
     def fetch_messages(self, digest_date: str, time_config: TimeConfig) -> List[NormalizedMessage]:
         """Fetch and normalize messages for the given date."""
         logger.info("Starting EWS message fetch", digest_date=digest_date)
@@ -523,8 +551,20 @@ class EWSIngest:
                     watermark=watermark,
                     error=str(e),
                 )
-        # Fetch with retry over the computed window
-        raw_messages = self._fetch_messages_with_retry(account.inbox, start_date, end_date)
+        # Fetch with retry over the computed window — one pass per configured
+        # folder (PR12b remainder: EWSConfig.folders, default ["Inbox"]). A
+        # folder that cannot be resolved is skipped with a warning; the others
+        # still fetch (degrade-not-drop at the folder boundary).
+        raw_messages = []
+        total_pages = 0
+        for folder_name in self.config.folders or ["Inbox"]:
+            folder = self._resolve_folder(account, folder_name)
+            if folder is None:
+                logger.warning("EWS folder not found, skipping", folder=folder_name)
+                continue
+            raw_messages.extend(self._fetch_messages_with_retry(folder, start_date, end_date))
+            total_pages += self._fetch_pages
+        self._fetch_pages = total_pages
 
         logger.info("Raw messages fetched", count=len(raw_messages))
 
