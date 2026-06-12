@@ -79,6 +79,7 @@ def _main(ctx: typer.Context) -> None:
         on_diagnose=_safe(diagnose),
         on_settings=_safe(lambda: setup(no_autodetect=False)),
         on_read=_safe(lambda date: read(date=date, out=None)),
+        on_explain=_safe(lambda: explain(trace_id=None, date=None)),
     )
     raise typer.Exit(code)
 
@@ -221,6 +222,8 @@ def run(
         sys.exit(1)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
+        # U7: the run's telemetry is on disk — offer the one-call diagnosis.
+        typer.echo("Hint: `actionpulse explain` asks the LLM what went wrong.", err=True)
         sys.exit(1)  # Error
 
 
@@ -255,6 +258,49 @@ def read(
         # §5.5 abort contract: typed message, no traceback, exit 130.
         typer.echo("\nInterrupted.")
         raise typer.Exit(130)
+
+
+@app.command()
+def explain(
+    trace_id: str = typer.Option(None, "--trace-id", help="Trace ID of the run to explain"),
+    date: str = typer.Option(None, "--date", help="Digest date of the run to explain"),
+):
+    """Ask the corp LLM to explain what went wrong in a run (short card).
+
+    Collects the run's own telemetry — trace-*.meta.json (status, stage
+    health, LLM trace, budget) plus the tail of the redacted structured log —
+    and makes ONE compact LLM call on its own call budget (never the
+    pipeline's). Newest run by default. Needs the corp network (ADR-012).
+    """
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from digest_core.explain import ExplainUnavailable, explain_run
+    from digest_core.ui import get_console
+
+    console = get_console()
+    try:
+        with console.status("[ap.accent]Asking the LLM about this run…"):
+            result = explain_run(trace_id=trace_id, date=date)
+    except ExplainUnavailable as exc:
+        typer.echo(f"{FAIL} {exc}", err=True)
+        raise typer.Exit(1)
+
+    body = Text()
+    body.append(result.likely_cause, style="ap.em")
+    if result.explanation:
+        body.append("\n\n")
+        body.append(result.explanation)
+    if result.next_steps:
+        body.append("\n")
+        for step in result.next_steps:
+            body.append(f"\n  → {step}")
+    body.append(
+        f"\n\nrun {result.digest_date} · status {result.status} · {result.model}"
+        f" · trace {result.trace_id[:8]}",
+        style="ap.dim",
+    )
+    console.print(Panel(body, title="Run explained", border_style="ap.rule", expand=False))
 
 
 @app.command()

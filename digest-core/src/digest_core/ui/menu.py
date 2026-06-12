@@ -275,6 +275,7 @@ def run_menu(
     on_diagnose: Callable[[], None],
     on_settings: Callable[[], None],
     on_read: Callable[[Optional[str]], None],
+    on_explain: Optional[Callable[[], None]] = None,
     console: Optional[Console] = None,
 ) -> int:
     """Drive the launcher menu loop. Callbacks isolate the menu from the CLI
@@ -283,6 +284,9 @@ def run_menu(
     ``on_run(dry, choice)`` — choice is None for the one-shot dry run (today's
     defaults) and a RunChoice from the U3 selector for a full run.
     ``on_read(date)`` — open the digest reader (None = newest digest).
+    ``on_explain()`` — U7: offered after a run crashes (the run's telemetry is
+    on disk; one LLM call explains it). Optional so render-only callers and
+    older tests stay valid; without it the failure path just prints the error.
     """
     out = console or get_console()
     _banner(out)
@@ -353,6 +357,22 @@ def run_menu(
             out.print("\n[ap.warn]⚠ Interrupted — back to menu.[/]")
         except Exception as exc:  # noqa: BLE001 - keep the menu alive on action errors
             out.print(f"[ap.err]✗[/] {exc}")
+            # U7: a failed run leaves telemetry behind — offer the diagnosis.
+            if choice in ("run", "dry") and on_explain is not None:
+                follow = choose(
+                    "Ask the LLM what went wrong?",
+                    [("explain", "Explain it now (one LLM call)"), ("menu", "Back to the menu")],
+                    default_index=0,
+                    console=out,
+                    cancel_value="menu",
+                )
+                if follow == "explain":
+                    try:
+                        on_explain()
+                    except KeyboardInterrupt:
+                        out.print("\n[ap.warn]⚠ Interrupted — back to menu.[/]")
+                    except Exception as explain_exc:  # noqa: BLE001 - same liveness rule
+                        out.print(f"[ap.err]✗[/] {explain_exc}")
 
         out.print()
         try:
