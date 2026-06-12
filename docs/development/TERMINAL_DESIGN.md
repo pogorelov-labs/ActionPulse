@@ -208,9 +208,15 @@ InquirerPy, prompt_toolkit, fzf, Textual):
 | `1–9` | quick-select | only for ≤ 9 options ◆ (opt-in in questionary/prompt_toolkit ◐) |
 | type-to-filter | only for > 9 options, replaces `j/k` | the j/k-vs-filter conflict is documented ◐ questionary |
 
-Implementation note: questionary (prompt_toolkit-based) matches these defaults closest
-in Python ◐; rich has no select widget — adding questionary is acceptable when the first
-real menu appears ◆.
+Esc at a **top-level navigation menu** (the bare `actionpulse` launcher) dismisses the
+menu — normal exit 0 — because there is no outer question to fall back to; it must never
+commit the highlighted action (a cancel gesture never runs something). Pass
+`cancel_value` to `ui.select.choose()` for this; without it Esc restores the question's
+default (wizard semantics above). Ctrl+C remains abort/130 in both contexts ◆.
+
+Implementation note: the §5.2 keymap ships in `digest_core/ui/select.py` (no external
+dependency; raw keys via `os.read(fd, 1)` — buffered `stdin.read(1)` hangs under cbreak);
+questionary remains an acceptable alternative if menus outgrow it ◆.
 
 ### 5.3 Mouse ◆ (evidence-backed: do not enable)
 
@@ -303,7 +309,8 @@ implements piped-stdin scripted mode (E2E-tested answer protocol).
 | `install.sh` | ✅ compliant (spinner/steps/degradation/tty-gating) | `NO_COLOR` empty-string nuance §2.2 — opportunistic |
 | Setup wizard | ✅ compliant (banner, steps, validation, masked secrets, 130 contract) | select menus → §5.2 when first menu appears |
 | `cli run` | ❌ **non-compliant** — prints raw structlog JSON | implement §4: ProgressSink + RichLiveSink/PlainSink + `--progress` flag (the next UX PR) |
-| `cli diagnose` | ◐ plain echo, fine | adopt ✓/✗ tokens opportunistically |
+| `cli diagnose` | ◐ plain echo with ✓/✗ glyph tokens | colorize opportunistically |
+| `actionpulse` launcher menu | ✅ compliant (§5.2 selector, Esc=dismiss via `cancel_value`, Ctrl+C=130, glyph fallbacks, masked config view) | — |
 | Fleet display | — (REDESIGN_PLAN PR2+) | build against §4.3 from day one |
 
 ---

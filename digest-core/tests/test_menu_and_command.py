@@ -56,16 +56,20 @@ class TestMask:
 class TestRunMenu:
     """choose() is monkeypatched to script the user's selections."""
 
-    def _scripted(self, monkeypatch, choices):
+    def _scripted(self, monkeypatch, choices, seen_kwargs=None):
         seq = iter(choices)
 
-        def fake_choose(label, options, default_index=0, console=None):
+        def fake_choose(label, options, default_index=0, console=None, cancel_value=None):
+            if seen_kwargs is not None:
+                seen_kwargs.append({"label": label, "cancel_value": cancel_value})
             try:
                 return next(seq)
             except StopIteration:
                 return "quit"
 
         monkeypatch.setattr(menu_mod, "choose", fake_choose)
+        # The post-action gate is a plain Enter prompt now, not a menu.
+        monkeypatch.setattr(menu_mod.Console, "input", lambda self, *a, **k: "", raising=False)
 
     def test_dispatches_each_action_then_quits(self, tmp_path, monkeypatch):
         monkeypatch.setattr(menu_mod, "ENV_PATH", tmp_path / "env")
@@ -74,19 +78,7 @@ class TestRunMenu:
         # menu shows the action, then a "back" prompt; script both.
         self._scripted(
             monkeypatch,
-            [
-                "run",
-                "back",
-                "dry",
-                "back",
-                "diagnose",
-                "back",
-                "settings",
-                "back",
-                "config",
-                "back",
-                "quit",
-            ],
+            ["run", "dry", "diagnose", "settings", "config", "quit"],
         )
         code = run_menu(
             on_run=lambda dry: calls["run"].append(dry),
@@ -100,7 +92,7 @@ class TestRunMenu:
         assert calls["settings"] == 1
 
     def test_action_error_keeps_menu_alive(self, monkeypatch):
-        self._scripted(monkeypatch, ["run", "back", "quit"])
+        self._scripted(monkeypatch, ["run", "quit"])
 
         def boom(_dry):
             raise RuntimeError("ews unreachable")
@@ -115,7 +107,8 @@ class TestRunMenu:
         assert code == 0
         assert "ews unreachable" in console.export_text()
 
-    def test_keyboardinterrupt_at_menu_exits_cleanly(self, monkeypatch):
+    def test_keyboardinterrupt_at_menu_aborts_130(self, monkeypatch):
+        # §5.5 abort contract: Ctrl+C -> 130 everywhere.
         def interrupt(*a, **k):
             raise KeyboardInterrupt
 
@@ -126,7 +119,19 @@ class TestRunMenu:
             on_settings=lambda: None,
             console=_console(),
         )
-        assert code == 0
+        assert code == 130
+
+    def test_menu_passes_cancel_value_quit(self, monkeypatch):
+        # §5.2: Esc at the launcher menu must dismiss, never commit "run".
+        seen = []
+        self._scripted(monkeypatch, ["quit"], seen_kwargs=seen)
+        run_menu(
+            on_run=lambda d: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            console=_console(),
+        )
+        assert seen and seen[0]["cancel_value"] == "quit"
 
 
 class TestBareInvocation:

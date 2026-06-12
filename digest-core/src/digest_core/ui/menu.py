@@ -85,9 +85,20 @@ def run_menu(
     ]
     while True:
         try:
-            choice = choose("What would you like to do?", options, default_index=0, console=out)
-        except (KeyboardInterrupt, EOFError):
-            out.print("\n[ap.dim]Bye.[/]")
+            # Esc dismisses the menu (cancel_value): a cancel gesture must
+            # never commit the highlighted action (§5.2).
+            choice = choose(
+                "What would you like to do?",
+                options,
+                default_index=0,
+                console=out,
+                cancel_value="quit",
+            )
+        except KeyboardInterrupt:
+            # Abort contract (§5.5): Ctrl+C -> exit 130, no traceback.
+            out.print("\n[ap.warn]⚠ Interrupted.[/]")
+            return 130
+        except EOFError:
             return 0
 
         if choice == "quit":
@@ -110,8 +121,13 @@ def run_menu(
 
         out.print()
         try:
-            choose("—", [("back", "Back to menu")], default_index=0, console=out)
-        except (KeyboardInterrupt, EOFError):
+            # One dim line instead of a degenerate one-option menu (P3:
+            # scrollback stays tidy); Enter returns to the menu.
+            out.input("[ap.dim]Enter — back to the menu …[/]")
+        except KeyboardInterrupt:
+            out.print("\n[ap.warn]⚠ Interrupted.[/]")
+            return 130
+        except EOFError:
             return 0
 
 
