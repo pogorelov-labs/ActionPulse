@@ -17,6 +17,7 @@ path as the fallback — scripted answer protocols stay stable.
 
 from __future__ import annotations
 
+import os
 import select as _select
 import sys
 import termios
@@ -63,8 +64,28 @@ def apply_key(state: MenuState, key: str) -> Tuple[str, MenuState]:
 
 
 def _read_key(stdin=sys.stdin) -> str:
-    """One logical key from a cbreak tty: arrows decoded, Ctrl+C raised."""
-    ch = stdin.read(1)
+    """One logical key from a cbreak tty: arrows decoded, Ctrl+C raised.
+
+    On a real terminal we read with ``os.read(fd, 1)`` rather than
+    ``stdin.read(1)``: TextIOWrapper buffers, and in cbreak mode its buffered
+    read does not reliably return a single keystroke (it can block waiting to
+    fill its buffer) — os.read returns each byte as it arrives. Test streams
+    (io.StringIO) have no usable fd, so they keep the buffered path unchanged.
+    """
+    try:
+        fd = stdin.fileno()
+        use_fd = stdin.isatty()
+    except (OSError, ValueError, AttributeError):
+        use_fd = False
+
+    if use_fd:
+        read1 = lambda: os.read(fd, 1).decode("latin-1")  # noqa: E731 - byte→1:1 char
+        waitable = fd
+    else:
+        read1 = lambda: stdin.read(1)  # noqa: E731
+        waitable = stdin
+
+    ch = read1()
     if ch == "\x03":  # Ctrl+C in cbreak mode arrives as a byte
         raise KeyboardInterrupt
     if ch in ("\r", "\n"):
@@ -74,14 +95,14 @@ def _read_key(stdin=sys.stdin) -> str:
         # ESCDELAY): an arrow's "[X" tail arrives within milliseconds; a lone
         # Esc has none — without the timeout a bare Esc would block on read.
         try:
-            ready = _select.select([stdin], [], [], 0.05)[0]
+            ready = _select.select([waitable], [], [], 0.05)[0]
         except Exception:
-            ready = [stdin]  # non-fd streams (tests): data is already buffered
+            ready = [waitable]  # non-fd streams (tests): data is already buffered
         if not ready:
             return "esc"
-        seq = stdin.read(1)
+        seq = read1()
         if seq == "[":
-            final = stdin.read(1)
+            final = read1()
             if final == "A":
                 return "up"
             if final == "B":

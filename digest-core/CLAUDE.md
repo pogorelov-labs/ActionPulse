@@ -11,6 +11,8 @@ git status --short --branch
 
 # Setup — canonical: interactive wizard (7 questions, no text editor)
 make setup                           # uv sync --native-tls + uv run python -m digest_core.cli setup
+actionpulse                          # Global command (after install): bare = interactive menu
+actionpulse run --dry-run            # Subcommands work too; secrets auto-loaded from ~/.config/actionpulse/env
 uv run python -m digest_core.cli setup  # Re-run wizard (reads existing values as defaults)
 uv run python -m digest_core.cli setup --no-autodetect  # Skip local autodetection (Keychain/dscl/DNS)
 uv sync --native-tls                 # Deps only, no wizard (headless / CI)
