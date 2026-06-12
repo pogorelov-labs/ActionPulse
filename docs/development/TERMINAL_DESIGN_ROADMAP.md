@@ -148,7 +148,7 @@ History funnel lines + one ≤8-line Live footer (`refresh_per_second=10`,
 amber-after-10s, failure freeze with log tail. Exit: pty-captured E2E of a replay run;
 degradation matrix verified per §7 (TTY/ASCII/pipe/CI/dumb).
 
-#### T5 — LLM & lane counters ☐ *(S)*
+#### T5 — LLM & lane counters ☑ *(feat/progress-llm-counters, 2026-06-12; per-attempt tokens + lane RPM rendering activate with the fleet gateway hooks, REDESIGN PR2)*
 `on_llm_attempt` → footer tokens ↑/↓, `попытка→attempt n/2`, single-lane RPM display.
 Interface shaped per §4.3 so REDESIGN_PLAN PR2 (fleet/RateBroker) plugs lanes in without
 renderer changes. Exit: replay-driven test shows attempt/token counters.

@@ -490,14 +490,6 @@ def _stage_llm(
             ctx, digest, selected_evidence, prompt_version, prompt_text, normalized_messages
         )
 
-    _finish_stage(
-        ctx,
-        "llm",
-        llm_stage_start,
-        sections=len(digest.sections),
-        items=_count_digest_items(digest),
-    )
-
     # Record LLM trace metadata
     llm_meta = llm_gateway.get_request_stats()
     llm_trace = dict(getattr(llm_gateway, "last_request_meta", {}))
@@ -508,6 +500,18 @@ def _stage_llm(
             "timeout_s": llm_meta.get("timeout_s"),
         }
     )
+
+    llm_counts: Dict[str, Any] = {
+        "sections": len(digest.sections),
+        "items": _count_digest_items(digest),
+    }
+    # Token spend lands in the permanent ✓ LLM line (§4.2 vocabulary);
+    # per-attempt granularity arrives with the fleet gateway hooks.
+    for key in ("tokens_in", "tokens_out"):
+        value = llm_trace.get(key)
+        if isinstance(value, int) and value > 0:
+            llm_counts[key] = value
+    _finish_stage(ctx, "llm", llm_stage_start, **llm_counts)
     if llm_error is not None:
         llm_trace["error"] = str(llm_error)
     ctx.run_meta["llm_request_trace"] = llm_trace

@@ -43,9 +43,18 @@ def _fmt_duration(duration_ms: int) -> str:
     return f"{seconds:.1f}s"
 
 
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def _phrase(counts: Dict[str, Any]) -> str:
     """Human funnel phrase for the known count shapes (§4.2 vocabulary)."""
     keys = set(counts)
+    if keys == {"sections", "items", "tokens_in", "tokens_out"}:
+        return (
+            f"{counts['sections']} sections · {counts['items']} items · "
+            f"↑{_fmt_tokens(counts['tokens_in'])} ↓{_fmt_tokens(counts['tokens_out'])} tok"
+        )
     if keys == {"messages"}:
         return f"{counts['messages']} messages"
     if keys == {"messages", "threads"}:
