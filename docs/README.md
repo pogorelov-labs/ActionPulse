@@ -13,7 +13,7 @@ ActionPulse - это privacy-first система для автоматичес�
 ```bash
 git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
-make setup    # установка зависимостей + интерактивный мастер (6 вопросов)
+make setup    # установка зависимостей + интерактивный мастер (7 вопросов)
 ```
 
 ### Первый запуск
