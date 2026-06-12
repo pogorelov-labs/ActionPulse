@@ -52,6 +52,7 @@ from digest_core.assemble.labels import (
     section_title,
     stage_banner,
 )
+from digest_core.progress import NullSink, ProgressSink
 from digest_core.provenance import build_provenance, prompt_sha256
 from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
@@ -120,6 +121,7 @@ class RunContext:
     rate_broker: Optional[RateBroker] = None
     log_file: Any = None
     run_meta: Dict[str, Any] = field(default_factory=dict)
+    sink: ProgressSink = field(default_factory=NullSink)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,7 @@ def run_digest(
     replay_ingest: str | None = None,
     record_llm: str | None = None,
     replay_llm: str | None = None,
+    sink: ProgressSink | None = None,
 ) -> RunDigestResult:
     """Run the complete digest pipeline."""
     return _run_pipeline(
@@ -156,6 +159,7 @@ def run_digest(
         replay_ingest=replay_ingest,
         record_llm=record_llm,
         replay_llm=replay_llm,
+        sink=sink,
     )
 
 
@@ -172,6 +176,7 @@ def run_digest_dry_run(
     replay_ingest: str | None = None,
     record_llm: str | None = None,
     replay_llm: str | None = None,
+    sink: ProgressSink | None = None,
 ) -> None:
     """Run the pipeline up to context selection without LLM or delivery."""
     _run_pipeline(
@@ -188,6 +193,7 @@ def run_digest_dry_run(
         replay_ingest=replay_ingest,
         record_llm=record_llm,
         replay_llm=replay_llm,
+        sink=sink,
     )
 
 
@@ -210,6 +216,7 @@ def _init_context(
     replay_ingest: str | None,
     record_llm: str | None,
     replay_llm: str | None,
+    sink: ProgressSink | None = None,
 ) -> RunContext:
     """Build RunContext with resolved config, paths, and initial metadata."""
     trace_id = str(uuid.uuid4())
@@ -288,6 +295,7 @@ def _init_context(
     )
 
     return RunContext(
+        sink=sink or NullSink(),
         trace_id=trace_id,
         config=config,
         metrics=metrics,
@@ -318,8 +326,9 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
     """
     if ctx.replay_ingest:
         replay_start = time.perf_counter()
+        _emit(ctx, "on_stage_start", "ingest")
         messages = _load_ingest_snapshot(Path(ctx.replay_ingest).expanduser())
-        _record_stage_duration(ctx.run_meta, ctx.metrics, "ingest", replay_start)
+        _finish_stage(ctx, "ingest", replay_start, messages=len(messages))
         ctx.run_meta["ews_fetch_stats"] = {
             "source": "replay",
             "message_count": len(messages),
@@ -327,10 +336,11 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         }
     else:
         ingest_start = time.perf_counter()
+        _emit(ctx, "on_stage_start", "ingest")
         ingest = EWSIngest(ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics)
         messages = ingest.fetch_messages(ctx.digest_date, ctx.config.time)
         ctx.metrics.record_emails_total(len(messages), "fetched")
-        _record_stage_duration(ctx.run_meta, ctx.metrics, "ingest", ingest_start)
+        _finish_stage(ctx, "ingest", ingest_start, messages=len(messages))
         ctx.run_meta["ews_fetch_stats"] = {
             "source": "ews",
             "message_count": len(messages),
@@ -338,8 +348,9 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         }
 
         normalize_start = time.perf_counter()
+        _emit(ctx, "on_stage_start", "normalize")
         messages = _normalize_messages(messages, ctx.config)
-        _record_stage_duration(ctx.run_meta, ctx.metrics, "normalize", normalize_start)
+        _finish_stage(ctx, "normalize", normalize_start, messages=len(messages))
 
     if ctx.dump_ingest:
         snapshot_path = Path(ctx.dump_ingest).expanduser()
@@ -351,15 +362,17 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
 def _stage_threads(ctx: RunContext, messages: List[NormalizedMessage]) -> list:
     """Stage 3: THREADS — group messages into conversation threads."""
     threads_start = time.perf_counter()
+    _emit(ctx, "on_stage_start", "threads")
     thread_builder = ThreadBuilder()
     threads = thread_builder.build_threads(messages)
-    _record_stage_duration(ctx.run_meta, ctx.metrics, "threads", threads_start)
+    _finish_stage(ctx, "threads", threads_start, messages=len(messages), threads=len(threads))
     return threads
 
 
 def _stage_evidence(ctx: RunContext, threads: list, total_emails: int) -> List[EvidenceChunk]:
     """Stage 4: EVIDENCE — split threads into budget-constrained chunks."""
     evidence_start = time.perf_counter()
+    _emit(ctx, "on_stage_start", "evidence")
     evidence_splitter = EvidenceSplitter(
         user_aliases=ctx.config.ews.user_aliases,
         user_timezone=ctx.config.time.user_timezone,
@@ -372,7 +385,9 @@ def _stage_evidence(ctx: RunContext, threads: list, total_emails: int) -> List[E
         total_emails=total_emails,
         total_threads=len(threads),
     )
-    _record_stage_duration(ctx.run_meta, ctx.metrics, "evidence", evidence_start)
+    _finish_stage(
+        ctx, "evidence", evidence_start, threads=len(threads), chunks=len(evidence_chunks)
+    )
     return evidence_chunks
 
 
@@ -381,6 +396,7 @@ def _stage_select(
 ) -> tuple[List[EvidenceChunk], Dict[str, Any]]:
     """Stage 5: SELECT — rank and filter evidence for the LLM context window."""
     select_start = time.perf_counter()
+    _emit(ctx, "on_stage_start", "select")
     context_selector = ContextSelector(
         buckets_config=ctx.config.selection_buckets,
         weights_config=ctx.config.selection_weights,
@@ -389,7 +405,9 @@ def _stage_select(
     )
     selected_evidence = context_selector.select_context(evidence_chunks)
     selection_metrics = context_selector.get_metrics()
-    _record_stage_duration(ctx.run_meta, ctx.metrics, "select", select_start)
+    _finish_stage(
+        ctx, "select", select_start, selected=len(selected_evidence), of=len(evidence_chunks)
+    )
     return selected_evidence, selection_metrics
 
 
@@ -413,6 +431,7 @@ def _stage_llm(
         rate_broker=ctx.rate_broker,
     )
     llm_stage_start = time.perf_counter()
+    _emit(ctx, "on_stage_start", "llm")
 
     if not selected_evidence:
         digest = _build_empty_digest(ctx.digest_date, ctx.trace_id, prompt_version="none")
@@ -426,6 +445,7 @@ def _stage_llm(
             provenance["prompt_id"] = prompt_version
             provenance["prompt_sha256"] = prompt_sha256(prompt_text)
         try:
+            _emit(ctx, "on_llm_attempt", ctx.config.llm.model, 1, 2)
             llm_response = llm_gateway.extract_actions(
                 evidence=selected_evidence,
                 prompt_template=prompt_text,
@@ -470,7 +490,13 @@ def _stage_llm(
             ctx, digest, selected_evidence, prompt_version, prompt_text, normalized_messages
         )
 
-    _record_stage_duration(ctx.run_meta, ctx.metrics, "llm", llm_stage_start)
+    _finish_stage(
+        ctx,
+        "llm",
+        llm_stage_start,
+        sections=len(digest.sections),
+        items=_count_digest_items(digest),
+    )
 
     # Record LLM trace metadata
     llm_meta = llm_gateway.get_request_stats()
@@ -842,9 +868,10 @@ def _apply_shadow_citation_gate(
 def _stage_assemble(ctx: RunContext, digest: Digest) -> None:
     """Stage 7: ASSEMBLE — write JSON and Markdown artifacts."""
     assemble_start = time.perf_counter()
+    _emit(ctx, "on_stage_start", "assemble")
     _write_json(ctx.json_path, digest.model_dump(exclude_none=True))
     MarkdownAssembler(language=ctx.config.report.language).write_digest(digest, ctx.md_path)
-    _record_stage_duration(ctx.run_meta, ctx.metrics, "assemble", assemble_start)
+    _finish_stage(ctx, "assemble", assemble_start, items=_count_digest_items(digest))
 
 
 def _llm_budget_summary(llm_trace: Dict[str, Any], llm_config) -> Dict[str, Any]:
@@ -865,6 +892,7 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
     delivery_receipt: Dict[str, Any] = {}
     if ctx.config.deliver.mattermost.enabled:
         deliver_start = time.perf_counter()
+        _emit(ctx, "on_stage_start", "deliver")
         try:
             delivery_receipt = MattermostDeliverer(
                 ctx.config.deliver.mattermost, language=ctx.config.report.language
@@ -876,7 +904,14 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
         except Exception as exc:
             delivery_receipt = {"status": "warning", "error": str(exc)}
             logger.warning("Mattermost delivery failed", trace_id=ctx.trace_id, error=str(exc))
-        _record_stage_duration(ctx.run_meta, ctx.metrics, "deliver", deliver_start)
+        _finish_stage(ctx, "deliver", deliver_start)
+        _emit(
+            ctx,
+            "on_delivery",
+            "mattermost",
+            delivery_receipt.get("status") not in (None, "warning"),
+            delivery_receipt.get("error"),
+        )
     return delivery_receipt
 
 
@@ -900,6 +935,7 @@ def _run_pipeline(
     replay_ingest: str | None,
     record_llm: str | None = None,
     replay_llm: str | None = None,
+    sink: ProgressSink | None = None,
 ) -> RunDigestResult:
     """Run the digest pipeline with shared setup for normal and dry-run modes."""
     ctx = _init_context(
@@ -915,6 +951,7 @@ def _run_pipeline(
         replay_ingest=replay_ingest,
         record_llm=record_llm,
         replay_llm=replay_llm,
+        sink=sink,
     )
 
     # The root span covers every exit path (ok / partial / skipped / failed);
@@ -1362,6 +1399,7 @@ def degradation_policy(stage: str, exc: Exception, config: Config, *, replay: bo
 
 def _degrade_stage(ctx: RunContext, stage: str, exc: Exception) -> Digest:
     """Apply the degradation policy for a failed stage; return a digest or re-raise."""
+    _emit(ctx, "on_stage_failed", stage, str(exc))
     action = degradation_policy(stage, exc, ctx.config, replay=bool(ctx.replay_ingest))
     logger.error(
         "Pipeline stage failed",
@@ -1671,6 +1709,20 @@ def _record_stage_duration(
     run_meta["stage_durations_ms"][stage] = int(duration_seconds * 1000)
     metrics.record_pipeline_stage_duration(stage, duration_seconds)
     tracing.record_stage_span(stage, duration_seconds)
+
+
+def _emit(ctx: RunContext, method: str, *args, **kwargs) -> None:
+    """Fire a sink event; a broken renderer must never break the pipeline."""
+    try:
+        getattr(ctx.sink, method)(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - sink errors are non-fatal by contract
+        logger.warning("Progress sink failed", method=method, error=str(exc))
+
+
+def _finish_stage(ctx: RunContext, stage: str, started_at: float, **counts: Any) -> None:
+    """Record the stage duration and emit on_stage_end with the funnel counts."""
+    _record_stage_duration(ctx.run_meta, ctx.metrics, stage, started_at)
+    _emit(ctx, "on_stage_end", stage, counts, ctx.run_meta["stage_durations_ms"].get(stage, 0))
 
 
 def _count_digest_items(digest: Digest) -> int:

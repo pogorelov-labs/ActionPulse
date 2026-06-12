@@ -131,7 +131,7 @@ ASCII fallbacks), `console.py` (factory honoring the §2.2 env contract; single 
 `Console`), spinner constant. Wizard + cli adopt it (mechanical). Conformance test
 (map layer 4). Exit: zero hardcoded styles outside `ui/`.
 
-#### T2 — ProgressSink event seam ☐ *(M)*
+#### T2 — ProgressSink event seam ☑ *(feat/progress-sink, 2026-06-12)*
 §4.4: `ProgressSink` protocol; `run.py` emits `on_stage_start/end` (with funnel counts
 already computed for `stage_durations_ms`), `on_llm_attempt`, `on_delivery`. `NullSink`
 default — **zero visual change**, structlog untouched. Exit: event-sequence test from
