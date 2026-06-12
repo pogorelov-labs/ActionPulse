@@ -147,3 +147,73 @@ class TestCliFlag:
         result = CliRunner().invoke(app, ["run", "--dry-run", "--progress", "none"])
         assert result.exit_code == 0
         assert isinstance(captured["sink"], NullSink)
+
+
+class FakeClock:
+    def __init__(self, start: float = 1000.0):
+        self.t = start
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class TestPhraseHealthSuffix:
+    """U2: retries/errors render as a warn suffix, only when nonzero."""
+
+    def test_retries_and_errors_suffix(self):
+        out = _phrase({"messages": 124, "retries": 2, "errors": 1})
+        assert "124 messages" in out
+        assert "↻2 retries" in out
+        assert "⚠1 error" in out
+
+    def test_singular_plural(self):
+        assert "↻1 retry" in _phrase({"messages": 5, "retries": 1})
+        assert "⚠2 errors" in _phrase({"messages": 5, "errors": 2})
+
+    def test_zero_keys_change_nothing(self):
+        # Producers only send nonzero keys, but the renderer is defensive.
+        assert _phrase({"messages": 124, "retries": 0, "errors": 0}) == "124 messages"
+
+    def test_rendered_permanent_line(self):
+        console = _recording_console()
+        PlainSink(console=console).on_stage_end("ingest", {"messages": 124, "retries": 2}, 31_200)
+        text = console.export_text()
+        assert "✓ INGEST    124 messages · ↻2 retries (31.2s)" in text
+
+
+class TestPlainSinkIntraStage:
+    """U2: retries always print; data progress collapses to ≥10 s reassurance."""
+
+    def test_progress_throttled_to_reassurance_lines(self):
+        clock = FakeClock()
+        console = _recording_console()
+        sink = PlainSink(console=console, now=clock)
+        sink.on_stage_start("ingest")
+        sink.on_stage_progress("ingest", 100, None, "messages", "page 1")  # t+0: quiet
+        clock.t += 11.0
+        sink.on_stage_progress("ingest", 200, None, "messages", "page 2")  # printed
+        clock.t += 3.0
+        sink.on_stage_progress("ingest", 300, None, "messages", "page 3")  # quiet again
+        lines = [line for line in console.export_text().splitlines() if line.strip()]
+        assert len(lines) == 1
+        assert "INGEST" in lines[0] and "still running" in lines[0]
+        assert "200 messages · page 2 (11.0s)" in lines[0]
+
+    def test_progress_with_total_renders_ratio(self):
+        clock = FakeClock()
+        console = _recording_console()
+        sink = PlainSink(console=console, now=clock)
+        sink.on_stage_start("normalize")
+        clock.t += 12.0
+        sink.on_stage_progress("normalize", 80, 124, "messages")
+        assert "80/124 messages" in console.export_text()
+
+    def test_retry_always_prints_with_truncated_reason(self):
+        console = _recording_console()
+        sink = PlainSink(console=console)
+        sink.on_stage_retry("ingest", 2, 8, "ConnectionError: boom")
+        sink.on_stage_retry("llm", 2, 2, "x" * 200)
+        text = console.export_text()
+        assert "↻ INGEST    retry 2/8 — ConnectionError: boom" in text
+        assert "…" in text  # the 200-char reason was end-ellipsed (§6.2)
+        assert "x" * 80 not in text

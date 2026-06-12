@@ -142,6 +142,8 @@ cargo's status lines above its 1-line bar; indicatif `MultiProgress::println`).
 | Tokens | `↑6.4k ткн` (prompt), `↓1.2k` (completion) | LLM stages ◐ Claude Code |
 | Rate budget | `RPM 3/15` per model lane | fleet ◆ (15 RPM cap is product law, ADR-008) |
 | Attempts | `попытка 1/2` | LLM retry ladder |
+| In-stage progress | `247 messages · page 3` (footer only) | bounded producer loops — EWS paging, normalize, evidence split ◆ (U2) |
+| Retries / errors | `↻2 retries` / `⚠1 error` warn suffix on the permanent line | **nonzero only** — silence means healthy; same numbers land in `run_meta.stage_health` ◆ (U2) |
 
 ### 4.3 Fleet lanes (REDESIGN_PLAN)
 
@@ -165,6 +167,16 @@ line when the stage ends. Lane cap 4; beyond that, aggregate: `+2 модели �
 
 - A `ProgressSink` protocol: `on_stage_start(name, meta)`, `on_stage_end(name, counts,
   duration_ms)`, `on_llm_attempt(model, attempt, tokens)`, `on_lane_update(lane, state)`.
+- **Intra-stage events (U2)** ◆: `on_stage_progress(stage, done, total|None, unit,
+  detail)` — data progress from bounded producer loops; producers emit numbers, renderers
+  own wording and throttling (Live pulls state at 10 fps; PlainSink collapses to a ≥10 s
+  "still running" reassurance line — terraform model ◐; per-message events for hundreds of
+  messages are fine, per-token events are not). `on_stage_retry(stage, attempt, max,
+  reason)` — a transient failure scheduled a retry; the footer warms **immediately**
+  (error responsiveness must not wait for the 10 s attention shift) and PlainSink prints
+  one warn line per retry (rare by construction). Producers never call sinks directly —
+  every emission goes through the swallow-and-log `progress.emit()` helper (a broken
+  renderer must never break the pipeline).
 - `run.py` emits events; sinks render. structlog JSON logging is **unchanged** — logs are
   a parallel channel, never printed through the live region (P3; rich `redirect_stdout`
   exists ★ but our logs go to stderr/file by design).

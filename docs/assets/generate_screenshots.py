@@ -38,11 +38,15 @@ def _save(console: Console, name: str, title: str) -> None:
 
 
 def screenshot_run_progress() -> None:
-    """The live run display: permanent funnel history + the animated footer."""
+    """The live run display: permanent funnel history + the animated footer.
+
+    The ingest line carries the U2 health suffix (retries render only when
+    nonzero); the footer shows intra-stage data progress + the LLM note.
+    """
     c = _console()
     c.print(gradient_text("⌁ ActionPulse"))
     c.print()
-    c.print(_ok_line("ingest", {"messages": 124}, 3100), highlight=False)
+    c.print(_ok_line("ingest", {"messages": 124, "retries": 1}, 14_300), highlight=False)
     c.print(_ok_line("normalize", {"messages": 124}, 410), highlight=False)
     c.print(_ok_line("threads", {"messages": 124, "threads": 37}, 230), highlight=False)
     c.print(_ok_line("evidence", {"threads": 37, "chunks": 41}, 820), highlight=False)

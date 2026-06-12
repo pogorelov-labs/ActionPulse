@@ -464,3 +464,65 @@ class TestGatewayRateBroker:
 
         with pytest.raises(StageCallBudgetExceeded):
             gw.extract_actions(self._evidence(), "prompt", "t4")
+
+
+class _RecordingSink:
+    """Duck-typed ProgressSink capturing retry/attempt events (U2)."""
+
+    def __init__(self):
+        self.events = []
+
+    def on_stage_retry(self, stage, attempt, max_attempts, reason):
+        self.events.append(("retry", stage, attempt, max_attempts, reason))
+
+    def on_llm_attempt(self, model, attempt, max_attempts):
+        self.events.append(("attempt", model, attempt, max_attempts))
+
+
+def _sinked_gateway(monkeypatch):
+    monkeypatch.setenv("LLM_TOKEN", "test-token")
+    sink = _RecordingSink()
+    config = LLMConfig(
+        endpoint="https://api.openai.com/v1/chat/completions",
+        model="qwen35-397b-a17b",
+        timeout_s=30,
+    )
+    return LLMGateway(config, sink=sink), sink
+
+
+def test_transient_retry_emits_stage_retry_and_counts(monkeypatch):
+    """U2: the internal transient retry surfaces as on_stage_retry('llm', …)."""
+    gateway, sink = _sinked_gateway(monkeypatch)
+    gateway.client.post = Mock(
+        side_effect=[
+            _mock_response("{invalid json"),
+            _mock_response('{"sections": []}'),
+        ]
+    )
+
+    gateway.extract_actions([], "Return strict JSON", "test-trace-id")
+
+    retries = [e for e in sink.events if e[0] == "retry"]
+    assert len(retries) == 1
+    _, stage, attempt, max_attempts, _reason = retries[0]
+    assert (stage, attempt, max_attempts) == ("llm", 2, 2)
+    assert gateway.get_request_stats()["run_retries"] == 1
+
+
+def test_quality_retry_emits_attempt_2_of_2(monkeypatch):
+    """U2: the quality retry (second logical call) shows as attempt 2/2."""
+    gateway, sink = _sinked_gateway(monkeypatch)
+    gateway.client.post = Mock(
+        side_effect=[
+            _mock_response('{"sections": []}'),
+            _mock_response('{"sections": [{"title": "Test", "items": []}]}'),
+        ]
+    )
+    evidence = [
+        EvidenceChunk(evidence_id="ev-1", content="Important action item", priority_score=2.0)
+    ]
+
+    gateway.extract_actions(evidence, "Return strict JSON", "test-trace-id")
+
+    assert ("attempt", "qwen35-397b-a17b", 2, 2) in sink.events
+    assert gateway.get_request_stats()["run_retries"] == 1

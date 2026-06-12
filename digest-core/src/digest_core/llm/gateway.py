@@ -21,6 +21,7 @@ from digest_core.llm.prompt_registry import get_prompt_template_path
 from digest_core.llm.rate_broker import RateBroker
 from digest_core.observability import tracing
 from digest_core.observability.metrics import MetricsCollector
+from digest_core.progress import NullSink, ProgressSink, emit
 
 
 def minimal_json_cleanup(text: str) -> str:
@@ -105,11 +106,14 @@ class LLMGateway:
         rate_broker: Optional[RateBroker] = None,
         stage: str = "extractor",
         require_evidence_spans: bool = False,
+        sink: Optional[ProgressSink] = None,
     ):
         self.config = config
         self.enable_degrade = enable_degrade
         self.degrade_mode = degrade_mode
         self.metrics = metrics
+        self._sink = sink or NullSink()
+        self._run_retries = 0  # transient transport retries + quality retries
         # R3: degrade-not-drop. Stays False through PR11 — items with no verbatim
         # span are annotated, not dropped (the gate handles weak_evidence).
         self.require_evidence_spans = require_evidence_spans
@@ -182,6 +186,10 @@ class LLMGateway:
                         "Quality retry: empty sections but positive signals present",
                         trace_id=trace_id,
                     )
+                    # The second logical call (ADR-008 "max 2") — show it as
+                    # attempt 2/2 and count it in the stage retry total.
+                    self._run_retries += 1
+                    emit(self._sink, "on_llm_attempt", self.config.model, 2, 2)
                     quality_hint = (
                         "\n\nIMPORTANT: If there are actionable requests or deadlines, "
                         "return items accordingly. Return strict JSON per schema only."
@@ -331,6 +339,11 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
 
         return evidence_combined
 
+    def _progress_stage(self) -> str:
+        """Progress-event stage name: the extractor renders under the LLM
+        stage banner; judge/reranker keep their own stage labels."""
+        return "llm" if self._stage == "extractor" else self._stage
+
     def _make_request_with_retry(
         self, messages: List[Dict[str, str]], trace_id: str, digest_date: str = None
     ) -> Dict[str, Any]:
@@ -349,10 +362,26 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 return exception.wait_seconds
             return MIN_RETRY_BACKOFF_SECONDS
 
+        def before_sleep(retry_state: tenacity.RetryCallState) -> None:
+            # Make the backoff legible (429 penalties can wait tens of
+            # seconds): warn the live footer and count toward stage health.
+            exception = retry_state.outcome.exception() if retry_state.outcome else None
+            reason = f"{type(exception).__name__}: {exception}" if exception else "transient error"
+            self._run_retries += 1
+            emit(
+                self._sink,
+                "on_stage_retry",
+                self._progress_stage(),
+                retry_state.attempt_number + 1,
+                2,
+                reason,
+            )
+
         retrying = tenacity.Retrying(
             stop=tenacity.stop_after_attempt(2),
             wait=wait_strategy,
             retry=tenacity.retry_if_exception_type(RetryableLLMError),
+            before_sleep=before_sleep,
             reraise=True,
         )
 
@@ -942,6 +971,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             "endpoint": self.config.endpoint,
             "model": self.config.model,
             "timeout_s": self.config.timeout_s,
+            "run_retries": self._run_retries,
         }
 
     def process_digest(

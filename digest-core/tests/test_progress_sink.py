@@ -148,3 +148,57 @@ def test_llm_failure_path_still_ends_stage(monkeypatch, tmp_path):
     # The partial digest carries the Status section -> counts still emitted.
     assert "llm" in ended
     assert ended["llm"][2]["sections"] == 1
+
+
+class RecordingSinkU2(RecordingSink):
+    """RecordingSink + the U2 intra-stage vocabulary."""
+
+    def on_stage_progress(self, stage, done, total=None, unit="", detail=""):
+        self.events.append(("progress", stage, done, total, unit, detail))
+
+    def on_stage_retry(self, stage, attempt, max_attempts, reason):
+        self.events.append(("retry", stage, attempt, max_attempts, reason))
+
+
+class RetryingStatsGateway(FakeGateway):
+    """FakeGateway that reports transient retries via get_request_stats (U2)."""
+
+    def get_request_stats(self):
+        stats = super().get_request_stats()
+        stats["run_retries"] = 2
+        return stats
+
+
+def test_evidence_progress_events_fire_in_replay(monkeypatch, tmp_path):
+    sink = RecordingSinkU2()
+    assert _run_replay(monkeypatch, tmp_path, sink)
+    progress = [e for e in sink.events if e[0] == "progress" and e[1] == "evidence"]
+    assert progress, "evidence split must emit on_stage_progress"
+    # One message -> one thread: done/total honest, unit owned by the producer.
+    assert progress[-1][2] == progress[-1][3] == 1
+    assert progress[-1][4] == "threads"
+
+
+def test_llm_retries_ride_counts_and_stage_health(monkeypatch, tmp_path):
+    sink = RecordingSinkU2()
+    assert _run_replay(monkeypatch, tmp_path, sink, gateway=RetryingStatsGateway)
+
+    ended = {e[1]: e for e in sink.events if e[0] == "end"}
+    assert ended["llm"][2]["retries"] == 2
+    # The same numbers land in the trace meta for the corp read-out.
+    meta_files = list((tmp_path / "out").glob("trace-*.meta.json"))
+    assert meta_files
+    import json as _json
+
+    meta = _json.loads(meta_files[0].read_text(encoding="utf-8"))
+    assert meta["stage_health"] == {"llm": {"retries": 2}}
+
+
+def test_clean_run_has_no_stage_health(monkeypatch, tmp_path):
+    sink = RecordingSinkU2()
+    assert _run_replay(monkeypatch, tmp_path, sink)
+    import json as _json
+
+    meta_files = list((tmp_path / "out").glob("trace-*.meta.json"))
+    meta = _json.loads(meta_files[0].read_text(encoding="utf-8"))
+    assert "stage_health" not in meta  # nonzero-only: silence means healthy

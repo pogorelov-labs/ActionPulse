@@ -24,9 +24,34 @@ import tenacity
 import ssl
 
 from digest_core.config import EWSConfig, TimeConfig
+from digest_core.progress import NullSink, ProgressSink, emit
 from digest_core.utils.tz import ensure_aware, to_utc
 
 logger = structlog.get_logger()
+
+#: Max fetch attempts (tenacity stop_after_attempt below) — named so the
+#: retry events can report an honest "retry n/8".
+FETCH_MAX_ATTEMPTS = 8
+
+
+def _emit_fetch_retry(retry_state: "tenacity.RetryCallState") -> None:
+    """tenacity ``before_sleep`` for the fetch: make the backoff legible.
+
+    The retried callable is a bound method, so ``args[0]`` is the EWSIngest
+    instance — this is how a module-level hook reaches the run's sink.
+    """
+    ingest = retry_state.args[0]
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    reason = f"{type(exc).__name__}: {exc}" if exc else "unknown error"
+    ingest._fetch_retries += 1
+    emit(
+        ingest._sink,
+        "on_stage_retry",
+        "ingest",
+        retry_state.attempt_number + 1,
+        FETCH_MAX_ATTEMPTS,
+        reason,
+    )
 
 
 @dataclass(frozen=True, init=False)
@@ -130,11 +155,22 @@ class NormalizedMessage:
 class EWSIngest:
     """EWS email ingestion with NTLM authentication."""
 
-    def __init__(self, config: EWSConfig, time_config: TimeConfig = None, metrics=None):
+    def __init__(
+        self,
+        config: EWSConfig,
+        time_config: TimeConfig = None,
+        metrics=None,
+        sink: Optional[ProgressSink] = None,
+    ):
         self.config = config
         self.time_config = time_config or TimeConfig()
         self.metrics = metrics
         self.account: Optional[Account] = None
+        self._sink = sink or NullSink()
+        self._fetch_retries = 0
+        self._fetch_pages = 0
+        # Stage-health read-out for run_meta (pages/retries/skipped messages).
+        self.last_fetch_stats: dict = {}
         self._setup_ssl_context()
 
     def _setup_ssl_context(self):
@@ -251,9 +287,10 @@ class EWSIngest:
         return start_utc, end_utc
 
     @tenacity.retry(
-        stop=tenacity.stop_after_attempt(8),
+        stop=tenacity.stop_after_attempt(FETCH_MAX_ATTEMPTS),
         wait=tenacity.wait_exponential(multiplier=0.5, max=60),
         retry=tenacity.retry_if_exception_type((ConnectionError, TimeoutError)),
+        before_sleep=_emit_fetch_retry,
     )
     def _fetch_messages_with_retry(
         self, folder: Folder, start_date: datetime, end_date: datetime
@@ -277,6 +314,7 @@ class EWSIngest:
             # Fetch messages with pagination
             messages = []
             offset = 0
+            page_no = 0
 
             while True:
                 # Use folder.filter() with pagination
@@ -288,13 +326,26 @@ class EWSIngest:
 
                 messages.extend(page_list)
                 offset += self.config.page_size
+                page_no += 1
 
                 logger.debug("Fetched page", page_size=len(page_list), total=len(messages))
+                # Unbounded loop: no total, so counters only (§3 — never a
+                # percentage for an estimated total).
+                emit(
+                    self._sink,
+                    "on_stage_progress",
+                    "ingest",
+                    len(messages),
+                    None,
+                    "messages",
+                    f"page {page_no}",
+                )
 
                 # Safety check to prevent infinite loops
                 if len(page_list) < self.config.page_size:
                     break
 
+            self._fetch_pages = page_no
             return messages
 
         except Exception as e:
@@ -443,6 +494,8 @@ class EWSIngest:
     def fetch_messages(self, digest_date: str, time_config: TimeConfig) -> List[NormalizedMessage]:
         """Fetch and normalize messages for the given date."""
         logger.info("Starting EWS message fetch", digest_date=digest_date)
+        self._fetch_retries = 0
+        self._fetch_pages = 0
 
         # Connect to EWS
         account = self._connect()
@@ -477,6 +530,7 @@ class EWSIngest:
 
         # Normalize messages
         normalized_messages = []
+        skipped = 0
         for msg in raw_messages:
             try:
                 normalized_msg = self._normalize_message(msg)
@@ -484,6 +538,7 @@ class EWSIngest:
             except Exception as e:
                 import traceback
 
+                skipped += 1
                 logger.warning(
                     "Failed to normalize message",
                     msg_id=str(msg.id),
@@ -493,6 +548,11 @@ class EWSIngest:
                 continue
 
         logger.info("Messages normalized", count=len(normalized_messages))
+        self.last_fetch_stats = {
+            "pages": self._fetch_pages,
+            "retries": self._fetch_retries,
+            "skipped": skipped,
+        }
 
         # Update SyncState with latest timestamp
         self._update_sync_state(end_date)
