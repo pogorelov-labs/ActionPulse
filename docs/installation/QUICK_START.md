@@ -17,7 +17,7 @@
 ```bash
 git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
-make setup    # установка зависимостей + интерактивный мастер (6 вопросов)
+make setup    # установка зависимостей + интерактивный мастер (7 вопросов)
 ```
 
 Мастер сначала сам находит логин, имя и корпоративный email (скан метаданных Keychain, всё локально; `--no-autodetect` отключает), затем спросит недостающее: EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL. Сгенерирует:

@@ -21,7 +21,7 @@ uv sync --native-tls
 python -m digest_core.cli setup
 ```
 
-6 questions: corp email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook. Auto-derives `user_login`, `user_domain`, and name aliases from the email address. Writes `~/.config/actionpulse/env` (chmod 600, systemd-compatible) and `configs/config.yaml`. Safe to re-run — existing values are used as defaults. Secrets are hidden on input with confirmation prompts.
+7 questions: corp email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook, report language (`en` default / `ru`). Auto-derives `user_login`, `user_domain`, and name aliases from the email address. Writes `~/.config/actionpulse/env` (chmod 600, systemd-compatible) and `configs/config.yaml`. Safe to re-run — existing values are used as defaults. Secrets are hidden on input with confirmation prompts.
 
 Or run `make setup` from `digest-core/` to chain `uv sync --native-tls` with the wizard in one command.
 

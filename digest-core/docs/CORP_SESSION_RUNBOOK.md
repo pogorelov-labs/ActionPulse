@@ -58,7 +58,10 @@ cd digest-core
 python -m digest_core.cli setup
 ```
 
-Мастер задаст 6 вопросов (корпоративный email, EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL) и сгенерирует:
+Мастер (вывод теперь на английском) сначала автообнаружит логин/имя/email
+(скан метаданных Keychain), затем задаст **7 вопросов** (корпоративный email,
+EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL,
+**язык отчёта** — стрелочное меню ↑↓/jk на TTY, `en` по умолчанию / `ru`) и сгенерирует:
 - `~/.config/actionpulse/env` (chmod 600, systemd-compatible)
 - `configs/config.yaml`
 
@@ -132,9 +135,13 @@ python -m digest_core.cli run \
     --state /tmp/actionpulse/state
 ```
 
+> С PR #95 вывод — build-log на stderr (`✓ INGEST    124 messages (3.1s)`),
+> а JSON-логи уходят **только в файл** (путь печатается первой строкой).
+> Старое поведение: `--progress none`. В CI/пайпе автоматически plain-режим.
+
 **Чеклист:**
 - [ ] Exit code 0
-- [ ] В логе видно `emails_processed: N` (N > 0 — иначе пустой ящик или фильтр дат)
+- [ ] В выводе `✓ INGEST    N messages` (N > 0 — иначе пустой ящик или фильтр дат); подробности — в лог-файле
 - [ ] Файл `/tmp/actionpulse/ews-snapshot-*.json` создан и не пустой
 - [ ] Размер снапшота адекватен (100KB–5MB для типичного дня)
 
@@ -189,7 +196,7 @@ python -m digest_core.cli run \
 - Посмотреть `trace-*.meta.json` → `llm_request_trace.latency_ms`
 - При необходимости: увеличить `timeout_s` в config.yaml
 
-**Если partial digest (секция "Статус"):**
+**Если partial digest (секция "Status" / «Статус» при `report.language: ru`):**
 - LLM упал после ретраев → см. `trace-*.meta.json` → `llm_request_trace.error`
 - Повторить через 5 минут (rate limit или gateway overload)
 
@@ -257,6 +264,9 @@ tar czf ~/actionpulse-corpus-$(date +%Y-%m-%d).tar.gz \
 | `eval-*.json` | Baseline eval score для сравнения с будущими промптами |
 
 **Перенос:** USB / scp / MM DM (если <16KB per file) / облако.
+
+> Для разовой валидации C1–C3 (EN-default + terminal design) список выноса
+> шире — см. §9.4.
 
 ---
 
@@ -378,6 +388,86 @@ diff <(jq .scores ~/corpus/eval-2026-04-01.json) \
 
 ---
 
+## 9. Однократно: валидация EN-default + terminal design (C1–C3, ~20 мин)
+
+PRs #92–#98 (английский по умолчанию, canonical section keys, prompt
+`extract_actions.en.v2`, live-прогресс) проверены **вне периметра**. Ниже —
+три вопроса, на которые отвечает только корп-машина. Результаты — новый
+раздел в `CORP_VALIDATION_FINDINGS_2026-06.md` (+ issues), артефакты — §9.4.
+
+### 9.1 C1 — качество EN-экстракции vs RU baseline (критичное)
+
+Gold F1 = 0.601 измерялся на RU-пайплайне; качество en.v2 на реальных RU
+письмах не измерено. Один снапшот — два прогона (4 LLM-вызова суммарно,
+в 15 RPM укладывается; запускать последовательно):
+
+```bash
+SNAP=/tmp/actionpulse/ews-snapshot-$(date +%Y-%m-%d).json
+
+# RU-референс (старый контракт вывода):
+DIGEST_REPORT_LANGUAGE=ru python -m digest_core.cli run --force \
+    --replay-ingest "$SNAP" \
+    --record-llm /tmp/actionpulse/llm-rec-ru.json \
+    --out /tmp/actionpulse/out-ru --state /tmp/actionpulse/state-ru
+
+# EN (новый дефолт):
+python -m digest_core.cli run --force \
+    --replay-ingest "$SNAP" \
+    --record-llm /tmp/actionpulse/llm-rec-en.json \
+    --out /tmp/actionpulse/out-en --state /tmp/actionpulse/state-en
+```
+
+Сравнить и записать таблицей (RU vs EN):
+- [ ] items по секциям (digest-*.json) — расхождение ≤1 пункта?
+- [ ] `support_recall`, `items_weak`, `items_quarantined` из `trace-*.meta.json`
+- [ ] **цитаты остались на языке письма** (verbatim, НЕ переведены) — инвариант
+      citation gate; выборочно сверить 3–5 quote против тел писем
+- [ ] EN-заголовки пунктов адекватны исходникам (глазами, 5–10 пунктов)
+
+Порог решения: потеря >1 пункта или падение `support_recall` >0.05 →
+issue + рассмотреть `report.language: ru` как временный дефолт корп-профиля
+или prompt v2.1. **`llm-rec-en.json` — первая запись с en.v2-промптом**:
+записи request-hash-keyed, старые RU-записи en.v2 не реплеят — без этого
+файла офлайн-разработка EN-ветки невозможна.
+
+### 9.2 C2 — Terminal.app: палитра и live-прогресс
+
+Корп-профиль Terminal.app — 256 цветов, часто **светлый фон**:
+
+- [ ] мастер: `uv run python -m digest_core.cli setup` — баннер-градиент,
+      токены читаемы, стрелочное меню языка (↑↓/jk/Enter/Esc=default, 1-9)
+- [ ] live: повторный run с `--replay-llm /tmp/actionpulse/llm-rec-en.json` —
+      спиннер, тикающий elapsed, постоянные ✓-строки над футером,
+      `↑/↓ tok` в строке LLM; футер исчез по завершении, курсор восстановлен
+- [ ] `--progress plain` и `--progress none` — ожидаемое поведение
+- [ ] `NO_COLOR=1 …` (без цвета, глифы на месте) и `TERM=dumb …` (плоский вывод)
+
+Захват: `mkdir -p /tmp/actionpulse/visual` — скриншоты (мастер/меню/live) +
+typescript: `script -q /tmp/actionpulse/visual/live-run.typescript python -m
+digest_core.cli run …` (в настоящем Terminal `script` работает).
+
+### 9.3 C3 — EN-дайджест в корп-Mattermost
+
+Из EN-прогона 9.1 (если delivery включён; иначе повторить с webhook):
+- [ ] заголовок "Action digest — YYYY-MM-DD", секции My actions / Urgent / FYI
+- [ ] глифы ✓ ⚠ ↻ ↳ и саблайны `↳ ev: …` рендерятся в MM
+- [ ] при длинном дайджесте — заголовки частей "part i/n"
+- [ ] скриншот сообщения → `/tmp/actionpulse/visual/`
+
+### 9.4 Вынос (дополнение к §5)
+
+```bash
+tar czf ~/actionpulse-c1c3-$(date +%Y-%m-%d).tar.gz \
+    /tmp/actionpulse/out-ru /tmp/actionpulse/out-en \
+    /tmp/actionpulse/llm-rec-ru.json /tmp/actionpulse/llm-rec-en.json \
+    /tmp/actionpulse/visual
+```
+
+Вернуть: архив + заполненная таблица 9.1 + вердикты 9.2/9.3 →
+`CORP_VALIDATION_FINDINGS_2026-06.md`; issues на каждое расхождение.
+
+---
+
 ## Чеклист корп-сессии (quick ref)
 
 ```
@@ -393,6 +483,7 @@ diff <(jq .scores ~/corpus/eval-2026-04-01.json) \
 □  tar.gz артефакты → скопированы наружу
 □  (визит EP-14) пробы ①–⑧ + I-1/E-1/M-1 по VISIT_CHECKLIST_EP14.md
 □  (однократно) §8 — валидация one-liner setup
+□  (однократно) §9 — C1–C3: EN vs RU прогоны + llm-rec-en.json + visual/ + вердикты
 □  (бонус) systemd timer установлен
 ```
 
