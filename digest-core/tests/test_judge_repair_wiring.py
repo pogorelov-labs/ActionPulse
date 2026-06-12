@@ -219,7 +219,7 @@ def test_rejected_item_lands_in_quarantine():
     assert outcome.items_repaired == 0
     assert outcome.items_weak == 1
     assert _quarantine_weak_items(digest) == 1
-    assert digest.sections[-1].title == "Не подтверждено"
+    assert digest.sections[-1].title == "Unconfirmed"
 
 
 def test_budget_exhaustion_stops_repair_keeps_items():

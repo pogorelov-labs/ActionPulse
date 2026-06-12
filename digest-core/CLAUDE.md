@@ -9,7 +9,7 @@ Python 3.11 package. Daily email digest pipeline: EWS → normalize → threads 
 git fetch origin --prune
 git status --short --branch
 
-# Setup — canonical: interactive wizard (6 questions, no text editor)
+# Setup — canonical: interactive wizard (7 questions, no text editor)
 make setup                           # uv sync --native-tls + uv run python -m digest_core.cli setup
 uv run python -m digest_core.cli setup  # Re-run wizard (reads existing values as defaults)
 uv run python -m digest_core.cli setup --no-autodetect  # Skip local autodetection (Keychain/dscl/DNS)
@@ -126,6 +126,7 @@ LLM_TOKEN=...             # LLM Gateway bearer token
 MM_WEBHOOK_URL=...        # Mattermost incoming webhook URL
 
 # Optional
+DIGEST_REPORT_LANGUAGE=ru # Report language override (default en)
 DIGEST_CONFIG_PATH=...    # Custom config YAML path
 ACTIONPULSE_CA_CERT_NAME=...  # macOS setup helper: Keychain certificate alias for auto-export
 # Output/state: use CLI flags --out and --state (not separate DIGEST_* env vars in current code)

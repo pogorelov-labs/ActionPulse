@@ -2,74 +2,76 @@
 
 **Daily pulse of actions from your inbox.**
 
-Каждое утро — автоматический дайджест из корпоративной почты: что от тебя ждут, что срочно, что решили. Каждый пункт трассируется до оригинального письма.
+Every morning — an automatic digest of your corporate email: what people expect from you, what is urgent, what was decided without you. Every item traces back to the original email.
 
 ---
 
-## Что это
+## What it is
 
-Single-tenant CLI инструмент. Читает Exchange inbox, прогоняет через 8-стадийный pipeline, доставляет итог в Mattermost через **incoming webhook** (целевой канал задаётся при создании webhook в Mattermost).
+A single-tenant CLI tool. It reads your Exchange inbox, runs it through an 8-stage pipeline, and delivers the result to Mattermost via an **incoming webhook** (the target channel is chosen when the webhook is created in Mattermost).
 
-**Не суммаризатор** — LLM извлекает факты из писем, а не пишет от себя. Три секции на выходе:
-- **Мои действия** — что от тебя ожидают
-- **Срочное** — дедлайны ≤2 рабочих дней
-- **К сведению** — что решили без тебя
+**Not a summarizer** — the LLM extracts facts from evidence, it does not write on its own. Three output sections:
+- **My actions** — what is expected from you
+- **Urgent** — deadlines ≤2 business days
+- **FYI** — what was decided without you
 
-**Не SaaS** — работает на корп-инфраструктуре, данные не покидают периметр.
+**Not SaaS** — runs on corporate infrastructure; data never leaves the perimeter.
+
+Reports are English by default; switch to Russian with `report.language: ru` in `configs/config.yaml` (the setup wizard asks).
 
 ---
 
-## Быстрый старт
+## Quick start
 
-Одна команда на чистом macOS — без предустановленного Python и Homebrew:
+One command on a fresh macOS — no preinstalled Python, no Homebrew:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/pogorelov-labs/ActionPulse/main/install.sh)"
 ```
 
-Скрипт проверит окружение, поставит [uv](https://docs.astral.sh/uv/) (он сам скачает Python 3.11 — версия системного Python не важна), склонирует репозиторий в `~/ActionPulse`, установит зависимости и запустит мастер настройки в этом же окне терминала. Повторный запуск безопасен: обновит код и предложит текущие значения как ответы по умолчанию. Флаги: `--dir`, `--ref`, `--no-wizard` (headless).
+The script checks the environment, installs [uv](https://docs.astral.sh/uv/) (which downloads Python 3.11 itself — your system Python version does not matter), clones the repository into `~/ActionPulse`, installs dependencies, and launches the setup wizard in the same terminal window. Re-running is safe: it updates the code and offers current values as the default answers. Flags: `--dir`, `--ref`, `--no-wizard` (headless).
 
 <details>
-<summary>Ручная установка (git clone + make)</summary>
+<summary>Manual install (git clone + make)</summary>
 
 ```bash
 git clone https://github.com/pogorelov-labs/ActionPulse.git
 cd ActionPulse/digest-core
 
-# Установка зависимостей + интерактивный мастер (6 вопросов, без редактирования файлов)
+# Install dependencies + interactive wizard (7 questions, no file editing)
 make setup
 ```
 
 </details>
 
-После установки:
+After installation:
 
 ```bash
 cd ~/ActionPulse/digest-core
 
-# Загрузить секреты в текущую сессию и проверить конфигурацию
+# Load secrets into the current session and check the configuration
 set -a && source ~/.config/actionpulse/env && set +a
 uv run python -m digest_core.cli diagnose
 
-# Dry-run (без LLM, только ingest + normalize)
+# Dry run (no LLM, ingest + normalize only)
 uv run python -m digest_core.cli run --dry-run
 
-# Полный запуск
+# Full run
 uv run python -m digest_core.cli run
 ```
 
-Мастер задаст: корпоративный email, EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL. Перед вопросами он сам находит логин, имя и кандидатов корп-email (скан метаданных Keychain — всё локально, секреты Keychain зашифрованы и не читаются) и подставляет проверенные значения автоматически; финальный экран подтверждения показывается всегда (`--no-autodetect` отключает). Сгенерирует `~/.config/actionpulse/env` (chmod 600) и `configs/config.yaml`. Повторная настройка: `make setup` или напрямую `uv run python -m digest_core.cli setup` из `digest-core/` (оба вызывают один и тот же wizard).
+The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook URL, and the report language (`en` default / `ru`). Before asking, it auto-detects your login, name, and corp-email candidates (a local Keychain metadata scan — Keychain secrets stay encrypted and unreadable) and auto-confirms validated values; the final review screen is always shown (`--no-autodetect` disables detection). It generates `~/.config/actionpulse/env` (chmod 600) and `configs/config.yaml`. To reconfigure: `make setup` or directly `uv run python -m digest_core.cli setup` from `digest-core/` (both call the same wizard).
 
-Если видите ошибку `No module named 'digest_core'`, значит команда запущена системным Python вне окружения проекта. Используйте `uv run python -m ...` (как в примерах выше) или активируйте `.venv` вручную.
+If you see `No module named 'digest_core'`, the command ran under the system Python outside the project environment. Use `uv run python -m ...` (as in the examples above) or activate `.venv` manually.
 
-### Mattermost интеграция (важно)
-ActionPulse использует **incoming webhook** Mattermost для **доставки** готового дайджеста (Stage 8). Для чтения сообщений/DM пассивно собирать данные не требуется — в MVP не используется API/WebSocket “для чтения”.
+### Mattermost integration (important)
+ActionPulse uses a Mattermost **incoming webhook** to **deliver** the finished digest (Stage 8). It does not read messages or DMs — the MVP uses no "reading" API/WebSocket.
 
-Подробнее — в [`digest-core/CLAUDE.md`](digest-core/CLAUDE.md).
+Details: [`digest-core/CLAUDE.md`](digest-core/CLAUDE.md).
 
 ---
 
-## Архитектура
+## Architecture
 
 ```
 Exchange (EWS)
@@ -77,41 +79,43 @@ Exchange (EWS)
                                                                                └── Mattermost (webhook)
 ```
 
-LLM: `qwen35-397b-a17b` через корп. gateway, 15 RPM, **max 2 вызова за запуск** (1 primary extraction + опциональный quality retry, см. ADR-008).
+LLM: `qwen35-397b-a17b` via the corporate gateway, 15 RPM, **max 2 calls per run** (1 primary extraction + an optional quality retry, see ADR-008).
 
-Полные контракты стадий: [`digest-core/docs/ARCHITECTURE.md`](digest-core/docs/ARCHITECTURE.md).
+Full stage contracts: [`digest-core/docs/ARCHITECTURE.md`](digest-core/docs/ARCHITECTURE.md).
 
 ---
 
-## Принципы
+## Principles
 
 | | |
 |--|--|
-| **Extract-over-Generate** | LLM извлекает из evidence, каждый пункт привязан к `evidence_id` |
-| **Traceability** | Пункт → `evidence_id` → `source_ref` → оригинальное письмо |
-| **Privacy-first** | Локальный модуль маскировки PII снят в 1.1.0; обработка персональных данных на стороне корпоративного LLM Gateway. Тела писем и секреты не пишутся в логи |
-| **Idempotency** | Артефакты за выбранную дату: при повторных запусках в окне **T−48h** пропуск пересборки, если JSON/MD уже свежие (`run --force` обходит проверку) |
+| **Extract-over-Generate** | The LLM extracts from evidence; every item is bound to an `evidence_id` |
+| **Traceability** | Item → `evidence_id` → `source_ref` → the original email |
+| **Privacy-first** | The local PII-masking module was removed in 1.1.0; personal-data handling lives in the corporate LLM Gateway. Email bodies and secrets are never written to logs |
+| **Idempotency** | Artifacts per chosen date: re-runs within a **T−48h** window skip the rebuild when JSON/MD are already fresh (`run --force` bypasses the check) |
 
 ---
 
-## Разработка
+## Development
 
 ```bash
 cd digest-core
-make test    # все тесты (mocked, без сети)
+make test    # all tests (mocked, no network)
 make lint
 make smoke   # dry-run smoke test
 ```
 
-EWS и LLM Gateway — только с корп. сети. Для разработки вне периметра:
+EWS and the LLM Gateway are reachable only from the corp network. For development outside the perimeter:
 
 ```bash
-# Снять снапшот inbox'а изнутри
+# Capture an inbox snapshot from inside
 python -m digest_core.cli run --dump-ingest /tmp/snapshot.json
 
-# Воспроизвести снаружи
+# Replay it outside
 python -m digest_core.cli run --replay-ingest /tmp/snapshot.json
 ```
+
+Terminal output rules: [`docs/development/TERMINAL_DESIGN.md`](docs/development/TERMINAL_DESIGN.md); execution plan: [`docs/development/TERMINAL_DESIGN_ROADMAP.md`](docs/development/TERMINAL_DESIGN_ROADMAP.md).
 
 ---
 

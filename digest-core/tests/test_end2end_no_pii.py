@@ -205,7 +205,7 @@ class TestEndToEndNoPII:
 
                 # Verify partial marker in markdown
                 md_content = md_path.read_text(encoding="utf-8")
-                assert "ЧАСТИЧНЫЙ ОТЧЁТ" in md_content or "резервном режиме" in md_content
+                assert "PARTIAL REPORT" in md_content or "fallback mode" in md_content
 
     def test_llm_returns_phone_email_no_sanitization(self):
         """Test: LLM returns phone/email in text → pipeline OK (no sanitizer)."""

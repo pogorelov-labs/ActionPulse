@@ -76,15 +76,15 @@ class TestRankEmails:
             domain_hints=["megacorp.ru"],
         )
         assert ranked[0].address == "Ruslan.POGORELOV@megacorp.ru"
-        assert "имя и фамилия в адресе" in ranked[0].reasons
-        assert "домен совпадает с сетью" in ranked[0].reasons
+        assert "first+last name in the address" in ranked[0].reasons
+        assert "domain matches the network" in ranked[0].reasons
 
     def test_login_artifact_is_demoted_for_upn(self):
         ranked = sa._rank_emails(
             self._counts(), login="ruapgr2", name_tokens=[], domain_hints=["megacorp.ru"]
         )
         owa = next(c for c in ranked if c.address == "ruapgr2@owa.megacorp.ru")
-        assert "служебный адрес (логин@хост)" in owa.reasons
+        assert "service address (login@host)" in owa.reasons
 
     def test_public_providers_sink(self):
         ranked = sa._rank_emails(

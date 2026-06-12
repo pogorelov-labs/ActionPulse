@@ -261,7 +261,7 @@ class _DummyMetrics:
 
 
 class _FakeDeliverer:
-    def __init__(self, config):
+    def __init__(self, config, language="en"):
         self.config = config
 
     def deliver_digest(self, digest, json_path=None, **kwargs):

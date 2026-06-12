@@ -7,7 +7,10 @@ withheld, badged, never dropped (R3). With no weak items the digest is unchanged
 from digest_core.config import Config
 from digest_core.evidence.citation_gate import CitationGate
 from digest_core.llm.schemas import Digest, EvidenceSpan, Item, Section
+from digest_core.assemble.labels import UNCONFIRMED, section_title
 from digest_core.run import QUARANTINE_SECTION, SECTION_ORDER, _quarantine_weak_items
+
+QUARANTINE_TITLE_EN = section_title(UNCONFIRMED, "en")
 
 
 def _item(title: str, weak: bool | None) -> Item:
@@ -46,7 +49,7 @@ def test_weak_items_move_to_trailing_section():
 
     assert moved == 1
     titles = [section.title for section in digest.sections]
-    assert titles == ["Срочное", "К сведению", QUARANTINE_SECTION]
+    assert titles == ["Срочное", "К сведению", QUARANTINE_TITLE_EN]
     assert [item.title for item in digest.sections[0].items] == ["strong-1"]
     quarantine = digest.sections[-1]
     assert [item.title for item in quarantine.items] == ["weak-1"]
@@ -56,7 +59,7 @@ def test_weak_items_move_to_trailing_section():
 def test_emptied_section_is_removed():
     digest = _digest([Section(title="Срочное", items=[_item("weak-only", True)])])
     assert _quarantine_weak_items(digest) == 1
-    assert [section.title for section in digest.sections] == [QUARANTINE_SECTION]
+    assert [section.title for section in digest.sections] == [QUARANTINE_TITLE_EN]
 
 
 def test_no_weak_items_means_no_change():
@@ -88,5 +91,5 @@ def test_end_to_end_with_real_gate():
 
     assert moved == 1
     assert [item.title for item in digest.sections[0].items] == ["Прислать отчёт"]
-    assert digest.sections[-1].title == QUARANTINE_SECTION
+    assert digest.sections[-1].title == QUARANTINE_TITLE_EN
     assert digest.sections[-1].items[0].title.startswith("Перевести бюджет")

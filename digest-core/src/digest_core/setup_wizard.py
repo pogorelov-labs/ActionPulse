@@ -38,7 +38,7 @@ CONFIG_USER = PROJECT_ROOT / "configs" / "config.yaml"
 DEFAULT_CA_EXPORT_PATH = Path.home() / ".ssl" / "corp-ca.pem"
 DEFAULT_CA_CHAIN_EXPORT_PATH = Path.home() / ".ssl" / "corp-ca-chain.pem"
 
-TOTAL_STEPS = 6
+TOTAL_STEPS = 7
 
 console = Console()
 
@@ -138,8 +138,8 @@ def _write_env_file(values: dict[str, str], ntlm_login_hint: Optional[str] = Non
     lines.append("# DIGEST_LOG_LEVEL=INFO")
     if ntlm_login_hint:
         lines.append("")
-        lines.append("# NTLM-аутентификация EWS использует логин из email (user_login@domain).")
-        lines.append("# Если EWS не пускает, попробуйте ваш AD-логин с этой машины:")
+        lines.append("# EWS NTLM auth uses the login derived from your email (user_login@domain).")
+        lines.append("# If EWS rejects auth, try the AD login of this machine:")
         lines.append(f"# EWS_USER_LOGIN={ntlm_login_hint}")
     lines.append("")
 
@@ -154,6 +154,7 @@ def _write_config_yaml(
     llm_endpoint: str,
     derived: dict[str, str],
     verify_ca: Optional[str],
+    report_language: str = "en",
 ) -> Path:
     """Generate configs/config.yaml from example with user values applied."""
     if not CONFIG_EXAMPLE.exists():
@@ -179,6 +180,10 @@ def _write_config_yaml(
     llm["endpoint"] = llm_endpoint
     config["llm"] = llm
 
+    report = config.get("report", {}) or {}
+    report["language"] = report_language
+    config["report"] = report
+
     CONFIG_USER.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_USER, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -197,11 +202,11 @@ def _test_mm_webhook(url: str, timeout: float = 5.0) -> tuple[bool, str]:
 
         resp = httpx.post(
             url,
-            json={"text": "⌁ ActionPulse: webhook проверен — настройка завершена."},
+            json={"text": "⌁ ActionPulse: webhook verified — setup complete."},
             timeout=timeout,
         )
         if resp.status_code == 200:
-            return True, "доставлено"
+            return True, "delivered"
         return False, f"HTTP {resp.status_code}"
     except Exception as exc:  # noqa: BLE001 — any network failure is a soft result
         return False, type(exc).__name__
@@ -310,16 +315,16 @@ def _mask_secret(value: str, show_tail: int = 4) -> str:
 def _validate_email(value: str) -> Optional[str]:
     """Return error text for an invalid corp email, None when valid."""
     if "@" not in value or value.startswith("@") or value.endswith("@"):
-        return "Email должен быть вида login@corp-domain.ru"
+        return "Email must look like login@corp-domain.ru"
     if "." not in value.partition("@")[2]:
-        return "Домен после @ выглядит неполным (нет точки)"
+        return "The domain after @ looks incomplete (no dot)"
     return None
 
 
 def _validate_url(value: str) -> Optional[str]:
     """Return error text for a non-http(s) URL, None when valid."""
     if not re.match(r"^https?://\S+$", value):
-        return "Нужен полный URL, начинающийся с http:// или https://"
+        return "A full URL starting with http:// or https:// is required"
     return None
 
 
@@ -338,11 +343,11 @@ def _gradient_text(s: str) -> Text:
 
 def _banner() -> None:
     title = _gradient_text("⌁ ActionPulse")
-    title.append(" · настройка", style="bold default")
+    title.append(" · setup", style="bold default")
     body = Text.assemble(
         title,
         "\n",
-        ("6 вопросов · секреты скрыты при вводе · повторный запуск безопасен", "dim"),
+        ("7 questions · secrets hidden while typing · safe to re-run", "dim"),
     )
     console.print()
     console.print(Panel(body, box=box.ROUNDED, border_style="cyan", padding=(0, 2), expand=False))
@@ -351,7 +356,7 @@ def _banner() -> None:
 
 def _step(num: int, title: str, hint: Optional[str] = None) -> None:
     console.print()
-    console.rule(f"[bold]Шаг {num}/{TOTAL_STEPS} · {title}[/]", align="left", style="dim cyan")
+    console.rule(f"[bold]Step {num}/{TOTAL_STEPS} · {title}[/]", align="left", style="dim cyan")
     if hint:
         console.print(f"[dim]{hint}[/]")
 
@@ -367,7 +372,7 @@ def _ask(
         value = Prompt.ask(f"[bold cyan]{label}[/]", default=default, console=console)
         value = (value or "").strip()
         if not value:
-            console.print("  [red]✗[/] Значение не может быть пустым")
+            console.print("  [red]✗[/] The value cannot be empty")
             continue
         error = validate(value) if validate else None
         if error:
@@ -378,7 +383,7 @@ def _ask(
 
 def _ask_secret(label: str, *, existing: str = "") -> str:
     """Masked prompt with confirmation; Enter keeps the existing value on re-runs."""
-    keep_hint = " [dim](Enter — оставить текущий)[/]" if existing else ""
+    keep_hint = " [dim](Enter — keep current)[/]" if existing else ""
     while True:
         value = Prompt.ask(
             f"[bold cyan]{label}[/]{keep_hint}",
@@ -389,12 +394,12 @@ def _ask_secret(label: str, *, existing: str = "") -> str:
         ).strip()
         if not value:
             if existing:
-                console.print("  [green]✓[/] Оставлен текущий секрет")
+                console.print("  [green]✓[/] Kept the current secret")
                 return existing
-            console.print("  [red]✗[/] Значение не может быть пустым")
+            console.print("  [red]✗[/] The value cannot be empty")
             continue
         confirm = Prompt.ask(
-            "[bold cyan]  Повторите для подтверждения[/]",
+            "[bold cyan]  Repeat to confirm[/]",
             password=True,
             default="",
             show_default=False,
@@ -402,39 +407,37 @@ def _ask_secret(label: str, *, existing: str = "") -> str:
         ).strip()
         if value == confirm:
             return value
-        console.print("  [red]✗[/] Значения не совпали, попробуйте ещё раз")
+        console.print("  [red]✗[/] The values did not match, try again")
 
 
 def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
     """CA certificate flow: auto-detect -> Keychain export (macOS) -> manual path."""
     verify_ca: Optional[str] = _auto_detect_ca_path(existing_cfg)
     if verify_ca:
-        console.print(f"  [green]✓[/] Автообнаружен CA-сертификат: [bold]{verify_ca}[/]")
-        if Confirm.ask("[bold cyan]Использовать этот CA для EWS?[/]", default=True):
+        console.print(f"  [green]✓[/] Auto-detected CA certificate: [bold]{verify_ca}[/]")
+        if Confirm.ask("[bold cyan]Use this CA for EWS?[/]", default=True):
             return verify_ca
         verify_ca = None
     else:
-        console.print("  [dim]CA-сертификат в стандартных путях не найден.[/]")
+        console.print("  [dim]No CA certificate found in the standard paths.[/]")
         if sys.platform == "darwin" and Confirm.ask(
-            f"[bold cyan]Экспортировать CA chain из Keychain в "
+            f"[bold cyan]Export the CA chain from Keychain to "
             f"{DEFAULT_CA_CHAIN_EXPORT_PATH}?[/]",
             default=True,
         ):
             default_alias = _guess_default_ca_alias(user_upn)
             default_intermediate_alias = _guess_default_intermediate_ca_alias(user_upn)
             cert_name = _ask(
-                "  Имя Root CA сертификата в Keychain",
+                "  Root CA certificate name in Keychain",
                 default=default_alias or "AO Raiffeisenbank RootCA",
             )
             intermediate_default = default_intermediate_alias or ""
             intermediate_hint = (
-                f"(Enter — {intermediate_default})"
-                if intermediate_default
-                else "(Enter — пропустить)"
+                f"(Enter — {intermediate_default})" if intermediate_default else "(Enter — skip)"
             )
             intermediate_alias: Optional[str] = (
                 Prompt.ask(
-                    f"[bold cyan]  Имя Intermediate CA[/] [dim]{intermediate_hint}[/]",
+                    f"[bold cyan]  Intermediate CA name[/] [dim]{intermediate_hint}[/]",
                     default=intermediate_default,
                     show_default=False,
                     console=console,
@@ -442,7 +445,7 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
                 or None
             )
 
-            with console.status("[cyan]Экспорт CA chain из Keychain…", spinner="dots"):
+            with console.status("[cyan]Exporting the CA chain from Keychain…", spinner="dots"):
                 ok, cert_count = _export_ca_chain_from_keychain(
                     cert_name,
                     DEFAULT_CA_CHAIN_EXPORT_PATH,
@@ -450,46 +453,47 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
                 )
             if ok:
                 verify_ca = str(DEFAULT_CA_CHAIN_EXPORT_PATH)
-                console.print(
-                    f"  [green]✓[/] CA chain экспортирован: {verify_ca} ({cert_count} cert)"
-                )
+                console.print(f"  [green]✓[/] CA chain exported: {verify_ca} ({cert_count} cert)")
             else:
-                console.print("  [yellow]⚠[/] Не удалось экспортировать CA chain из Keychain.")
+                console.print("  [yellow]⚠[/] Failed to export the CA chain from Keychain.")
 
     if not verify_ca and Confirm.ask(
-        "[bold cyan]Указать путь к CA-сертификату вручную?[/]", default=False
+        "[bold cyan]Provide a CA certificate path manually?[/]", default=False
     ):
-        verify_ca = _ask("  Путь к CA-сертификату (.pem)")
+        verify_ca = _ask("  Path to the CA certificate (.pem)")
         if verify_ca and not Path(verify_ca).expanduser().exists():
-            console.print(f"  [yellow]⚠[/] Файл не найден: {verify_ca} (сохраняю путь как есть)")
+            console.print(f"  [yellow]⚠[/] File not found: {verify_ca} (keeping the path as given)")
         elif verify_ca:
             verify_ca = str(Path(verify_ca).expanduser())
     return verify_ca
 
 
-def _summary_table(env_values: dict[str, str], verify_ca: Optional[str]) -> Table:
+def _summary_table(
+    env_values: dict[str, str], verify_ca: Optional[str], report_language: str = "en"
+) -> Table:
     table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
     table.add_column(style="dim", min_width=18)
     table.add_column()
     table.add_row("Email (UPN)", env_values["EWS_USER_UPN"])
     table.add_row("EWS endpoint", env_values["EWS_ENDPOINT"])
-    table.add_row("EWS пароль", _mask_secret(env_values["EWS_PASSWORD"], show_tail=0))
+    table.add_row("EWS password", _mask_secret(env_values["EWS_PASSWORD"], show_tail=0))
     table.add_row("LLM endpoint", env_values["LLM_ENDPOINT"])
-    table.add_row("LLM токен", _mask_secret(env_values["LLM_TOKEN"]))
+    table.add_row("LLM token", _mask_secret(env_values["LLM_TOKEN"]))
     table.add_row("MM webhook", env_values["MM_WEBHOOK_URL"])
-    table.add_row("CA-сертификат", verify_ca or "[dim]— (системные доверенные)[/]")
+    table.add_row("Report language", report_language)
+    table.add_row("CA certificate", verify_ca or "[dim]— (system trust store)[/]")
     return table
 
 
 def _print_detection(det: DetectedEnv) -> None:
     if not det.has_findings():
-        console.print("[dim]Автообнаружение: ничего полезного не нашлось — спрошу всё явно.[/]")
+        console.print("[dim]Autodetection: nothing useful found — asking everything explicitly.[/]")
         return
     lines = "\n".join(f"[green]✓[/] {escape(note)}" for note in det.notes)
     console.print(
         Panel(
             lines,
-            title="[bold]Автообнаружение[/]",
+            title="[bold]Autodetection[/]",
             box=box.ROUNDED,
             border_style="dim cyan",
             expand=False,
@@ -527,7 +531,7 @@ def _merge_aliases(aliases: list[str], det: Optional[DetectedEnv]) -> list[str]:
 
 
 def run_setup(no_autodetect: bool = False) -> None:
-    """Interactive setup: 6 questions, 0 text editors, auto-detected defaults."""
+    """Interactive setup: 7 questions, 0 text editors, auto-detected defaults."""
     try:
         _banner()
 
@@ -537,7 +541,7 @@ def run_setup(no_autodetect: bool = False) -> None:
             existing_env.get("EWS_USER_UPN") and existing_env.get("EWS_ENDPOINT")
         ):
             with console.status(
-                "[cyan]Автообнаружение: логин, имя, Keychain, домены сети…", spinner="dots"
+                "[cyan]Autodetecting: login, name, Keychain, network domains…", spinner="dots"
             ):
                 det = detect_environment()
             _print_detection(det)
@@ -545,13 +549,15 @@ def run_setup(no_autodetect: bool = False) -> None:
         if _run_setup_flow(det=det, force_ask=False):
             return
         console.print()
-        console.rule("[bold]Изменить ответы[/]", align="left", style="dim yellow")
-        console.print("[dim]Пройдём вопросы заново; найденные значения — по умолчанию.[/]")
+        console.rule("[bold]Change answers[/]", align="left", style="dim yellow")
+        console.print(
+            "[dim]Going through the questions again; detected values are the defaults.[/]"
+        )
         if not _run_setup_flow(det=det, force_ask=True):
-            console.print("[yellow]⚠ Отменено — файлы не изменены.[/]")
+            console.print("[yellow]⚠ Cancelled — no files were changed.[/]")
             raise typer.Exit(1)
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[yellow]⚠ Настройка прервана — файлы не изменены.[/]")
+        console.print("\n[yellow]⚠ Setup interrupted — no files were changed.[/]")
         raise typer.Exit(130)
 
 
@@ -562,15 +568,15 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     existing_cfg = _read_existing_config()
     if existing_env:
         console.print(
-            "[dim]Найдена существующая конфигурация — текущие значения "
-            "подставлены как ответы по умолчанию.[/]"
+            "[dim]Existing configuration found — current values are "
+            "pre-filled as the default answers.[/]"
         )
 
     det_upn = det.best_upn if det else None
     det_host = det.ews_host if det else None
 
     # ── 1. Corp email ──
-    _step(1, "Корпоративный email", "Из него выведем EWS endpoint, логин и алиасы.")
+    _step(1, "Corporate email", "Used to derive the EWS endpoint, login and aliases.")
     default_upn = (
         existing_env.get("EWS_USER_UPN")
         or existing_cfg.get("ews", {}).get("user_upn")
@@ -587,8 +593,8 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     ):
         user_upn = det_upn
         console.print(
-            f"  [green]✓[/] Автоматически: [bold]{user_upn}[/] "
-            f"[dim](Keychain + имя + домен; поменять — «n» на финальном подтверждении)[/]"
+            f"  [green]✓[/] Automatic: [bold]{user_upn}[/] "
+            f'[dim](Keychain + name + domain; to change it, answer "n" at the final confirmation)[/]'
         )
     else:
         user_upn = _ask(
@@ -599,12 +605,12 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     derived["aliases"] = _merge_aliases(derived["aliases"], det)
     console.print(
         f"  [green]✓[/] login [bold]{derived['user_login']}[/] · "
-        f"домен [bold]{derived['user_domain']}[/]"
+        f"domain [bold]{derived['user_domain']}[/]"
     )
-    console.print(f"  [green]✓[/] алиасы: [dim]{', '.join(derived['aliases'])}[/]")
+    console.print(f"  [green]✓[/] aliases: [dim]{', '.join(derived['aliases'])}[/]")
 
     # ── 2. EWS endpoint ──
-    _step(2, "Exchange (EWS)", "Адрес EWS-сервиса корпоративной почты.")
+    _step(2, "Exchange (EWS)", "Address of the corporate EWS mail service.")
     detected_ews = f"https://{det_host}/EWS/Exchange.asmx" if det_host else None
     default_ews = (
         existing_env.get("EWS_ENDPOINT")
@@ -622,35 +628,47 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     ):
         ews_endpoint = detected_ews
         console.print(
-            f"  [green]✓[/] Автоматически: [bold]{ews_endpoint}[/] [dim](хост из Keychain, DNS ✓)[/]"
+            f"  [green]✓[/] Automatic: [bold]{ews_endpoint}[/] [dim](host from Keychain, DNS ✓)[/]"
         )
     else:
         ews_endpoint = _ask("EWS endpoint URL", default=default_ews, validate=_validate_url)
 
     # ── 3. EWS password ──
-    _step(3, "Пароль Exchange", "Хранится только локально: ~/.config/actionpulse/env, chmod 600.")
-    ews_password = _ask_secret("EWS пароль", existing=existing_env.get("EWS_PASSWORD", ""))
+    _step(3, "Exchange password", "Stored locally only: ~/.config/actionpulse/env, chmod 600.")
+    ews_password = _ask_secret("EWS password", existing=existing_env.get("EWS_PASSWORD", ""))
 
     # ── 4. LLM endpoint ──
-    _step(4, "LLM Gateway", "Корпоративный LLM-шлюз (доступен только из корп-сети).")
+    _step(4, "LLM Gateway", "Corporate LLM gateway (reachable only from the corp network).")
     default_llm = (
         existing_env.get("LLM_ENDPOINT") or existing_cfg.get("llm", {}).get("endpoint") or None
     )
     llm_endpoint = _ask("LLM Gateway endpoint URL", default=default_llm, validate=_validate_url)
 
     # ── 5. LLM token ──
-    _step(5, "Токен LLM Gateway", "Bearer-токен; в логи и конфиги в открытом виде не попадает.")
-    llm_token = _ask_secret("LLM токен (Bearer)", existing=existing_env.get("LLM_TOKEN", ""))
+    _step(5, "LLM Gateway token", "Bearer token; never written to logs or configs in plain form.")
+    llm_token = _ask_secret("LLM token (Bearer)", existing=existing_env.get("LLM_TOKEN", ""))
 
     # ── 6. Mattermost webhook ──
-    _step(6, "Mattermost", "Incoming webhook канала, куда доставлять дайджест.")
+    _step(6, "Mattermost", "Incoming webhook of the channel that receives the digest.")
     default_mm = existing_env.get("MM_WEBHOOK_URL") or None
     mm_webhook = _ask("Mattermost webhook URL", default=default_mm, validate=_validate_url)
 
+    # ── 7. Report language ──
+    _step(7, "Report language", "Digest output language; everything else stays English.")
+    default_lang = existing_cfg.get("report", {}).get("language") or "en"
+    report_language = Prompt.ask(
+        "[bold cyan]Report language[/]",
+        choices=["en", "ru"],
+        default=default_lang,
+        console=console,
+    )
+
     # ── Optional: CA certificate (auto-first) ──
     console.print()
-    console.rule("[bold]TLS · корпоративный CA[/]", align="left", style="dim cyan")
-    console.print("[dim]Нужен, если корп-сертификаты не доверены системой (EWS за прокси).[/]")
+    console.rule("[bold]TLS · corporate CA[/]", align="left", style="dim cyan")
+    console.print(
+        "[dim]Needed when corp certificates are not trusted by the system (EWS behind a proxy).[/]"
+    )
     verify_ca = _ask_ca(existing_cfg, user_upn)
 
     # ── Review before writing ──
@@ -665,14 +683,14 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     console.print()
     console.print(
         Panel(
-            _summary_table(env_values, verify_ca),
-            title="[bold]Проверьте значения[/]",
+            _summary_table(env_values, verify_ca, report_language),
+            title="[bold]Review the values[/]",
             box=box.ROUNDED,
             border_style="cyan",
             expand=False,
         )
     )
-    if not Confirm.ask("[bold cyan]Сохранить конфигурацию?[/]", default=True):
+    if not Confirm.ask("[bold cyan]Save the configuration?[/]", default=True):
         return False
 
     # ── Write files ──
@@ -682,7 +700,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     if det and det.login and det.login.lower() != derived["user_login"].lower():
         ntlm_hint = det.login
 
-    with console.status("[cyan]Генерация файлов…", spinner="dots"):
+    with console.status("[cyan]Writing files…", spinner="dots"):
         env_path = _write_env_file(env_values, ntlm_login_hint=ntlm_hint)
         config_path = _write_config_yaml(
             user_upn=user_upn,
@@ -690,6 +708,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             llm_endpoint=llm_endpoint,
             derived=derived,
             verify_ca=verify_ca,
+            report_language=report_language,
         )
     console.print(f"  [green]✓[/] {env_path}  [dim](chmod 600)[/]")
     console.print(f"  [green]✓[/] {config_path}")
@@ -701,34 +720,34 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     # ── Live check: Mattermost is the one endpoint reachable from anywhere ──
     # TTY-gated so scripted/piped runs keep a stable answer protocol.
     if sys.stdin.isatty() and Confirm.ask(
-        "[bold cyan]Отправить тестовое сообщение в Mattermost?[/]", default=True
+        "[bold cyan]Send a test message to Mattermost?[/]", default=True
     ):
-        with console.status("[cyan]Проверка webhook…", spinner="dots"):
+        with console.status("[cyan]Checking the webhook…", spinner="dots"):
             mm_ok, mm_detail = _test_mm_webhook(mm_webhook)
         if mm_ok:
-            console.print("  [green]✓[/] Webhook работает — тестовое сообщение в канале")
+            console.print("  [green]✓[/] Webhook works — the test message is in the channel")
         else:
             console.print(
-                f"  [yellow]⚠[/] Webhook не ответил ({mm_detail}). Mattermost доступен и вне "
-                f"корп-сети — проверьте URL (повторная настройка: повторите setup)."
+                f"  [yellow]⚠[/] Webhook did not respond ({mm_detail}). Mattermost is reachable even "
+                f"outside the corp network — check the URL (re-run setup to fix)."
             )
 
     # ── Summary ──
     next_steps = Text.assemble(
-        ("Первый дайджест:\n\n", "bold"),
+        ("First digest:\n\n", "bold"),
         ("  set -a && source ", "default"),
         (str(env_path), "cyan"),
         (" && set +a\n", "default"),
         ("  uv run python -m digest_core.cli diagnose\n", "default"),
         ("  uv run python -m digest_core.cli mm-ping\n", "default"),
         ("  uv run python -m digest_core.cli run --dry-run\n\n", "default"),
-        ("EWS и LLM Gateway доступны только из корпоративной сети.", "dim"),
+        ("EWS and the LLM Gateway are reachable only from the corp network.", "dim"),
     )
     console.print()
     console.print(
         Panel(
             next_steps,
-            title=_gradient_text("⌁ Готово"),
+            title=_gradient_text("⌁ Done"),
             box=box.ROUNDED,
             border_style="green",
             padding=(1, 2),

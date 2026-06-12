@@ -73,7 +73,7 @@ def test_trace_line_helper_edge_cases():
     weak = SimpleNamespace(evidence_id="ev_1", weak_evidence=True)
     line = deliverer._format_trace_line(weak, "/p.json")
     assert "↳ ev: ev_1" in line
-    assert "⚠ слабое обоснование" in line
+    assert "⚠ weak evidence" in line
 
 
 def test_status_item_has_no_trace_line():

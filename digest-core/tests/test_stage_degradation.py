@@ -74,7 +74,7 @@ class _DummyMetrics:
 class _FakeDeliverer:
     sent = []
 
-    def __init__(self, config):
+    def __init__(self, config, language="en"):
         pass
 
     def deliver_digest(self, digest, json_path=None, **kwargs):
@@ -171,7 +171,7 @@ def test_threads_failure_degrades_to_partial(monkeypatch, tmp_path):
     assert result  # exit 0 — degraded, not crashed
     assert result.citation_validation_ok is True
     payload = json.loads((out / "digest-2026-03-29.json").read_text(encoding="utf-8"))
-    assert "Статус" in [s["title"] for s in payload["sections"]]
+    assert "Status" in [s["title"] for s in payload["sections"]]
     assert _FakeDeliverer.sent  # the degraded digest was delivered
 
 

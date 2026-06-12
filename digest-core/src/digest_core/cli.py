@@ -268,7 +268,7 @@ def setup(
         help="Skip local autodetection (login, RealName, Keychain emails, network domains).",
     ),
 ):
-    """Interactive setup: configure ActionPulse in 6 questions, no text editor needed.
+    """Interactive setup: configure ActionPulse in 7 questions, no text editor needed.
 
     On first run the wizard auto-detects the machine login, real name, corp
     email candidates (Keychain metadata scan, local-only) and network domains,

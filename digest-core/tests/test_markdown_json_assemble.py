@@ -102,7 +102,7 @@ def test_markdown_source_citations(markdown_writer, sample_digest):
     output = markdown_writer.write_digest(sample_digest, "/tmp/test.md")
 
     # Check for source citations
-    assert "Источник:" in output
+    assert "Source:" in output
     assert "evidence ev-001" in output
     assert "evidence ev-002" in output
 
@@ -111,7 +111,7 @@ def test_markdown_empty_day(markdown_writer, empty_digest):
     """Test markdown output for empty day."""
     output = markdown_writer.write_digest(empty_digest, "/tmp/test.md")
 
-    assert "За период релевантных действий не найдено" in output
+    assert "No relevant actions found for the period" in output
 
 
 def test_json_schema_validation(json_writer, sample_digest):
@@ -175,7 +175,7 @@ def test_markdown_file_creation(markdown_writer, sample_digest, tmp_path):
     markdown_writer.write_digest(sample_digest, str(output_file))
 
     assert output_file.exists()
-    assert output_file.read_text().startswith("# Дайджест действий")
+    assert output_file.read_text().startswith("# Action digest")
 
 
 def test_json_file_creation(json_writer, sample_digest, tmp_path):

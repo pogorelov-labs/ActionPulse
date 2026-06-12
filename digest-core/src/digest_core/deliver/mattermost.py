@@ -7,14 +7,21 @@ from typing import List
 import httpx
 import structlog
 
+from digest_core.assemble.labels import (
+    DEFAULT_LANGUAGE,
+    FYI,
+    STATUS,
+    confidence_text,
+    display_title,
+    normalize_section,
+    report_strings,
+)
 from digest_core.config import MattermostDeliverConfig
 from digest_core.llm.schemas import Digest
 
 logger = structlog.get_logger()
 
-DEFAULT_PING_TEXT = (
-    "ActionPulse: проверка incoming webhook (mm-ping). " 'Свой текст: `mm-ping --message "..."`.'
-)
+DEFAULT_PING_TEXT = report_strings(DEFAULT_LANGUAGE)["mm_ping_text"]
 
 
 def ping_mattermost_webhook(
@@ -40,8 +47,10 @@ def ping_mattermost_webhook(
 class MattermostDeliverer:
     """Send digest messages to Mattermost via incoming webhook."""
 
-    def __init__(self, config: MattermostDeliverConfig):
+    def __init__(self, config: MattermostDeliverConfig, language: str = DEFAULT_LANGUAGE):
         self.config = config
+        self.language = language
+        self._s = report_strings(language)
 
     def deliver_digest(
         self,
@@ -82,20 +91,19 @@ class MattermostDeliverer:
         json_path: str | None = None,
         llm_budget: dict | None = None,
     ) -> str:
-        blocks: List[str] = [f"## Дайджест действий — {digest.digest_date}"]
+        blocks: List[str] = [f"## {self._s['digest_header']} — {digest.digest_date}"]
 
         for section in digest.sections:
             if not section.items:
                 continue
-            section_lines = [f"**{section.title}**"]
+            section_lines = [f"**{display_title(section.title, self.language)}**"]
             for index, item in enumerate(section.items, start=1):
-                due_part = f" | срок: {item.due}" if item.due else ""
-                confidence_part = f" | уверенность: {self._confidence_label(item.confidence)}"
-                prefix = (
-                    "-"
-                    if section.title == "К сведению" or section.title == "Статус"
-                    else f"{index}."
+                due_part = f" | {self._s['due_label'].lower()}: {item.due}" if item.due else ""
+                confidence_part = (
+                    f" | {self._s['confidence_label'].lower()}:"
+                    f" {self._confidence_label(item.confidence)}"
                 )
+                prefix = "-" if normalize_section(section.title) in (FYI, STATUS) else f"{index}."
                 section_lines.append(f"{prefix} {item.title}{due_part}{confidence_part}")
                 trace_line = self._format_trace_line(item, json_path)
                 if trace_line:
@@ -129,9 +137,9 @@ class MattermostDeliverer:
         if json_path:
             line += f" | [json]({json_path}#{evidence_id})"
         if getattr(item, "weak_evidence", False):
-            line += " | ⚠ слабое обоснование"
+            line += f" | ⚠ {self._s['weak_basis']}"
         if getattr(item, "seen_before", False):
-            line += " | ↻ повтор"
+            line += f" | ↻ {self._s['repaired']}"
         return line
 
     def _split_message(self, message: str, max_length: int) -> List[str]:
@@ -164,7 +172,7 @@ class MattermostDeliverer:
 
         wrapped_chunks = []
         for index, chunk in enumerate(chunks, start=1):
-            header = f"## Дайджест действий — часть {index}/{total}"
+            header = "## " + self._s["digest_part_header"].format(index=index, total=total)
             wrapped_chunks.append(f"{header}\n\n{chunk}")
         return wrapped_chunks
 
@@ -194,14 +202,5 @@ class MattermostDeliverer:
     def _count_items(digest: Digest) -> int:
         return sum(len(section.items) for section in digest.sections)
 
-    @staticmethod
-    def _confidence_label(confidence: float) -> str:
-        if confidence >= 0.9:
-            return "очень высокая"
-        if confidence >= 0.7:
-            return "высокая"
-        if confidence >= 0.5:
-            return "средняя"
-        if confidence >= 0.3:
-            return "низкая"
-        return "очень низкая"
+    def _confidence_label(self, confidence: float) -> str:
+        return confidence_text(confidence, self.language)
