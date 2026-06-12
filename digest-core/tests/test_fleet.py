@@ -171,3 +171,46 @@ def test_429_penalizes_shared_broker(monkeypatch):
 
     # The bge-m3 bucket is now cooling down (>= 60s floor).
     assert broker.acquire("bge-m3") >= 60.0
+
+
+class _LaneSink:
+    def __init__(self):
+        self.events = []
+
+    def on_lane_update(self, lane, state):
+        self.events.append((lane, dict(state)))
+
+
+def test_live_call_emits_lane_updates(monkeypatch):
+    monkeypatch.setenv("LLM_TOKEN", "t")
+    sink = _LaneSink()
+    http = Mock()
+    http.post.return_value = _resp({"results": [{"index": 0, "relevance_score": 0.9}]})
+    client = RerankerClient(
+        _config(),
+        rate_broker=RateBroker({"bge-reranker-v2-m3": 10.0}),
+        http_client=http,
+        stage="reranker",
+        sink=sink,
+    )
+    client.score("q", ["d"])
+    assert [state["in_flight"] for _, state in sink.events] == [1, 0]
+    lane, state = sink.events[0]
+    assert lane == state["model"] == "bge-reranker-v2-m3"
+    assert state["stage"] == "reranker"
+    assert state["calls"] == 1
+    assert state["rpm_cap"] == 10 and state["rpm_used"] == 1
+
+
+def test_replay_emits_no_lane_updates(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_TOKEN", "t")
+    recording = tmp_path / "fleet.json"
+    http = Mock()
+    http.post.return_value = _resp({"results": [{"index": 0, "relevance_score": 0.9}]})
+    recorder = RerankerClient(_config(), http_client=http, record=str(recording))
+    recorder.score("q", ["d"])
+
+    sink = _LaneSink()
+    replayer = RerankerClient(_config(), replay=str(recording), stage="reranker", sink=sink)
+    replayer.score("q", ["d"])
+    assert sink.events == []  # lanes are never theater: no network, no lane

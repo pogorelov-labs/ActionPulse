@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Deque, Dict, Optional
 
 # Sensible default RPM per known fleet model (see REDESIGN_PLAN.md §0.3). Unknown
 # models fall back to ``default_rpm``.
@@ -90,6 +91,10 @@ class RateBroker:
         self._locks: Dict[str, threading.Lock] = {}
         self._registry_lock = threading.Lock()
         self._stage_calls: Dict[str, int] = {}
+        # Lane telemetry (§4.3): acquire timestamps in the last 60s per model —
+        # the honest "RPM n/cap" the live display shows. Passive: renderers
+        # pull snapshots; the broker never knows about sinks.
+        self._recent_acquires: Dict[str, Deque[float]] = {}
 
     # -- model rate buckets --------------------------------------------------
 
@@ -155,7 +160,36 @@ class RateBroker:
                 bucket.tokens = 0.0
             else:
                 bucket.tokens -= 1.0
+            self._note_acquire(model)
             return waited
+
+    # -- lane telemetry (§4.3) -------------------------------------------------
+
+    def _note_acquire(self, model: str) -> None:
+        with self._registry_lock:
+            window = self._recent_acquires.setdefault(model, deque())
+            now = self._clock()
+            window.append(now)
+            while window and now - window[0] > 60.0:
+                window.popleft()
+
+    def usage_snapshot(self, model: str) -> Dict[str, Any]:
+        """Requests in the trailing 60s vs the model's cap (for lane rendering)."""
+        now = self._clock()
+        with self._registry_lock:
+            window = self._recent_acquires.get(model)
+            used = 0
+            if window:
+                while window and now - window[0] > 60.0:
+                    window.popleft()
+                used = len(window)
+        bucket = self._buckets.get(model)
+        penalty = max(0.0, bucket.penalty_until - now) if bucket else 0.0
+        return {
+            "rpm_used": used,
+            "rpm_cap": int(self._rpm_for(model)),
+            "penalty_remaining_s": round(penalty, 1),
+        }
 
     def penalize(self, model: str, retry_after: float) -> None:
         """Apply a 429 cool-down to ``model`` (floored at 60s) and drain its bucket."""

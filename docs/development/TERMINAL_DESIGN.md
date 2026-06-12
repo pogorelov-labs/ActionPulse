@@ -177,6 +177,14 @@ line when the stage ends. Lane cap 4; beyond that, aggregate: `+2 модели �
   one warn line per retry (rare by construction). Producers never call sinks directly —
   every emission goes through the swallow-and-log `progress.emit()` helper (a broken
   renderer must never break the pipeline).
+- **Lane events (fleet track, 2026-06-12)** ◆: `on_lane_update(lane, state)` is emitted
+  by the gateway/fleet clients around **real network calls only** — replay runs show no
+  lanes (lanes are never theater). One lane per MODEL (the honest unit: intra-model
+  serial / cross-model parallel); `state` carries `stage`, `in_flight`, `calls`, and the
+  broker's trailing-60s `rpm_used`/`rpm_cap` (+ `penalty_remaining_s` after a 429, which
+  renders as a warn `429 cool-down Ns`). Renderers clear lanes on stage transitions —
+  the permanent ✓ line carries the totals. Telemetry is never load-bearing: producer
+  hooks degrade to zeroed usage rather than raise.
 - `run.py` emits events; sinks render. structlog JSON logging is **unchanged** — logs are
   a parallel channel, never printed through the live region (P3; rich `redirect_stdout`
   exists ★ but our logs go to stderr/file by design).
@@ -332,7 +340,7 @@ implements piped-stdin scripted mode (E2E-tested answer protocol).
 | `cli diagnose` | ◐ plain echo with ✓/✗ glyph tokens | colorize opportunistically |
 | `actionpulse` launcher menu | ✅ compliant (§5.2 selector, Esc=dismiss via `cancel_value`, Ctrl+C=130, glyph fallbacks, masked config view) | — |
 | `actionpulse read` (digest reader) | ✅ compliant (§5.1 drill-down posture, §5.2 paged selectors ≤9, Esc walks up one level, cards into scrollback, non-TTY prints the markdown) | — |
-| Fleet display | — (REDESIGN_PLAN PR2+) | build against §4.3 from day one |
+| Fleet display | ✅ lanes shipped per §4.3 (gateway/fleet emit `on_lane_update` on real calls; cap 4 + aggregate; RPM from the broker's trailing-60s window; cleared on stage end) | multi-lane appears live once the fleet flags flip post-PC-2 — today's default run shows the single extractor lane |
 
 ---
 

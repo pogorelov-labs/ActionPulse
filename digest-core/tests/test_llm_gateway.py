@@ -526,3 +526,33 @@ def test_quality_retry_emits_attempt_2_of_2(monkeypatch):
 
     assert ("attempt", "qwen35-397b-a17b", 2, 2) in sink.events
     assert gateway.get_request_stats()["run_retries"] == 1
+
+
+def test_network_call_emits_lane_updates(monkeypatch):
+    """§4.3: the gateway reports its lane (in-flight + RPM) around real calls."""
+    monkeypatch.setenv("LLM_TOKEN", "test-token")
+
+    class LaneSink:
+        def __init__(self):
+            self.events = []
+
+        def on_lane_update(self, lane, state):
+            self.events.append((lane, dict(state)))
+
+    sink = LaneSink()
+    config = LLMConfig(
+        endpoint="https://api.openai.com/v1/chat/completions",
+        model="qwen35-397b-a17b",
+        timeout_s=30,
+    )
+    gateway = LLMGateway(config, sink=sink, rate_broker=RateBroker({"qwen35-397b-a17b": 15.0}))
+    gateway.client.post = Mock(
+        return_value=_mock_response('{"sections": [{"title": "Test", "items": []}]}')
+    )
+    gateway.extract_actions([], "Return strict JSON", "trace")
+
+    assert [state["in_flight"] for _, state in sink.events] == [1, 0]
+    _, first = sink.events[0]
+    assert first["model"] == "qwen35-397b-a17b"
+    assert first["stage"] == "extractor"
+    assert first["rpm_cap"] == 15 and first["rpm_used"] == 1

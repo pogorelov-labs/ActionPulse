@@ -344,6 +344,34 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         stage banner; judge/reranker keep their own stage labels."""
         return "llm" if self._stage == "extractor" else self._stage
 
+    def _emit_lane(self, in_flight: int) -> None:
+        """Lane telemetry (design §4.3) — real network calls only, never replay.
+
+        Telemetry is never load-bearing: any broker oddity (incl. test doubles
+        without ``usage_snapshot``) degrades to zeroed usage, never raises.
+        """
+        model = self.config.model
+        usage = {"rpm_used": 0, "rpm_cap": 0, "penalty_remaining_s": 0.0}
+        if self._rate_broker is not None:
+            try:
+                candidate = self._rate_broker.usage_snapshot(model)
+                if isinstance(candidate, dict):
+                    usage = candidate
+            except Exception:  # noqa: BLE001 - telemetry must not break calls
+                pass
+        emit(
+            self._sink,
+            "on_lane_update",
+            model,
+            {
+                "model": model,
+                "stage": self._stage,
+                "in_flight": in_flight,
+                "calls": self._run_calls_made,
+                **usage,
+            },
+        )
+
     def _make_request_with_retry(
         self, messages: List[Dict[str, str]], trace_id: str, digest_date: str = None
     ) -> Dict[str, Any]:
@@ -440,6 +468,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             self._rate_broker.acquire(self.config.model)
 
         self._run_calls_made += 1
+        self._emit_lane(in_flight=1)
 
         start_time = time.time()
         tokens_in = None
@@ -456,7 +485,10 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         headers = self.config.headers.copy()
         headers["Authorization"] = f"Bearer {self.config.get_token()}"
 
-        response = self.client.post(self.config.endpoint, json=payload, headers=headers)
+        try:
+            response = self.client.post(self.config.endpoint, json=payload, headers=headers)
+        finally:
+            self._emit_lane(in_flight=0)
         self.last_latency_ms = int((time.time() - start_time) * 1000)
 
         try:

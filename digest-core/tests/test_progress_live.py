@@ -176,3 +176,64 @@ class TestIntraStageFooter:
         sink.on_stage_start("threads")
         assert "10 messages" not in sink._footer().text.plain
         sink.on_run_end("ok")
+
+
+class TestFleetLanes:
+    """§4.3: one line per model lane, capped, cleared on stage transitions."""
+
+    def _lane(self, model, **overrides):
+        state = {
+            "model": model,
+            "stage": "extractor",
+            "in_flight": 0,
+            "calls": 1,
+            "rpm_used": 3,
+            "rpm_cap": 15,
+            "penalty_remaining_s": 0.0,
+        }
+        state.update(overrides)
+        return state
+
+    def test_single_lane_renders_rpm_and_calls(self):
+        sink = RichLiveSink(console=_tty_console())
+        sink._stage = "llm"
+        sink._stage_started = 0.0
+        sink.on_lane_update("qwen35-397b-a17b", self._lane("qwen35-397b-a17b", in_flight=1))
+        footer = sink._footer()
+        text = "\n".join(r.plain for r in footer.renderables[1:])
+        assert "qwen35-397b-a17b" in text
+        assert "1 in-flight" in text
+        assert "RPM 3/15" in text
+        assert "1 call" in text
+
+    def test_lane_cap_aggregates_beyond_four(self):
+        sink = RichLiveSink(console=_tty_console())
+        sink._stage = "fleet"
+        sink._stage_started = 0.0
+        for index in range(6):
+            sink.on_lane_update(f"model-{index}", self._lane(f"model-{index}", in_flight=1))
+        lines = sink._lane_lines()
+        assert len(lines) == 4  # 3 visible + the aggregate (footer stays ≤8 lines)
+        assert "+3 more" in lines[-1].plain
+        assert "3 in-flight" in lines[-1].plain
+
+    def test_penalty_renders_cooldown_warning(self):
+        sink = RichLiveSink(console=_tty_console())
+        sink._stage = "llm"
+        sink._stage_started = 0.0
+        sink.on_lane_update(
+            "qwen35-397b-a17b",
+            self._lane("qwen35-397b-a17b", penalty_remaining_s=42.0),
+        )
+        line = sink._lane_lines()[0]
+        assert "429 cool-down 42s" in line.plain
+        assert str(line.style) == "ap.warn"
+
+    def test_lanes_clear_on_stage_transitions(self):
+        sink = RichLiveSink(console=_tty_console())
+        sink.on_stage_start("llm")
+        sink.on_lane_update("m", self._lane("m"))
+        assert sink._lanes
+        sink.on_stage_end("llm", {"items": 1}, 10)
+        assert not sink._lanes
+        sink.on_run_end("ok")

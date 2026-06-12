@@ -66,6 +66,7 @@ def _ctx(judge_cfg, *, replay_llm=None, broker=None):
         trace_id="t",
         metrics=None,
         run_meta={},
+        sink=None,
     )
 
 

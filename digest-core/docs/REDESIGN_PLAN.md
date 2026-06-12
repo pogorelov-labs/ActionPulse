@@ -26,7 +26,7 @@
 | Cleanup: `hierarchical/` | ☑ | deleted (CLAUDE.md gotcha). Deviation: `assemble/jsonout.py` was NOT deleted — it stayed wired for tests and now carries the U4 reader fields |
 | PR12b source adapters | ◐ | `ingest/envelope.py` + `ingest/source_adapter.py` shipped; **open:** `EWSIngest` still fetches hardcoded `account.inbox` (`EWSConfig.folders` not honored) |
 | PR12a embedding threading | ☐ | `threads/build.py` still subj-hash + text-similarity clustering; build behind a flag on `EmbeddingsClient` (replay-sidecar testable offline) |
-| §4.3 fleet lane display ("PR2 gateway hooks" in the terminal roadmap) | ☐ | `on_lane_update` seam + RichLiveSink lanes — the active fleet-track item (TERMINAL_DESIGN_ROADMAP T5 note) |
+| §4.3 fleet lane display ("PR2 gateway hooks" in the terminal roadmap) | ☑ | `on_lane_update` emitted by `LLMGateway`/`FleetClient` around real network calls (never replay); broker `usage_snapshot()` (trailing-60s RPM + 429 cool-down); RichLiveSink lanes (cap 4 + aggregate, cleared on stage end). Multi-lane shows live once fleet flags flip (PC-2) |
 | PC-1 (service-account model) / PC-2 (per-endpoint data-handling ADR) | ☐ | **corp-only**; all fleet live-flags stay off until then (`reranker.enabled`, `enable_relevance`, `judge.enabled`) |
 
 Beyond the plan, the same period also shipped: EP-10 best-of-N with gate-as-selector,

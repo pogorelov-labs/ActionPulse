@@ -53,9 +53,14 @@ def screenshot_run_progress() -> None:
     c.print(_ok_line("threads", {"messages": 124, "threads": 37}, 230), highlight=False)
     c.print(_ok_line("evidence", {"threads": 37, "chunks": 41}, 820), highlight=False)
     c.print(_ok_line("select", {"selected": 28, "of": 41}, 110), highlight=False)
-    # The live footer, mid-stage (spinner first frame + warming elapsed + note).
+    # The live footer, mid-stage (spinner first frame + warming elapsed + note
+    # + the §4.3 model lane with the broker's trailing-60s RPM).
     c.print("[ap.warn]⠹[/] [ap.em]LLM      [/] [ap.warn]12.4s[/]", highlight=False)
     c.print("  [ap.dim]└ attempt 1/2 · qwen35-397b-a17b[/]", highlight=False)
+    c.print(
+        "  └ qwen35-397b-a17b   extractor · 1 in-flight · 1 call · RPM 3/15",
+        highlight=False,
+    )
     _save(c, "run-progress.svg", "actionpulse run")
 
 
