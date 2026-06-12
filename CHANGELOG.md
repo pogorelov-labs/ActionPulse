@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Launcher menu synced with TERMINAL_DESIGN.md**: Esc at the menu now **dismisses** (exit 0) instead of committing the highlighted action — previously Esc would have launched a full digest run with delivery, inverting §5.2's cancel semantics (`choose()` gains `cancel_value`; wizard questions keep Esc-restores-default). Ctrl+C at the menu now honors the §5.5 abort contract (exit 130, was 0). The `❯` pointer and `↑↓` hint gain ASCII fallbacks per the §7 degradation matrix; the post-action "Back to menu" one-option menu is replaced by a single dim Enter prompt (P3: tidier scrollback). Design doc updated: §5.2 top-level-menu Esc clarification, §9 compliance row for the launcher.
+
 ### Added
 - **Global `actionpulse` command + interactive menu**: the installer drops a launcher in `~/.local/bin/actionpulse`, so the tool runs from anywhere. Bare `actionpulse` on a terminal opens an arrow-key menu (Run · Dry run · Diagnose · Settings · Show config (masked) · Quit) built on the §5.2 selector, looping until Quit; non-TTY/piped invocation prints help instead, so scripting is unaffected. The CLI now **auto-loads `~/.config/actionpulse/env`** at startup, so `actionpulse run` works without `set -a && source …`. `actionpulse` entry point added to the package; subcommands (`run`, `setup`, `diagnose`, …) work identically through the command.
 

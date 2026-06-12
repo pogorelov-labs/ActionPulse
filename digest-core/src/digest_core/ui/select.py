@@ -28,6 +28,7 @@ from typing import Optional, Sequence, Tuple
 from rich.console import Console
 
 from digest_core.ui.console import get_console
+from digest_core.ui.glyphs import glyphs_unicode_ok
 
 # Action results from apply_key
 MOVE = "move"
@@ -63,6 +64,28 @@ def apply_key(state: MenuState, key: str) -> Tuple[str, MenuState]:
     return NOOP, state
 
 
+def resolve_choice(
+    action: str,
+    state: MenuState,
+    options: Sequence[Tuple[str, str]],
+    cancel_value: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Final (value, text) for a finished selection.
+
+    Esc semantics (§5.2): inside a *question* (no cancel_value) Esc restores
+    the default option. At a top-level navigation menu the caller passes
+    cancel_value (e.g. "quit") — Esc then dismisses the menu instead of
+    committing the highlighted action (a cancel gesture must never run
+    something).
+    """
+    if action == CANCEL and cancel_value is not None:
+        for value, text in options:
+            if value == cancel_value:
+                return value, text
+        return cancel_value, cancel_value
+    return options[state.index]
+
+
 def _read_key(stdin=sys.stdin) -> str:
     """One logical key from a cbreak tty: arrows decoded, Ctrl+C raised.
 
@@ -86,7 +109,10 @@ def _read_key(stdin=sys.stdin) -> str:
         waitable = stdin
 
     ch = read1()
-    if ch == "\x03":  # Ctrl+C in cbreak mode arrives as a byte
+    if ch == "\x03":
+        # In cbreak mode ISIG stays on, so a real terminal delivers ^C as
+        # SIGINT (KeyboardInterrupt) before we ever see a byte — this branch
+        # is defense for raw-mode-like environments where \x03 does arrive.
         raise KeyboardInterrupt
     if ch in ("\r", "\n"):
         return "enter"
@@ -117,32 +143,45 @@ def choose(
     options: Sequence[Tuple[str, str]],
     default_index: int = 0,
     console: Optional[Console] = None,
+    cancel_value: Optional[str] = None,
 ) -> str:
     """Interactive picker; returns the chosen option value.
 
     Caller contract: stdin is a tty (gate with ``sys.stdin.isatty()``); at
     most 9 options (the 1-9 quick-select invariant — asserted).
+    cancel_value: what Esc returns at a top-level menu (e.g. "quit"); without
+    it Esc restores the default option (wizard-question semantics, §5.2).
     """
     assert 1 <= len(options) <= 9, "menus are 1..9 options (§5.2 quick-select)"
     out = console or get_console()
     state = MenuState(default_index, len(options), default_index)
 
-    out.print(f"[ap.accent.bold]{label}[/] [ap.dim](↑↓/jk · Enter · Esc = default)[/]")
+    unicode_ok = glyphs_unicode_ok()
+    arrows = "↑↓" if unicode_ok else "arrows"
+    sep = " · " if unicode_ok else " / "
+    esc_hint = "Esc = cancel" if cancel_value is not None else "Esc = default"
+    out.print(f"[ap.accent.bold]{label}[/] [ap.dim]({arrows}/jk{sep}Enter{sep}{esc_hint})[/]")
+    pointer = "❯" if unicode_ok else ">"
 
     def render(first: bool) -> None:
         if not first:
             # Overwrite, don't clear (§3): move up over the option block.
             out.file.write(f"\x1b[{len(options)}A")
         for i, (_, text) in enumerate(options):
-            marker = "[ap.accent]❯[/]" if i == state.index else " "
+            marker = f"[ap.accent]{pointer}[/]" if i == state.index else " "
             style = "ap.em" if i == state.index else "ap.dim"
             out.print(f" {marker} [{style}]{i + 1}. {text}[/]", highlight=False)
 
     render(first=True)
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
+    action = CONFIRM
     try:
-        tty.setcbreak(fd)
+        # TCSANOW, not the default TCSAFLUSH: setcbreak's default discards
+        # pending input, silently eating a keystroke typed in the window
+        # between the menu rendering and cbreak engaging (found via pty test:
+        # an early Esc vanished and the menu blocked forever).
+        tty.setcbreak(fd, termios.TCSANOW)
         while True:
             action, state = apply_key(state, _read_key())
             if action == MOVE:
@@ -152,7 +191,7 @@ def choose(
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
-    value, text = options[state.index]
+    value, text = resolve_choice(action, state, options, cancel_value)
     # Collapse the menu into a single answer line (scrollback stays tidy).
     out.file.write(f"\x1b[{len(options) + 1}A\x1b[J")
     out.print(f"[ap.accent.bold]{label}[/]: {text}", highlight=False)
