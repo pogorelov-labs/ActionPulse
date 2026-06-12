@@ -103,11 +103,19 @@ class TestResolveSink:
         assert isinstance(resolve_sink("auto", False), PlainSink)
 
 
+def _strip_ansi(text: str) -> str:
+    # CI runners render typer's rich help with ANSI spans that split option
+    # names mid-word; strip codes before asserting (the #95 CI failure).
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 class TestCliFlag:
     def test_help_mentions_progress(self):
         result = CliRunner().invoke(app, ["run", "--help"])
         assert result.exit_code == 0
-        assert "--progress" in result.output
+        assert "--progress" in _strip_ansi(result.output)
 
     def test_invalid_value_exits_1(self):
         result = CliRunner().invoke(app, ["run", "--progress", "disco"])
