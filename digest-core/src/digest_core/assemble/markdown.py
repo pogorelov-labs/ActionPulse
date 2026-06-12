@@ -277,6 +277,7 @@ class MarkdownAssembler:
             evidence_refs = [
                 line
                 for line in lines
+                # i18n-ok: validates rendered content in both report languages
                 if ("Источник:" in line or "Source:" in line) and "evidence" in line
             ]
             if not evidence_refs:
