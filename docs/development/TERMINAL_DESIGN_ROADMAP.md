@@ -5,6 +5,8 @@ Companion to [`TERMINAL_DESIGN.md`](TERMINAL_DESIGN.md) (the rules). This docume
 cannot silently rot, and (B) the **execution roadmap** — the PR-by-PR plan to bring every
 surface to compliance, including the **English-by-default language program**.
 
+**Both tracks complete (2026-06-12, PRs #90–#98):** L1 + T1–T7 shipped; remaining work lives in L2/L3 (corp validation + docs translation) and the fleet-lane rendering that activates with REDESIGN PR2.
+
 Status legend: ☐ planned · ◐ in progress · ☑ done. Update this file in every PR that
 advances a step (same discipline as `REDESIGN_PLAN.md`).
 
@@ -21,7 +23,7 @@ The design system binds at five layers. Documents alone rot; the structural laye
 | 2 | **Review gate** | `CONTRIBUTING.md` → "Terminal output checklist" (5 checks below) — reviewers apply it to any PR that touches user-visible output. | ☑ this PR |
 | 3 | **Structural: the `ui` module** | All tokens/glyphs/console construction live in `digest_core/ui/` (T1). Feature code imports tokens; it never constructs styles. A rule that lives in code cannot be forgotten — this is the Lip Gloss "structure vs style" lesson applied. | ☑ T1 |
 | 4 | **Conformance test** | `tests/test_terminal_conformance.py` (T1): walks the source tree — RGB/hex outside `ui/`, `Console(`/`Theme(` outside the factory, spinner literals outside `ui/`, inline Cyrillic in renderer files (labels.py exempt; deliberate bilingual lines carry `# i18n-ok`). Runs in `make test` → CI. | ☑ T1 |
-| 5 | **Architecture law** | `ARCHITECTURE.md` ADR — "Terminal surfaces follow the design system; live displays use the split-region ProgressSink architecture" (next free ADR number, verify at PR time — ADR-012 is the latest known). | ☐ T7 |
+| 5 | **Architecture law** | `ARCHITECTURE.md` **ADR-013** — terminal surfaces follow the design system; split-region ProgressSink architecture; EN default; no mouse; append-only degradation. | ☑ T7 |
 
 ### Reviewer checklist (the §2 of CONTRIBUTING.md)
 
@@ -153,12 +155,12 @@ degradation matrix verified per §7 (TTY/ASCII/pipe/CI/dumb).
 Interface shaped per §4.3 so REDESIGN_PLAN PR2 (fleet/RateBroker) plugs lanes in without
 renderer changes. Exit: replay-driven test shows attempt/token counters.
 
-#### T6 — wizard select menus + diagnose tokens ☐ *(S)*
+#### T6 — wizard select menus + diagnose tokens ☑ *(feat/wizard-menu-adr, 2026-06-12)*
 First real menu = the L1 language question → adopt §5.2 keymap (questionary or
 hand-rolled 2-option selector; **no mouse**). `diagnose` adopts ✓/✗ tokens. Exit:
 arrows/j-k/Esc behavior matches the table; piped protocol still scriptable.
 
-#### T7 — ADR + matrix CI job ☐ *(S)*
+#### T7 — ADR + matrix CI job ☑ *(feat/wizard-menu-adr, 2026-06-12 — ADR-013; `terminal-matrix` CI job runs the progress/ui/conformance tests under `TERM=dumb` + `NO_COLOR=1`)*
 ADR in `ARCHITECTURE.md` (verify next free number); optional CI job running the sink
 tests under `TERM=dumb`, `NO_COLOR=1`, piped stdout to lock the degradation matrix.
 

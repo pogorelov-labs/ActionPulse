@@ -28,7 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from digest_core.config import PROJECT_ROOT
-from digest_core.ui import SPINNER, get_console, gradient_text
+from digest_core.ui import SPINNER, choose, get_console, gradient_text
 from digest_core.setup_autodetect import CONF_HIGH, DetectedEnv, detect_environment
 
 ENV_DIR = Path.home() / ".config" / "actionpulse"
@@ -644,12 +644,22 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     # ── 7. Report language ──
     _step(7, "Report language", "Digest output language; everything else stays English.")
     default_lang = existing_cfg.get("report", {}).get("language") or "en"
-    report_language = Prompt.ask(
-        "[ap.accent.bold]Report language[/]",
-        choices=["en", "ru"],
-        default=default_lang,
-        console=console,
-    )
+    if sys.stdin.isatty():
+        report_language = choose(
+            "Report language",
+            # i18n-ok: a language names itself in its own language
+            [("en", "English (default)"), ("ru", "Russian · Русский")],
+            default_index=0 if default_lang == "en" else 1,
+            console=console,
+        )
+    else:
+        # Piped/scripted runs keep the line protocol stable.
+        report_language = Prompt.ask(
+            "[ap.accent.bold]Report language[/]",
+            choices=["en", "ru"],
+            default=default_lang,
+            console=console,
+        )
 
     # ── Optional: CA certificate (auto-first) ──
     console.print()

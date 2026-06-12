@@ -13,6 +13,7 @@ from digest_core.deliver.mattermost import ping_mattermost_webhook
 from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
 from digest_core.ui import resolve_sink
+from digest_core.ui.glyphs import FAIL, OK
 from digest_core.config import Config
 
 app = typer.Typer(add_completion=False)
@@ -198,13 +199,13 @@ def diagnose():
             ):
                 value = os.environ.get(var)
                 status = f"set ({len(value)} chars)" if value else "NOT SET"
-                mark = "✓" if value else "✗"
+                mark = OK if value else FAIL
                 typer.echo(f"  {mark} {var}: {status}")
             typer.echo("")
             typer.echo("Tools:")
             for tool in ("uv", "docker", "pytest", "ruff"):
                 path = shutil.which(tool)
-                mark = "✓" if path else "✗"
+                mark = OK if path else FAIL
                 typer.echo(f"  {mark} {tool}: {path or 'not found'}")
             typer.echo("")
             typer.echo(

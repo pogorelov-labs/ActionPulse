@@ -1102,6 +1102,25 @@ digest-core/
   drill-down в evidence, или поиск по 30+ дайджестам. Тогда — lightweight web UI.
 - **Consequence:** No `fastapi` dependency. Delivery failure = warning, not crash.
 
+### ADR-013: Terminal surfaces follow the design system
+- **Decision:** All terminal output (installer, wizard, CLI, progress displays)
+  follows `docs/development/TERMINAL_DESIGN.md`: semantic tokens come from
+  `digest_core/ui` (never inline styles), live progress uses the split-region
+  ProgressSink architecture (`run.py` emits events, sinks render; structlog
+  stays a parallel channel), reports are English by default with
+  `report.language: ru` as the user setting, no mouse reporting on
+  line-oriented surfaces, and every renderer degrades append-only on
+  non-TTY/CI (`--progress=auto|live|plain|none`).
+- **Rationale:** The rules are evidence-tiered (deep-research over 24 primary
+  sources + source reading of cargo/uv/BuildKit/Claude Code/rich, 2026-06-12);
+  split-region is the verified cross-tool substrate. Structure beats policy:
+  the `ui` module and `tests/test_terminal_conformance.py` enforce the rules
+  in CI, so they cannot silently rot.
+- **Consequence:** New surfaces import `ui` tokens and subscribe to
+  `ProgressSink`; the conformance test gates `make test`/CI; the reviewer
+  checklist lives in `CONTRIBUTING.md`; fleet lane rendering (REDESIGN PR2+)
+  builds against design §4.3 from day one.
+
 ### ADR-012: "Code outside, run inside, debug outside" workflow
 - **Decision:** Development and debugging happens on general network dev workstation.
   Real pipeline runs (EWS + LLM) happen only in corp network. Diagnostic bundles
