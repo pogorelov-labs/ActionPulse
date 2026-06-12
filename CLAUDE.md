@@ -19,6 +19,7 @@ Monorepo with one package. All development happens in `digest-core/`.
 - `digest-core/docs/PHASE0_PROMPT.md` — Historical Phase 0 execution checklist; not a guarantee that items are still open
 - `docs/planning/BUSINESS_REQUIREMENTS.md` — Product / business requirements (repo root `docs/`)
 - `docs/development/TERMINAL_DESIGN.md` — Terminal design system: color tokens, motion budgets, live work-display spec, input model, degradation matrix (every rule evidence-tiered)
+- `docs/development/TERMINAL_DESIGN_ROADMAP.md` — Integration map (where the design rules bind: CLAUDE.md/CONTRIBUTING/ui module/conformance test/ADR) + PR-by-PR roadmap incl. the English-by-default program (L-track)
 - `docs/development/TECHNICAL.md` — Redirect to `digest-core/docs/ARCHITECTURE.md` (the file used to be a parallel tech overview but drifted; reduced to a redirect 2026-04-06)
 
 ## Language
@@ -34,6 +35,7 @@ Monorepo with one package. All development happens in `digest-core/`.
 - Secrets via ENV only — never in YAML config files.
 - Extract-over-Generate: LLM extracts from evidence, does not hallucinate (principle P1).
 - Max 2 LLM calls per run (1 primary + 1 quality retry), each with 1 internal retry for transient errors. 15 RPM rate limit on qwen35-397b-a17b (ADR-008).
+- All terminal output follows `docs/development/TERMINAL_DESIGN.md` (semantic tokens, split-region live displays, degradation matrix, no mouse). Execution plan: `docs/development/TERMINAL_DESIGN_ROADMAP.md`.
 
 ## Network Topology
 

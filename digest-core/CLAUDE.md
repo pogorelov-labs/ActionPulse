@@ -69,6 +69,7 @@ Full contracts in `docs/ARCHITECTURE.md §4`.
 - Python 3.11, ruff (line-length=100), black, isort
 - Typer for CLI, httpx for HTTP, structlog for JSON logs, pydantic for validation
 - Prefer small testable modules. Each pipeline stage = separate file.
+- Terminal output (CLI, wizard, future live displays) follows `../docs/development/TERMINAL_DESIGN.md`; roadmap & reviewer checklist: `../docs/development/TERMINAL_DESIGN_ROADMAP.md` + CONTRIBUTING.md.
 
 ## Testing
 

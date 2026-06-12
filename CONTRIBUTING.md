@@ -43,6 +43,22 @@ We use the following tools to maintain code quality:
 - **isort** - Import sorter
 - **mypy** - Static type checker (for models and interfaces)
 
+### Terminal Output Checklist
+
+Any PR touching user-visible terminal output is reviewed against
+[`docs/development/TERMINAL_DESIGN.md`](docs/development/TERMINAL_DESIGN.md):
+
+1. New user-visible strings are English; report-bound strings go through
+   `assemble/labels.py`, never inline (post-L1).
+2. Colors/glyphs only via `ui` tokens (post-T1); state is always carried by a
+   glyph+word pair, never color alone.
+3. Anything that can exceed ~1s shows liveness; animations are throttled and
+   TTY-gated; an append-only non-TTY path exists.
+4. No mouse reporting; Esc cancels the current question (not the program);
+   Ctrl+C exits 130 with no traceback; cursor restored on every exit path.
+5. Truncation per design §6.2 (end-ellipsis for messages/URLs, tail-preserving
+   for paths); output readable at 80 columns.
+
 ### Pre-commit Hooks
 
 Install pre-commit hooks to automatically format and lint your code:
