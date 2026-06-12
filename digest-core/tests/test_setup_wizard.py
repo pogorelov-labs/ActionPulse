@@ -357,3 +357,86 @@ class TestResolveEwsLogin:
 
     def test_strips_whitespace(self):
         assert _resolve_ews_login(None, "  ruapgr2  ", "x") == "ruapgr2"
+
+
+class TestEnsureLauncher:
+    """The finale may only advertise `actionpulse` when the command works;
+    `make setup` from a bare checkout self-heals by writing the shim."""
+
+    def _no_global(self, monkeypatch, tmp_path, uv="/usr/bin/uv"):
+        import digest_core.setup_wizard as wizard_mod
+
+        launcher = tmp_path / "bin" / "actionpulse"
+        monkeypatch.setattr(wizard_mod, "LAUNCHER_PATH", launcher)
+        monkeypatch.setattr(
+            wizard_mod.shutil,
+            "which",
+            lambda name: uv if name == "uv" else None,
+        )
+        return wizard_mod, launcher
+
+    def test_on_path_short_circuits(self, monkeypatch, tmp_path):
+        import digest_core.setup_wizard as wizard_mod
+
+        launcher = tmp_path / "bin" / "actionpulse"
+        monkeypatch.setattr(wizard_mod, "LAUNCHER_PATH", launcher)
+        monkeypatch.setattr(wizard_mod.shutil, "which", lambda name: f"/fake/{name}")
+        state = wizard_mod._ensure_launcher()
+        assert state.use_command and not state.created and not state.path_hint
+        assert not launcher.exists()  # nothing written when the command resolves
+
+    def test_creates_shim_when_missing(self, monkeypatch, tmp_path):
+        wizard_mod, launcher = self._no_global(monkeypatch, tmp_path)
+        monkeypatch.setenv("PATH", "/usr/bin")  # shim dir NOT on PATH
+        state = wizard_mod._ensure_launcher()
+        assert state.use_command and state.created and state.path_hint
+        content = launcher.read_text()
+        assert "digest_core.cli" in content
+        assert str(wizard_mod.PROJECT_ROOT) in content
+        assert launcher.stat().st_mode & 0o111  # executable
+
+    def test_existing_shim_never_overwritten(self, monkeypatch, tmp_path):
+        wizard_mod, launcher = self._no_global(monkeypatch, tmp_path)
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\n# sentinel: another checkout\n")
+        monkeypatch.setenv("PATH", f"/usr/bin:{launcher.parent}")
+        state = wizard_mod._ensure_launcher()
+        assert state.use_command and not state.created and not state.path_hint
+        assert "sentinel" in launcher.read_text()
+
+    def test_no_uv_falls_back_to_module_form(self, monkeypatch, tmp_path):
+        wizard_mod, launcher = self._no_global(monkeypatch, tmp_path, uv=None)
+        state = wizard_mod._ensure_launcher()
+        assert not state.use_command
+        assert not launcher.exists()
+
+
+class TestNextStepsText:
+    """The Done panel never confuses the user with the module invocation."""
+
+    def test_actionpulse_primary(self):
+        from digest_core.setup_wizard import LauncherState, _next_steps_text
+
+        text = _next_steps_text(LauncherState(True, False, False)).plain
+        assert "actionpulse run --dry-run" in text
+        assert "actionpulse diagnose" in text
+        assert "python -m digest_core.cli" not in text
+        assert "source" not in text or "no manual source" in text  # auto-load, no source dance
+
+    def test_path_hint_shown_only_when_off_path(self):
+        from digest_core.setup_wizard import LauncherState, _next_steps_text
+
+        with_hint = _next_steps_text(LauncherState(True, True, True)).plain
+        without = _next_steps_text(LauncherState(True, False, False)).plain
+        assert "PATH" in with_hint and "~/.zshrc" in with_hint
+        assert "~/.zshrc" not in without
+
+    def test_module_form_only_in_no_launcher_fallback(self):
+        from digest_core.setup_wizard import LauncherState, _next_steps_text
+
+        text = _next_steps_text(LauncherState(False, False, False)).plain
+        assert "uv run python -m digest_core.cli run --dry-run" in text
+        # Never advertise a command that won't resolve (the env *path* still
+        # contains "actionpulse" — check command forms, not the bare substring).
+        assert "actionpulse run" not in text
+        assert "actionpulse diagnose" not in text
