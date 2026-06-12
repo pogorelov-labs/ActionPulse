@@ -34,6 +34,12 @@ machinery" from the design doc §4.2):
   about to start (the quality retry emits attempt 2/2). Per-attempt token
   granularity arrives with the fleet gateway hooks; stage-level totals live
   in ``run_meta["llm_budget"]``.
+- ``on_lane_update(lane, state)`` — fleet lane telemetry (design §4.3): one
+  lane per MODEL, emitted by the gateway/fleet clients around real network
+  calls only (replay stays silent — lanes are never theater). ``state``:
+  ``{"model", "stage", "in_flight" (0|1 — intra-model serial), "calls",
+  "rpm_used", "rpm_cap", "penalty_remaining_s"}``. Renderers cap visible
+  lanes at 4 and clear them on stage transitions.
 - ``on_delivery(target, ok, detail)`` — delivery outcome.
 """
 
@@ -78,6 +84,9 @@ class ProgressSink:
     def on_llm_attempt(
         self, model: str, attempt: int, max_attempts: int
     ) -> None:  # pragma: no cover - no-op
+        pass
+
+    def on_lane_update(self, lane: str, state: Dict[str, Any]) -> None:  # pragma: no cover - no-op
         pass
 
     def on_delivery(

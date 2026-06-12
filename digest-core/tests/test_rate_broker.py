@@ -117,3 +117,37 @@ def test_default_budgets_match_adr_008():
     assert broker.note_call("extractor") == 2
     with pytest.raises(StageCallBudgetExceeded):
         broker.note_call("extractor")
+
+
+class TestUsageSnapshot:
+    """Lane telemetry (§4.3): trailing-60s request counts per model."""
+
+    def test_counts_acquires_in_window(self):
+        clock = FakeClock()
+        broker = _broker(clock, [], fleet_rpm={"m": 60.0})
+        for _ in range(3):
+            broker.acquire("m")
+        snap = broker.usage_snapshot("m")
+        assert snap["rpm_used"] == 3
+        assert snap["rpm_cap"] == 60
+        assert snap["penalty_remaining_s"] == 0.0
+
+    def test_old_acquires_age_out(self):
+        clock = FakeClock()
+        broker = _broker(clock, [], fleet_rpm={"m": 60.0}, burst=10)
+        broker.acquire("m")
+        clock.advance(61.0)
+        broker.acquire("m")
+        assert broker.usage_snapshot("m")["rpm_used"] == 1
+
+    def test_penalty_surfaces_remaining_seconds(self):
+        clock = FakeClock()
+        broker = _broker(clock, [], fleet_rpm={"m": 60.0})
+        broker.acquire("m")
+        broker.penalize("m", 90.0)
+        snap = broker.usage_snapshot("m")
+        assert snap["penalty_remaining_s"] == 90.0
+
+    def test_unknown_model_uses_default_cap(self):
+        broker = _broker(FakeClock(), [], fleet_rpm={}, default_rpm=15.0)
+        assert broker.usage_snapshot("mystery")["rpm_cap"] == 15

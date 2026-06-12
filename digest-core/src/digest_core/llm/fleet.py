@@ -28,6 +28,7 @@ import structlog
 
 from digest_core.config import LLMConfig
 from digest_core.llm.rate_broker import RateBroker
+from digest_core.progress import NullSink, ProgressSink, emit
 
 logger = structlog.get_logger()
 
@@ -76,10 +77,13 @@ class FleetClient:
         replay: Optional[str] = None,
         http_client: Optional[httpx.Client] = None,
         stage: Optional[str] = None,
+        sink: Optional[ProgressSink] = None,
     ):
         self.config = config
         self._broker = rate_broker
         self._stage = stage
+        self._sink = sink or NullSink()
+        self._calls_made = 0
         self._record_path = Path(record) if record else None
         self._replay_data: Optional[Dict[str, Any]] = None
         self._replay_consumed: Dict[str, set] = {}
@@ -87,6 +91,33 @@ class FleetClient:
             self._replay_data = json.loads(Path(replay).read_text(encoding="utf-8"))
         self._client = http_client
         self._owns_client = http_client is None
+
+    def _emit_lane(self, model: str, in_flight: int) -> None:
+        """Lane telemetry (design §4.3) — real network calls only, never replay.
+
+        Telemetry is never load-bearing: any broker oddity (incl. test doubles
+        without ``usage_snapshot``) degrades to zeroed usage, never raises.
+        """
+        usage = {"rpm_used": 0, "rpm_cap": 0, "penalty_remaining_s": 0.0}
+        if self._broker is not None:
+            try:
+                candidate = self._broker.usage_snapshot(model)
+                if isinstance(candidate, dict):
+                    usage = candidate
+            except Exception:  # noqa: BLE001 - telemetry must not break calls
+                pass
+        emit(
+            self._sink,
+            "on_lane_update",
+            model,
+            {
+                "model": model,
+                "stage": self._stage or "fleet",
+                "in_flight": in_flight,
+                "calls": self._calls_made,
+                **usage,
+            },
+        )
 
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -115,6 +146,8 @@ class FleetClient:
         # ── LIVE / RECORD ────────────────────────────────────────────
         if self._broker is not None:
             self._broker.acquire(model)
+        self._calls_made += 1
+        self._emit_lane(model, in_flight=1)
         headers = dict(self.config.headers)
         headers["Authorization"] = f"Bearer {self.config.get_token()}"
         try:
@@ -127,6 +160,8 @@ class FleetClient:
                 retry_after = exc.response.headers.get("Retry-After")
                 self._broker.penalize(model, float(retry_after) if retry_after else 60.0)
             raise
+        finally:
+            self._emit_lane(model, in_flight=0)
         data = response.json()
         if self._record_path is not None:
             self._record(endpoint_name, req_hash, data)

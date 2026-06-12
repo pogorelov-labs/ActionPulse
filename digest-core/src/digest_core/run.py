@@ -594,6 +594,7 @@ def _sample_and_select(
         record_llm=ctx.record_llm,
         rate_broker=ctx.rate_broker,
         stage="extractor",
+        sink=ctx.sink,
     )
     try:
         for candidate_no in range(2, ctx.config.extract.best_of_n + 1):
@@ -827,6 +828,7 @@ def _build_repair_judge(ctx: RunContext) -> tuple[Optional[LLMJudge], Optional[L
         metrics=ctx.metrics,
         rate_broker=ctx.rate_broker,
         stage="judge",
+        sink=ctx.sink,
     )
     return LLMJudge(gateway), gateway
 
@@ -872,6 +874,7 @@ def _build_reranker(ctx: RunContext) -> Optional[RerankerClient]:
         record=f"{ctx.record_llm}.fleet.json" if ctx.record_llm else None,
         replay=replay,
         stage="reranker",
+        sink=ctx.sink,
     )
 
 

@@ -66,6 +66,7 @@ def _ctx(reranker_cfg, *, replay_llm=None, record_llm=None, broker=None):
         trace_id="t",
         metrics=None,
         run_meta={},
+        sink=None,
     )
 
 

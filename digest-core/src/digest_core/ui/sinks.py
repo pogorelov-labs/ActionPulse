@@ -33,6 +33,8 @@ from digest_core.ui.glyphs import FAIL, OK, RETRY, WARN
 
 #: Footer color warms after this many seconds (§3 attention shift).
 _WARM_AFTER_S = 10.0
+#: Visible fleet lanes (§4.3): beyond this, aggregate into one "+N more" line.
+_LANE_CAP = 4
 #: PlainSink prints a "still running" reassurance at most this often (§3:
 #: terraform's 10 s "Still creating…" model — progress without log spam).
 _REASSURE_EVERY_S = 10.0
@@ -194,6 +196,7 @@ class RichLiveSink(ProgressSink):
         self._llm_note: str = ""
         self._progress: str = ""  # latest intra-stage data phrase (footer only)
         self._retry_note: str = ""  # active transient-retry note (warms the footer)
+        self._lanes: "dict[str, Dict[str, Any]]" = {}  # §4.3 fleet lanes, by model
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -233,7 +236,43 @@ class RichLiveSink(ProgressSink):
             notes.append(Text(f"  └ {self._retry_note}", style="ap.warn"))
         if self._llm_note:
             notes.append(Text(f"  └ {self._llm_note}", style="ap.dim"))
+        notes.extend(self._lane_lines())
         return Group(line, *notes) if notes else line
+
+    def _lane_lines(self) -> "list[Text]":
+        """§4.3: one line per model lane, capped at _LANE_CAP, aggregate beyond."""
+        lanes = list(self._lanes.values())
+        if not lanes:
+            return []
+        lines: "list[Text]" = []
+        visible = lanes if len(lanes) <= _LANE_CAP else lanes[: _LANE_CAP - 1]
+        for index, lane in enumerate(visible):
+            last = index == len(visible) - 1 and len(lanes) <= _LANE_CAP
+            branch = "└" if last else "├"
+            bits = [str(lane.get("stage") or "fleet")]
+            if lane.get("in_flight"):
+                bits.append(f"{lane['in_flight']} in-flight")
+            calls = lane.get("calls") or 0
+            bits.append(f"{calls} {'call' if calls == 1 else 'calls'}")
+            if lane.get("rpm_cap"):
+                bits.append(f"RPM {lane.get('rpm_used', 0)}/{lane['rpm_cap']}")
+            penalty = lane.get("penalty_remaining_s") or 0
+            if penalty:
+                bits.append(f"429 cool-down {penalty:.0f}s")
+            style = "ap.warn" if penalty else ("default" if lane.get("in_flight") else "ap.dim")
+            lines.append(
+                Text(f"  {branch} {lane.get('model', '?'):<20} {' · '.join(bits)}", style=style)
+            )
+        if len(lanes) > _LANE_CAP:
+            hidden = lanes[_LANE_CAP - 1 :]
+            in_flight = sum(1 for lane in hidden if lane.get("in_flight"))
+            lines.append(
+                Text(
+                    f"  └ +{len(hidden)} more" + (f" · {in_flight} in-flight" if in_flight else ""),
+                    style="ap.dim",
+                )
+            )
+        return lines
 
     # -- events ---------------------------------------------------------------
 
@@ -244,6 +283,7 @@ class RichLiveSink(ProgressSink):
         self._llm_note = ""
         self._progress = ""
         self._retry_note = ""
+        self._lanes = {}
 
     def on_stage_progress(
         self, stage: str, done: int, total: Optional[int] = None, unit: str = "", detail: str = ""
@@ -262,6 +302,7 @@ class RichLiveSink(ProgressSink):
         self._llm_note = ""
         self._progress = ""
         self._retry_note = ""
+        self._lanes = {}
 
     def on_stage_failed(self, stage: str, error: str) -> None:
         self._print(_fail_line(stage, error))
@@ -269,9 +310,15 @@ class RichLiveSink(ProgressSink):
         self._llm_note = ""
         self._progress = ""
         self._retry_note = ""
+        self._lanes = {}
 
     def on_llm_attempt(self, model: str, attempt: int, max_attempts: int) -> None:
         self._llm_note = f"attempt {attempt}/{max_attempts} · {model}"
+
+    def on_lane_update(self, lane: str, state: Dict[str, Any]) -> None:
+        # §4.3: lanes render only while their stage is live (cleared on stage
+        # transitions); the permanent history line carries the totals.
+        self._lanes[lane] = dict(state)
 
     def on_delivery(self, target: str, ok: bool, detail: Optional[str] = None) -> None:
         self._print(_delivery_line(target, ok, detail))
