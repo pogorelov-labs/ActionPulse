@@ -623,6 +623,37 @@ class ExtractConfig(BaseModel):
     )
 
 
+class ThreadingConfig(BaseModel):
+    """Embedding-assisted thread merging (REDESIGN PR12a, cosine tier).
+
+    Off by default: enabling sends thread-representative text to the
+    ``/v1/embeddings`` endpoint, which is gated by PC-2 for live use
+    (offline replay via the fleet sidecar is always safe). Only threads the
+    heuristics are weakest on are candidates (subject-keyed and
+    single-message groups); EWS ``conv_`` groups stay authoritative.
+    """
+
+    embedding_merge: bool = Field(
+        default=False, description="Merge heuristic-weak threads via embeddings cosine"
+    )
+    embedding_model: str = Field(default="bge-m3", description="Embeddings model (own bucket)")
+    similarity_threshold: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Cosine threshold for merging two thread representatives",
+    )
+    max_candidates: int = Field(
+        default=64,
+        ge=2,
+        description=(
+            "Most candidate threads embedded per run (one batched call);"
+            " beyond this the merge is skipped for the run and logged —"
+            " never a silent partial merge"
+        ),
+    )
+
+
 class EvalConfig(BaseModel):
     """Eval-harness knobs (EP-5). Nothing here touches the live run path."""
 
@@ -702,6 +733,7 @@ class Config(BaseSettings):
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     eval: EvalConfig = Field(default_factory=EvalConfig)
     extract: ExtractConfig = Field(default_factory=ExtractConfig)
+    threading: ThreadingConfig = Field(default_factory=ThreadingConfig)
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
