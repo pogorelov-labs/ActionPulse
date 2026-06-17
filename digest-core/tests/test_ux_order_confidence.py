@@ -111,7 +111,9 @@ def test_medium_confidence_shows_confidence_label_in_both_renderers():
     assert "уверенность: средняя" in mm_text.lower()
 
     md_text = _render_md(item, language="ru")
-    assert "**Уверенность:** Средняя" in md_text
+    # MM parity: lowercase, matching the Mattermost «уверенность: средняя».
+    assert "**Уверенность:** средняя" in md_text
+    assert "**Уверенность:** Средняя" not in md_text
 
 
 def test_weak_evidence_hides_confidence_but_keeps_marker_in_mm():
@@ -124,6 +126,8 @@ def test_weak_evidence_hides_confidence_but_keeps_marker_in_mm():
     assert "уверенность" not in mm_text.lower()
     assert "⚠ слабое обоснование" in mm_text
 
-    # And in the markdown renderer the confidence line is gone too.
+    # And in the markdown renderer the confidence line is gone too, but the
+    # ⚠ weak marker IS shown (MM parity: the .md no longer hides weakness).
     md_text = _render_md(item, language="ru")
     assert "Уверенность" not in md_text
+    assert "⚠ слабое обоснование" in md_text

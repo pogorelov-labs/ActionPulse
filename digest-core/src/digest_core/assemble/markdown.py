@@ -138,6 +138,12 @@ class MarkdownAssembler:
                         f" {self._format_confidence(item_confidence)}"
                     )
 
+                # Weak-evidence marker — parity with the Mattermost ⚠ badge so a
+                # quarantined / weakly-supported item reads the same on both
+                # surfaces (the .md previously showed no warning at all).
+                if item_weak_evidence:
+                    lines.append(f"⚠ {self._s['weak_basis']}")
+
                 # Add evidence reference (required format) with email subject
                 source_type = item_source_ref.get("type", "unknown")
                 if item_email_subject:
@@ -201,8 +207,8 @@ class MarkdownAssembler:
         return content
 
     def _format_confidence(self, confidence: float) -> str:
-        """Format confidence score as capitalized report-language text."""
-        return confidence_text(confidence, self.language).capitalize()
+        """Format confidence score as report-language text (lowercase, MM parity)."""
+        return confidence_text(confidence, self.language)
 
     def _count_words(self, text: str) -> int:
         """Count words in text."""
