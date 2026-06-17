@@ -143,7 +143,10 @@ def test_mm_trace_line_carries_repeat_marker():
         seen_before=True,
     )
     line = deliverer._format_trace_line(item, None)
-    assert "↻ repaired" in line
+    # A6/A7: the dedup-repeat marker uses the dedicated "repeat" string,
+    # not "repaired" (which is a different concept).
+    assert "↻ repeat" in line
+    assert "repaired" not in line
 
     fresh = Item(
         title="Новое действие",

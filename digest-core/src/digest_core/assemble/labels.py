@@ -105,6 +105,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "truncated_note": "*[Content truncated to respect the word limit]*",
         "weak_basis": "weak evidence",
         "repaired": "repaired",
+        "repeat": "repeat",
         "partial_json_title": "PARTIAL REPORT: LLM returned invalid JSON",
         "partial_json_body": (
             "This digest was produced in fallback mode (extractive) because the"
@@ -161,6 +162,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "truncated_note": "*[Содержимое обрезано для соблюдения лимита слов]*",
         "weak_basis": "слабое обоснование",
         "repaired": "повтор",
+        "repeat": "повтор",
         "partial_json_title": "ЧАСТИЧНЫЙ ОТЧЁТ: LLM дал невалидный JSON",
         "partial_json_body": (
             "Данный дайджест создан в резервном режиме (extractive fallback)"
