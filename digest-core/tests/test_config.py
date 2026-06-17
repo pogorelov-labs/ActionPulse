@@ -258,3 +258,38 @@ class TestConfigIntegration:
 
             # Ensure they return the same value
             assert token == llm_token
+
+
+def test_yaml_threading_section_is_honored(tmp_path, monkeypatch):
+    """Regression (B8): the `threading:` YAML branch in _apply_yaml_config exists.
+
+    The PR12a `threading` section shipped schema-only with no merge branch, so
+    `embedding_merge` (a PC-2-gated /v1/embeddings egress flag) set in
+    config.yaml was silently ignored. Assert a real YAML now applies.
+    """
+    for var in (
+        "DIGEST_THREADING_EMBEDDING_MERGE",
+        "DIGEST_THREADING_SIMILARITY_THRESHOLD",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    custom = tmp_path / "custom_config.yaml"
+    custom.write_text(
+        "threading:\n  embedding_merge: true\n  similarity_threshold: 0.5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(custom))
+
+    cfg = Config()
+    assert cfg.threading.embedding_merge is True
+    assert cfg.threading.similarity_threshold == 0.5
+
+
+def test_yaml_threading_env_still_wins(tmp_path, monkeypatch):
+    """DIGEST_THREADING_* ENV overrides the YAML value (env_prefix precedence)."""
+    custom = tmp_path / "custom_config.yaml"
+    custom.write_text("threading:\n  embedding_merge: true\n", encoding="utf-8")
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(custom))
+    monkeypatch.setenv("DIGEST_THREADING_EMBEDDING_MERGE", "false")
+    cfg = Config()
+    assert cfg.threading.embedding_merge is False  # ENV beats YAML
