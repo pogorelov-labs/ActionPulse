@@ -2,9 +2,11 @@
 
 > Status: **PROPOSAL** — Wave 1 (EP-1..EP-3) pre-approved by the owner for immediate execution;
 > everything else is unexecuted until the owner reads DECISIONS-NEEDED.
-> Synthesized from `docs/audits/2026-06-11-frontier-audit.md` (alignment matrix; currently on
-> branch `feat/llm-output-cap`) + `docs/CORP_VALIDATION_FINDINGS_2026-06.md` (reconcile verdicts
-> for the corp-session findings; same branch).
+> Synthesized from `docs/audits/2026-06-11-frontier-audit.md` (alignment matrix — **note: this file
+> was never committed to `origin/main`; it lived on branch `feat/llm-output-cap` and remains only in
+> PR/branch history, so its file:line anchors cannot be opened from main — this program is the durable
+> record**) + `docs/CORP_VALIDATION_FINDINGS_2026-06.md` (reconcile verdicts for the corp-session
+> findings; that one IS on main).
 > Generated: 2026-06-11 · Base commit: `b287a3e` (origin/main) · Author: quality-loop / enhancement-program
 > Trust: all file:line anchors below were **re-verified against `origin/main`** at synthesis time
 > (the audit cited the `feat/llm-output-cap` working tree — line numbers differ there); re-verify
