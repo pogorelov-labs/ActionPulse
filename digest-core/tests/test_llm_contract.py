@@ -14,7 +14,8 @@ def test_contract_example():
 
     # Verify required fields
     assert digest.schema_version == "1.0"
-    assert digest.prompt_version == "extract_actions.v1"
+    # English example (en is the default report language → en.v2 prompt).
+    assert digest.prompt_version == "extract_actions.en.v2"
     assert digest.digest_date == "2024-01-15"
     assert digest.trace_id == "example-trace-id"
     assert len(digest.sections) > 0
