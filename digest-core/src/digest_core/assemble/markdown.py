@@ -13,6 +13,7 @@ from digest_core.assemble.labels import (
     display_title,
     report_strings,
     section_title,
+    should_show_confidence,
 )
 from digest_core.llm.schemas import Digest, EnhancedDigest
 
@@ -113,6 +114,7 @@ class MarkdownAssembler:
                     item_evidence_id = item.get("evidence_id", "")
                     item_source_ref = item.get("source_ref", {})
                     item_email_subject = item.get("email_subject")
+                    item_weak_evidence = item.get("weak_evidence", False)
                 else:
                     item_title = item.title
                     item_due = item.due
@@ -120,6 +122,7 @@ class MarkdownAssembler:
                     item_evidence_id = item.evidence_id
                     item_source_ref = item.source_ref
                     item_email_subject = getattr(item, "email_subject", None)
+                    item_weak_evidence = getattr(item, "weak_evidence", False)
 
                 lines.append(f"### {i}. {item_title}")
 
@@ -127,11 +130,13 @@ class MarkdownAssembler:
                 if item_due:
                     lines.append(f"**{self._s['due_label']}:** {item_due}")
 
-                # Add confidence
-                lines.append(
-                    f"**{self._s['confidence_label']}:**"
-                    f" {self._format_confidence(item_confidence)}"
-                )
+                # Add confidence only when it adds signal (borderline items, and
+                # never alongside the weak-evidence marker — see labels.py).
+                if should_show_confidence(item_confidence, item_weak_evidence):
+                    lines.append(
+                        f"**{self._s['confidence_label']}:**"
+                        f" {self._format_confidence(item_confidence)}"
+                    )
 
                 # Add evidence reference (required format) with email subject
                 source_type = item_source_ref.get("type", "unknown")

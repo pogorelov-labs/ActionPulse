@@ -16,6 +16,7 @@ from digest_core.assemble.labels import (
     display_title,
     normalize_section,
     report_strings,
+    should_show_confidence,
 )
 from digest_core.config import MattermostDeliverConfig
 from digest_core.llm.schemas import Digest
@@ -119,10 +120,12 @@ class MattermostDeliverer:
             section_lines = [f"**{display_title(section.title, self.language)}**"]
             for index, item in enumerate(section.items, start=1):
                 due_part = f" | {self._s['due_label'].lower()}: {item.due}" if item.due else ""
-                confidence_part = (
-                    f" | {self._s['confidence_label'].lower()}:"
-                    f" {self._confidence_label(item.confidence)}"
-                )
+                confidence_part = ""
+                if should_show_confidence(item.confidence, getattr(item, "weak_evidence", False)):
+                    confidence_part = (
+                        f" | {self._s['confidence_label'].lower()}:"
+                        f" {self._confidence_label(item.confidence)}"
+                    )
                 prefix = "-" if normalize_section(section.title) in (FYI, STATUS) else f"{index}."
                 section_lines.append(f"{prefix} {item.title}{due_part}{confidence_part}")
                 trace_line = self._format_trace_line(item, json_path)
