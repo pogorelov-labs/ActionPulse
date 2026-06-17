@@ -56,6 +56,16 @@ def test_run_sources_skips_failing_source():
     assert [e.source for e in envelopes] == ["ews"]  # one source down is not fatal
 
 
+def test_run_sources_strict_reraises_failing_source():
+    # strict=True is what the sole live EWS source uses: a fetch failure must
+    # propagate so the run's degradation policy sees the real exception.
+    import pytest
+
+    adapters = [_FakeAdapter("down", boom=True)]
+    with pytest.raises(RuntimeError, match="source down"):
+        run_sources(adapters, "2026-03-29", strict=True)
+
+
 def test_ews_adapter_delegates_to_fetch_messages():
     class FakeIngest:
         time_config = object()
