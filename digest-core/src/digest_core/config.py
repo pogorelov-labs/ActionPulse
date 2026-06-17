@@ -257,7 +257,16 @@ class MattermostDeliverConfig(BaseModel):
         default="MM_WEBHOOK_URL", description="Environment variable with webhook URL"
     )
     max_message_length: int = Field(default=16383, description="Mattermost max message size")
-    include_trace_footer: bool = Field(default=True, description="Append trace footer to delivery")
+    include_trace_footer: bool = Field(
+        default=True,
+        description=(
+            "DEPRECATED / no-op for delivery (owner C5/C8). The delivered"
+            " Mattermost message is recipient-facing and no longer carries a"
+            " trace footer; the trace_id, item count and LLM budget are"
+            " operator-only (run_meta.llm_budget + structured log). Retained"
+            " so existing config.yaml files do not break."
+        ),
+    )
     acknowledged_private: bool = Field(
         default=False,
         description=(

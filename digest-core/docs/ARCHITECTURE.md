@@ -582,7 +582,7 @@ deliver:
     # api_url: "https://mm.corp.com/api/v4"
     # channel_id: ""                         # DM channel ID (auto-resolve later)
     max_message_length: 16383                # MM limit
-    include_trace_footer: true               # Add trace_id + item count footer
+    include_trace_footer: true               # DEPRECATED no-op (C5/C8): MM message is recipient-facing, trace/budget are operator-only
 
 observability:
   prometheus_port: 9108
@@ -1056,9 +1056,11 @@ digest-core/
   гейтвея** (key-budget 15 RPM на флагмане; **3 параллельных запроса**; ~30 s латентность
   на вызов; token-budget `max_tokens_per_run`), когда задача того требует (например
   best-of-N extraction, EP-10) — повышение фиксируется в конфиге, не в коде.
-- **Visibility (часть решения):** каждый run обязан показывать оператору фактический
-  расход — call count и token usage против бюджета (`run_meta.llm_budget`, лог,
-  trace-footer в Mattermost). Невидимый бюджет — не бюджет.
+- **Visibility (часть решения, сужено owner C5/C8):** каждый run обязан показывать
+  **оператору** фактический расход — call count и token usage против бюджета
+  (`run_meta.llm_budget` + структурный лог). Невидимый бюджет — не бюджет.
+  Доставляемое в Mattermost сообщение — recipient-facing: бюджет/trace там больше
+  не печатаются (раньше был trace-footer; теперь это operator-only поверхности).
 - **Rationale:** 15 RPM — бюджет *ключа*, а не свойство пайплайна: дневной batch с
   N=3 последовательными extraction-вызовами (~30 s каждый) тривиально укладывается.
   Реальные ограничители — параллелизм (3) и латентность; их моделирует RateBroker,

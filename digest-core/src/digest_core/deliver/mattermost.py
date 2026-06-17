@@ -11,7 +11,6 @@ from digest_core.assemble.labels import (
     DEFAULT_LANGUAGE,
     FYI,
     STATUS,
-    UNCONFIRMED,
     confidence_text,
     display_title,
     normalize_section,
@@ -67,10 +66,13 @@ class MattermostDeliverer:
     ) -> dict:
         """Format and send the digest to Mattermost.
 
-        ``json_path`` (the digest JSON artifact) is threaded into each item's
-        traceability sub-line so the delivered message carries P2 evidence refs.
-        ``llm_budget`` (run_meta summary) lands in the trace footer — the ADR-008
-        v2 visibility clause: the operator sees calls and tokens every run.
+        The delivered message is recipient-facing (owner decision C5/C8): it
+        carries only user signals, never operator metadata. ``json_path`` and
+        ``llm_budget`` are threaded for signature compatibility but no longer
+        surface in the message — ``json_path`` was a local operator filesystem
+        path the recipient cannot open, and the LLM budget is operator-only
+        (``run_meta.llm_budget`` + structured log, the narrowed ADR-008 v2
+        visibility clause). Both are still persisted in the run artifacts.
         """
         # D4 delivery guard ("guard + warn"): an incoming-webhook URL is an
         # opaque token, so the target audience is NOT derivable. When the
@@ -138,37 +140,30 @@ class MattermostDeliverer:
         if len(blocks) == 1:
             blocks.append(self._s["no_actions"])
 
-        if self.config.include_trace_footer:
-            footer = f"_trace: {digest.trace_id} | items: {self._count_items(digest)}"
-            if llm_budget and llm_budget.get("max_tokens_per_run"):
-                footer += (
-                    f" | llm: {llm_budget.get('calls_made', 0)} calls,"
-                    f" {llm_budget.get('tokens_used', 0)}/{llm_budget['max_tokens_per_run']} tok"
-                )
-                if llm_budget.get("tokens_pct") is not None:
-                    footer += f" ({llm_budget['tokens_pct']}%)"
-            blocks.append(footer + "_")
-
+        # No trace footer (owner decision C5/C8): trace_id, item count and the
+        # LLM budget are operator metadata, not recipient signals. They live in
+        # run_meta + the structured log; the delivered message stays clean.
         return "\n\n".join(blocks)
 
     def _format_trace_line(self, item, json_path: str | None) -> str:
-        """Per-item P2 traceability sub-line: evidence id (+ optional json link).
+        """Per-item recipient sub-line: user-facing badges only (owner C5/C8).
 
-        Legacy/system items without a real evidence id get no sub-line. The
-        ``weak_evidence`` badge is getattr-guarded so it lights up once the gate
-        (PR8) adds the field.
+        Operator metadata (the internal ``ev: <id>`` token and the local
+        ``[json](...)`` filesystem link) is stripped — the recipient cannot use
+        either. What remains is recipient signal: ``⚠ <weak_basis>`` when the
+        evidence is weak and ``↻ <repeat>`` when the item was seen before. An
+        item with neither badge gets no sub-line. ``json_path`` is accepted for
+        signature compatibility but unused.
         """
-        evidence_id = getattr(item, "evidence_id", "") or ""
-        if not evidence_id or evidence_id == "system":
-            return ""
-        line = f"   ↳ ev: {evidence_id}"
-        if json_path:
-            line += f" | [json]({json_path}#{evidence_id})"
+        del json_path  # operator path, no longer rendered (owner C5/C8)
+        badges: List[str] = []
         if getattr(item, "weak_evidence", False):
-            line += f" | ⚠ {self._s['weak_basis']}"
+            badges.append(f"⚠ {self._s['weak_basis']}")
         if getattr(item, "seen_before", False):
-            line += f" | ↻ {self._s['repeat']}"
-        return line
+            badges.append(f"↻ {self._s['repeat']}")
+        if not badges:
+            return ""
+        return "   ↳ " + " | ".join(badges)
 
     def _header_blen(self, total: int) -> int:
         """Byte length of the worst-case part header for a ``total``-part split.
@@ -295,19 +290,6 @@ class MattermostDeliverer:
             if total > max_bytes:
                 return index
         return len(s)
-
-    @staticmethod
-    def _count_items(digest: Digest) -> int:
-        """Count real action items for the footer.
-
-        Excludes the appended UNCONFIRMED quarantine section so ``items: N``
-        reflects confirmed actions, not quarantined ones.
-        """
-        return sum(
-            len(section.items)
-            for section in digest.sections
-            if normalize_section(section.title) != UNCONFIRMED
-        )
 
     def _confidence_label(self, confidence: float) -> str:
         return confidence_text(confidence, self.language)
