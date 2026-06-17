@@ -32,6 +32,8 @@ from digest_core.evidence.citations import CitationBuilder, CitationValidator
 from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
+from digest_core.ingest.envelope import messages_from_envelopes
+from digest_core.ingest.source_adapter import EWSSourceAdapter, run_sources
 from digest_core.llm.fleet import RerankerClient
 from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
@@ -346,7 +348,15 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         ingest = EWSIngest(
             ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics, sink=ctx.sink
         )
-        messages = ingest.fetch_messages(ctx.digest_date, ctx.config.time)
+        # Route the live fetch through the multi-source seam (PR12b). Today EWS
+        # is the sole adapter, so this is behavior-preserving: ``strict=True``
+        # keeps fetch exceptions propagating to the degradation policy, and the
+        # envelopes are unwrapped back to the same ordered ``List[Normalized
+        # Message]`` the pipeline consumed when ``fetch_messages`` was called
+        # directly. ``EWSConfig.folders`` is honored inside ``fetch_messages``,
+        # unchanged. The seam is the wiring for a future Mattermost source.
+        envelopes = run_sources([EWSSourceAdapter(ingest)], ctx.digest_date, strict=True)
+        messages = messages_from_envelopes(envelopes)
         ctx.metrics.record_emails_total(len(messages), "fetched")
         fetch_stats = dict(getattr(ingest, "last_fetch_stats", {}) or {})
         ingest_counts: Dict[str, Any] = {"messages": len(messages)}

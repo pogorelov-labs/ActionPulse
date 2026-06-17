@@ -37,14 +37,28 @@ class EWSSourceAdapter:
         return self._ingest.fetch_messages(digest_date, self._ingest.time_config)
 
 
-def run_sources(adapters: List[SourceAdapter], digest_date: str) -> List[Envelope]:
-    """Fetch from every adapter; a failing source is logged and skipped, not fatal."""
+def run_sources(
+    adapters: List[SourceAdapter], digest_date: str, *, strict: bool = False
+) -> List[Envelope]:
+    """Fetch from every adapter and return source-tagged envelopes.
+
+    Default (``strict=False``) is degrade-not-drop at the source boundary: a
+    failing source is logged and skipped so one source being down never crashes
+    a multi-source run.
+
+    ``strict=True`` re-raises the original exception instead of swallowing it.
+    This is what the single live EWS source uses today, so the run's
+    degradation policy (config-error -> crash, operational-error -> degrade)
+    still sees the real exception exactly as it did before the seam was wired.
+    """
     envelopes: List[Envelope] = []
     for adapter in adapters:
         name = getattr(adapter, "name", adapter.__class__.__name__)
         try:
             messages = adapter.fetch(digest_date)
         except Exception as exc:
+            if strict:
+                raise
             logger.error("Source adapter failed; skipping", source=name, error=str(exc))
             continue
         envelopes.extend(envelopes_from_messages(name, messages))
