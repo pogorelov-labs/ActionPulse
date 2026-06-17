@@ -11,13 +11,14 @@ is a self-contained unit that reads from / writes to the context.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 
@@ -243,7 +244,7 @@ def _init_context(
     )
     start_health_server(port=9109, llm_config=config.llm)
 
-    digest_date = _resolve_digest_date(from_date)
+    digest_date = _resolve_digest_date(from_date, config.time.user_timezone)
     output_dir = Path(out).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / f"digest-{digest_date}.json"
@@ -1230,9 +1231,24 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
 # ---------------------------------------------------------------------------
 
 
-def _resolve_digest_date(from_date: str) -> str:
-    if from_date == "today":
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _resolve_digest_date(from_date: str, user_timezone: str = "Europe/Moscow") -> str:
+    """Resolve a digest date.
+
+    Relative inputs ("today"/"yesterday") are computed against *now* in the
+    user's configured timezone — a run shortly after local midnight must get the
+    local calendar date, not the UTC date. Explicit ``YYYY-MM-DD`` inputs are
+    returned unchanged (after validation). An invalid timezone string falls back
+    to UTC rather than raising.
+    """
+    if from_date in ("today", "yesterday"):
+        try:
+            tz = ZoneInfo(user_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            tz = timezone.utc
+        now_local = datetime.now(tz)
+        if from_date == "yesterday":
+            now_local -= timedelta(days=1)
+        return now_local.strftime("%Y-%m-%d")
     datetime.strptime(from_date, "%Y-%m-%d")
     return from_date
 

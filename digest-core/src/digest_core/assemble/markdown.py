@@ -177,23 +177,9 @@ class MarkdownAssembler:
             )
             lines.append("")
 
-        # Evidence section
-        lines.append(f"## {self._s['sources_header']}")
-        lines.append("")
-
-        evidence_ids = set()
-        for section in sections:
-            items = section.get("items", []) if isinstance(section, dict) else section.items
-            for item in items:
-                evidence_id = (
-                    item.get("evidence_id", "") if isinstance(item, dict) else item.evidence_id
-                )
-                evidence_ids.add(evidence_id)
-
-        for evidence_id in sorted(evidence_ids):
-            lines.append(f"### Evidence {evidence_id}")
-            lines.append(f"*ID: {evidence_id}*")
-            lines.append("")
+        # (Vestigial Sources section removed -- it rendered
+        #  "### Evidence <id>" / "*ID: <id>*" with the id twice and no content;
+        #  the per-item Source lines are the real P2 traceability.)
 
         # Check word count and truncate if necessary
         content = "\n".join(lines)
@@ -220,19 +206,29 @@ class MarkdownAssembler:
         return len(words)
 
     def _truncate_content(self, content: str, max_words: int) -> str:
-        """Truncate content to fit word limit."""
-        words = content.split()
+        """Truncate content to fit the word limit at a LINE boundary.
 
+        Accumulates whole lines until the cumulative word count would exceed the
+        budget (leaving room for the truncation note), then appends the note.
+        Newlines are preserved so headings and blank lines survive — unlike a
+        naive ``" ".join(words[:N])`` which collapses all markdown structure.
+        """
+        words = content.split()
         if len(words) <= max_words:
             return content
 
-        # Truncate and add note
-        truncated_words = words[: max_words - 10]  # Leave room for truncation note
-        truncated_content = " ".join(truncated_words)
+        budget = max_words - 10  # leave room for the truncation note
+        kept_lines: list[str] = []
+        used = 0
+        for line in content.split("\n"):
+            line_words = len(line.split())
+            if used + line_words > budget:
+                break
+            kept_lines.append(line)
+            used += line_words
 
-        # Add truncation note
+        truncated_content = "\n".join(kept_lines).rstrip("\n")
         truncated_content += "\n\n" + self._s["truncated_note"]
-
         return truncated_content
 
     def generate_summary(self, digest_data) -> str:

@@ -11,6 +11,7 @@ from digest_core.assemble.labels import (
     DEFAULT_LANGUAGE,
     FYI,
     STATUS,
+    UNCONFIRMED,
     confidence_text,
     display_title,
     normalize_section,
@@ -22,6 +23,11 @@ from digest_core.llm.schemas import Digest
 logger = structlog.get_logger()
 
 DEFAULT_PING_TEXT = report_strings(DEFAULT_LANGUAGE)["mm_ping_text"]
+
+
+def _blen(s: str) -> int:
+    """UTF-8 byte length — Mattermost limits are in bytes, not code points."""
+    return len(s.encode("utf-8"))
 
 
 def ping_mattermost_webhook(
@@ -110,6 +116,11 @@ class MattermostDeliverer:
                     section_lines.append(trace_line)
             blocks.append("\n".join(section_lines))
 
+        # Empty digest: no section had any items. Surface the "no actions"
+        # block so the delivered message is not a bare header (matches the .md).
+        if len(blocks) == 1:
+            blocks.append(self._s["no_actions"])
+
         if self.config.include_trace_footer:
             footer = f"_trace: {digest.trace_id} | items: {self._count_items(digest)}"
             if llm_budget and llm_budget.get("max_tokens_per_run"):
@@ -139,32 +150,36 @@ class MattermostDeliverer:
         if getattr(item, "weak_evidence", False):
             line += f" | ⚠ {self._s['weak_basis']}"
         if getattr(item, "seen_before", False):
-            line += f" | ↻ {self._s['repaired']}"
+            line += f" | ↻ {self._s['repeat']}"
         return line
 
+    def _header_blen(self, total: int) -> int:
+        """Byte length of the worst-case part header for a ``total``-part split.
+
+        The widest ``index/total`` is ``total/total`` (most digits), so we size
+        against that to guarantee every prepended header fits within budget.
+        """
+        header = "## " + self._s["digest_part_header"].format(index=total, total=total)
+        return _blen(header) + len("\n\n")
+
     def _split_message(self, message: str, max_length: int) -> List[str]:
-        if len(message) <= max_length:
+        if _blen(message) <= max_length:
             return [message]
 
-        blocks = message.split("\n\n")
+        # The message is over budget, so it will split into >= 2 parts and each
+        # delivered part will carry a "## <part i/total>" header. Reserve the
+        # worst-case header byte length so a near-limit chunk does not overflow
+        # once the header is prepended. The header digit count depends on the
+        # chunk count, which in turn depends on the reserved space, so re-split
+        # until the effective limit stabilizes (bounded: digit growth is slow).
+        effective = max_length
         chunks: List[str] = []
-        current: List[str] = []
-
-        for block in blocks:
-            candidate = "\n\n".join([*current, block]) if current else block
-            if len(candidate) <= max_length:
-                current.append(block)
-                continue
-
-            if current:
-                chunks.append("\n\n".join(current))
-                current = [block]
-                continue
-
-            chunks.extend(self._split_long_block(block, max_length))
-
-        if current:
-            chunks.append("\n\n".join(current))
+        for _ in range(8):
+            chunks = self._split_into_chunks(message, effective)
+            new_effective = max_length - self._header_blen(max(len(chunks), 2))
+            if new_effective == effective:
+                break
+            effective = new_effective
 
         total = len(chunks)
         if total <= 1:
@@ -176,6 +191,35 @@ class MattermostDeliverer:
             wrapped_chunks.append(f"{header}\n\n{chunk}")
         return wrapped_chunks
 
+    def _split_into_chunks(self, message: str, max_length: int) -> List[str]:
+        """Greedily pack blocks (then lines) into chunks of <= ``max_length`` bytes."""
+        blocks = message.split("\n\n")
+        chunks: List[str] = []
+        current: List[str] = []
+
+        for block in blocks:
+            candidate = "\n\n".join([*current, block]) if current else block
+            if _blen(candidate) <= max_length:
+                current.append(block)
+                continue
+
+            if current:
+                chunks.append("\n\n".join(current))
+                current = []
+                if _blen(block) <= max_length:
+                    current = [block]
+                    continue
+                # The lone block still overflows: split it by lines.
+                chunks.extend(self._split_long_block(block, max_length))
+                continue
+
+            chunks.extend(self._split_long_block(block, max_length))
+
+        if current:
+            chunks.append("\n\n".join(current))
+
+        return chunks
+
     def _split_long_block(self, block: str, max_length: int) -> List[str]:
         lines = block.splitlines()
         chunks: List[str] = []
@@ -183,15 +227,18 @@ class MattermostDeliverer:
 
         for line in lines:
             candidate = "\n".join([*current, line]) if current else line
-            if len(candidate) <= max_length:
+            if _blen(candidate) <= max_length:
                 current.append(line)
                 continue
             if current:
                 chunks.append("\n".join(current))
                 current = [line]
+                if _blen(line) <= max_length:
+                    continue
+                chunks.extend(self._split_long_line(line, max_length))
+                current = []
             else:
-                for start in range(0, len(line), max_length):
-                    chunks.append(line[start : start + max_length])
+                chunks.extend(self._split_long_line(line, max_length))
                 current = []
 
         if current:
@@ -199,8 +246,51 @@ class MattermostDeliverer:
         return chunks
 
     @staticmethod
+    def _split_long_line(line: str, max_length: int) -> List[str]:
+        """Split one over-budget line into <= ``max_length``-byte pieces.
+
+        Prefers a space boundary (A5 polish); never emits a piece whose UTF-8
+        byte length exceeds ``max_length``.
+        """
+        pieces: List[str] = []
+        remaining = line
+        while _blen(remaining) > max_length:
+            cut = MattermostDeliverer._byte_prefix_len(remaining, max_length)
+            cut = max(cut, 1)  # always make progress, even if a char > max_length
+            # Prefer to break at the last space within the byte budget.
+            space = remaining.rfind(" ", 1, cut)
+            if space > 0:
+                pieces.append(remaining[:space])
+                remaining = remaining[space:].lstrip(" ")
+            else:
+                pieces.append(remaining[:cut])
+                remaining = remaining[cut:]
+        if remaining:
+            pieces.append(remaining)
+        return pieces
+
+    @staticmethod
+    def _byte_prefix_len(s: str, max_bytes: int) -> int:
+        """Largest character count whose UTF-8 encoding is <= ``max_bytes``."""
+        total = 0
+        for index, ch in enumerate(s):
+            total += len(ch.encode("utf-8"))
+            if total > max_bytes:
+                return index
+        return len(s)
+
+    @staticmethod
     def _count_items(digest: Digest) -> int:
-        return sum(len(section.items) for section in digest.sections)
+        """Count real action items for the footer.
+
+        Excludes the appended UNCONFIRMED quarantine section so ``items: N``
+        reflects confirmed actions, not quarantined ones.
+        """
+        return sum(
+            len(section.items)
+            for section in digest.sections
+            if normalize_section(section.title) != UNCONFIRMED
+        )
 
     def _confidence_label(self, confidence: float) -> str:
         return confidence_text(confidence, self.language)
