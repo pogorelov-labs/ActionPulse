@@ -15,11 +15,11 @@ All synthetic: tmp dirs + fabricated files only, never real corp data.
 
 from __future__ import annotations
 
-import logging
 import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import structlog
 import yaml
 
 from digest_core import maintenance, paths
@@ -289,49 +289,81 @@ def _digest():
 EVENT = "mattermost_target_privacy_unconfirmed"
 
 
-def _deliver_capturing(config, monkeypatch, caplog):
-    """Deliver once and return the captured stdlib log records.
+# Fields the warning event is allowed to carry. Anything outside this set —
+# subjects, bodies, senders, quotes, the webhook URL — would be a payload leak.
+_ALLOWED_EVENT_KEYS = {"event", "log_level", "level", "trace_id", "hint"}
 
-    The project routes structlog through stdlib (JSONRenderer over
-    stdlib.LoggerFactory), so once `_configure_structlog` has run in the
-    session `structlog.testing.capture_logs` is unreliable — `caplog` reads the
-    real handler chain and works regardless of global config.
+
+def _deliver_capturing(config, monkeypatch):
+    """Deliver once under ``capture_logs`` and return the captured event dicts.
+
+    Order-independence is the whole point here. The warning is emitted through
+    ``deliver.mattermost.logger``, a module-level ``structlog.get_logger()``
+    proxy. Whether that proxy reaches a given capture mechanism depends on global
+    structlog state that *earlier tests* leave behind:
+
+      * if no test ran ``_configure_structlog`` yet, the proxy logs via
+        structlog's default ``PrintLogger`` straight to stdout — ``caplog`` (a
+        stdlib handler) never sees it;
+      * once ``_configure_structlog`` has run with ``cache_logger_on_first_use``,
+        the proxy caches a stdlib ``BoundLogger`` on first emit, after which a
+        later ``capture_logs`` no longer intercepts it.
+
+    So we don't rely on the module proxy at all: ``reset_defaults`` clears the
+    global config, ``capture_logs`` installs the capturing chain, and we swap in
+    a *fresh* ``structlog.get_logger()`` proxy (auto-restored by ``monkeypatch``)
+    that resolves lazily against that capturing chain. This observes the
+    structured event directly regardless of prior configuration, and changes no
+    production logging behavior.
     """
     monkeypatch.setenv("MM_WEBHOOK_URL", "https://mm.example/hooks/opaque")
     monkeypatch.setattr("digest_core.deliver.mattermost.httpx.Client", _FakeClient)
     _FakeClient.posts = []
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="digest_core.deliver.mattermost"):
+    structlog.reset_defaults()
+    with structlog.testing.capture_logs() as captured:
+        monkeypatch.setattr("digest_core.deliver.mattermost.logger", structlog.get_logger())
         MattermostDeliverer(config).deliver_digest(_digest())
-    return caplog.records
+    return captured
 
 
-def test_privacy_warning_fires_when_unconfirmed(monkeypatch, caplog):
-    records = _deliver_capturing(
-        MattermostDeliverConfig(enabled=True, acknowledged_private=False), monkeypatch, caplog
+def _privacy_events(captured):
+    return [c for c in captured if c.get("event") == EVENT]
+
+
+def test_privacy_warning_fires_when_unconfirmed(monkeypatch):
+    captured = _deliver_capturing(
+        MattermostDeliverConfig(enabled=True, acknowledged_private=False), monkeypatch
     )
-    assert any(EVENT in r.getMessage() for r in records)
+    events = _privacy_events(captured)
+    assert events, "the privacy warning must fire when the target is unconfirmed"
+    assert events[0]["log_level"] == "warning"
     # Delivery still happened (guard + warn, never block).
     assert _FakeClient.posts, "delivery must proceed despite the warning"
 
 
-def test_privacy_warning_silent_when_acknowledged(monkeypatch, caplog):
-    records = _deliver_capturing(
-        MattermostDeliverConfig(enabled=True, acknowledged_private=True), monkeypatch, caplog
+def test_privacy_warning_silent_when_acknowledged(monkeypatch):
+    captured = _deliver_capturing(
+        MattermostDeliverConfig(enabled=True, acknowledged_private=True), monkeypatch
     )
-    assert not any(EVENT in r.getMessage() for r in records)
+    assert not _privacy_events(captured), "no warning when the target is acknowledged private"
     assert _FakeClient.posts
 
 
-def test_privacy_warning_carries_no_payload(monkeypatch, caplog):
-    records = _deliver_capturing(
-        MattermostDeliverConfig(enabled=True, acknowledged_private=False), monkeypatch, caplog
+def test_privacy_warning_carries_no_payload(monkeypatch):
+    captured = _deliver_capturing(
+        MattermostDeliverConfig(enabled=True, acknowledged_private=False), monkeypatch
     )
-    warning = next(r for r in records if EVENT in r.getMessage())
-    # No webhook URL, no message body in the structured event.
-    message = warning.getMessage()
-    assert "hooks/opaque" not in message
-    assert "https://mm.example" not in message
+    warning = _privacy_events(captured)[0]
+    # Only the documented fields may appear — no subjects/bodies/senders/quotes,
+    # and no webhook URL — just trace_id + the static hint.
+    assert set(warning) <= _ALLOWED_EVENT_KEYS, f"unexpected payload fields: {set(warning)}"
+    assert warning["trace_id"] == "trace-priv"
+    # The hint is the static, non-payload guidance string.
+    assert "Re-run setup to confirm." in warning["hint"]
+    # Defensive: no value in the event carries the (opaque) webhook URL.
+    rendered = repr(warning)
+    assert "hooks/opaque" not in rendered
+    assert "https://mm.example" not in rendered
 
 
 def test_wizard_persists_acknowledged_private(tmp_path, monkeypatch):
