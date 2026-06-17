@@ -1194,6 +1194,12 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         delivery_receipt = _stage_deliver(ctx, digest)
         ctx.run_meta["delivery_receipt"] = delivery_receipt
 
+        # Retention enforcement (real run only): prune on-disk PDn artifacts past
+        # the window. Runs after ASSEMBLE/DELIVER so the just-written pair (mtime
+        # ~ now) is protected by the mtime cutoff. Never on dry-run (returned
+        # earlier) nor the dev replay/dump-ingest paths. Failures warn, not fail.
+        ctx.run_meta["retention"] = _enforce_retention(ctx)
+
         ctx.metrics.record_run_total("ok")
         ctx.metrics.record_digest_build_time()
         ctx.run_meta["status"] = "ok" if not ctx.run_meta["partial"] else "partial"
@@ -1775,6 +1781,39 @@ def _quarantine_weak_items(digest: Digest, language: str = DEFAULT_LANGUAGE) -> 
         )
     digest.sections = surviving_sections
     return len(quarantined)
+
+
+def _enforce_retention(ctx: RunContext) -> Dict[str, Any]:
+    """Prune on-disk artifacts past the retention window (real run only).
+
+    Returns a payload-free ``run_meta["retention"]`` block
+    ``{enabled, keep_days, pruned_counts}``. Guards:
+
+    * ``retention.enabled`` off -> no pruning, enabled=False recorded;
+    * ``--replay-ingest`` / ``--dump-ingest`` are dev workflows operating on a
+      developer's disk (ADR-012 "code outside, run inside, debug outside") —
+      pruning is skipped so a replay never deletes real artifacts;
+    * any pruning failure logs a warning and the run continues (retention is
+      housekeeping, never a reason to fail a delivered digest).
+    """
+    cfg = ctx.config.retention
+    block: Dict[str, Any] = {"enabled": cfg.enabled, "keep_days": cfg.keep_days}
+    if not cfg.enabled or ctx.replay_ingest or ctx.dump_ingest:
+        block["pruned_counts"] = None
+        return block
+    from digest_core import maintenance
+
+    try:
+        block["pruned_counts"] = maintenance.prune_artifacts(ctx.config)
+    except Exception as exc:  # noqa: BLE001 - housekeeping must not fail the run
+        block["pruned_counts"] = None
+        block["error"] = type(exc).__name__
+        logger.warning(
+            "retention_prune_failed",
+            trace_id=ctx.trace_id,
+            error_type=type(exc).__name__,
+        )
+    return block
 
 
 def _apply_dedup_ledger(ctx: RunContext, digest: Digest) -> None:

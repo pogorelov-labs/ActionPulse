@@ -27,7 +27,7 @@
 |---|---------|-----------|
 | P1 | **Extract-over-Generate** | LLM извлекает факты из evidence, а не генерирует "от себя". Каждый пункт привязан к evidence_id |
 | P2 | **Traceability** | Любой пункт дайджеста → evidence_id → source_ref → оригинальное письмо/сообщение |
-| P3 | **Privacy-first** | PII маскируется на уровне LLM Gateway. Локально — минимальное хранение, ≤7 дней |
+| P3 | **Privacy-first** | PII маскируется на уровне LLM Gateway. Локально — минимальное хранение: артефакты в `var/out` авто-удаляются в конце реального запуска по `retention.keep_days` (default **7 дней**, configurable; `enabled`/`keep_days` + env `DIGEST_RETENTION_*`) |
 | P4 | **Idempotency** | `(user_id, date)` → один и тот же результат. Watermark + T-48h rebuild window |
 | P5 | **Graceful Degradation** _(частично)_ | **Сделано (Phase 0):** сбой LLM после ретраев → валидный partial digest с секцией «Статус»; сбой MM delivery → warning, exit 0 (ADR-011). **Ещё нет:** частичный отчёт при падении EWS ingest и др. стадий до LLM — по-прежнему exception |
 | P6 | **Simplicity-first** | Не добавлять abstractions до появления второго use case |
@@ -1320,7 +1320,7 @@ digest-core/
 │  Phones/SSN/CC: REDACTED in logs                     │
 │  Passwords/Tokens: REDACTED in logs                  │
 │                                                      │
-│  Retention: ≤7 days (configurable)                   │
+│  Retention: 7 days default, auto-pruned at run end   │
 │  Access: local filesystem permissions                │
 │                                                      │
 └──────────────────────────┬──────────────────────────┘

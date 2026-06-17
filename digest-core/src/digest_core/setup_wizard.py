@@ -173,6 +173,7 @@ def _write_config_yaml(
     derived: dict[str, str],
     verify_ca: Optional[str],
     report_language: str = "en",
+    acknowledged_private: bool = False,
 ) -> Path:
     """Generate configs/config.yaml from example with user values applied."""
     if not CONFIG_EXAMPLE.exists():
@@ -201,6 +202,14 @@ def _write_config_yaml(
     report = config.get("report", {}) or {}
     report["language"] = report_language
     config["report"] = report
+
+    # D4: persist the private-target acknowledgement so the deliver path knows
+    # whether to warn. Other deliver.mattermost keys (from the example) survive.
+    deliver = config.get("deliver", {}) or {}
+    mattermost = deliver.get("mattermost", {}) or {}
+    mattermost["acknowledged_private"] = bool(acknowledged_private)
+    deliver["mattermost"] = mattermost
+    config["deliver"] = deliver
 
     CONFIG_USER.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_USER, "w", encoding="utf-8") as f:
@@ -786,6 +795,26 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     default_mm = existing_env.get("MM_WEBHOOK_URL") or None
     mm_webhook = _ask("Mattermost webhook URL", default=default_mm, validate=_validate_url)
 
+    # D4 delivery guard: a webhook URL is an opaque token — we cannot tell what
+    # channel it points at. Ask the operator to confirm it is a private target so
+    # the personal digest is not posted to a shared team channel by accident.
+    # Default to the existing config value (idempotent re-runs keep the answer).
+    default_ack = bool(
+        ((existing_cfg.get("deliver", {}) or {}).get("mattermost", {}) or {}).get(
+            "acknowledged_private", False
+        )
+    )
+    console.print("[dim]A webhook URL is opaque — ActionPulse cannot verify the target channel.[/]")
+    acknowledged_private = Confirm.ask(
+        "[ap.accent.bold]Is this webhook a PRIVATE DM/channel (not a shared team channel)?[/]",
+        default=default_ack,
+    )
+    if not acknowledged_private:
+        console.print(
+            "  [ap.warn]⚠[/] Unconfirmed: every run will warn that the personal digest"
+            " may be visible to the channel audience."
+        )
+
     # ── 7. Report language ──
     _step(7, "Report language", "Digest output language; everything else stays English.")
     default_lang = existing_cfg.get("report", {}).get("language") or "en"
@@ -853,6 +882,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             derived=derived,
             verify_ca=verify_ca,
             report_language=report_language,
+            acknowledged_private=acknowledged_private,
         )
     console.print(f"  [ap.ok]✓[/] {env_path}  [dim](chmod 600)[/]")
     console.print(f"  [ap.ok]✓[/] {config_path}")

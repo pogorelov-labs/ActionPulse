@@ -71,6 +71,20 @@ class MattermostDeliverer:
         ``llm_budget`` (run_meta summary) lands in the trace footer — the ADR-008
         v2 visibility clause: the operator sees calls and tokens every run.
         """
+        # D4 delivery guard ("guard + warn"): an incoming-webhook URL is an
+        # opaque token, so the target audience is NOT derivable. When the
+        # operator has not confirmed the target is a private DM/channel, emit one
+        # payload-free warning and continue — never block delivery.
+        if self.config.enabled and not self.config.acknowledged_private:
+            logger.warning(
+                "mattermost_target_privacy_unconfirmed",
+                trace_id=digest.trace_id,
+                hint=(
+                    "Webhook target not confirmed private; the personal digest may"
+                    " be visible to the channel audience. Re-run setup to confirm."
+                ),
+            )
+
         webhook_url = self.config.get_webhook_url()
         parts = self._split_message(
             self._format_digest(digest, json_path, llm_budget), self.config.max_message_length
