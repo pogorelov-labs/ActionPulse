@@ -45,11 +45,11 @@ class TestNormalization:
 
 
 class TestSortWeights:
-    """Ordering matches the pre-L1 SECTION_ORDER behavior in both languages."""
+    """Urgent leads, then My actions, FYI, Unconfirmed — same in both languages."""
 
     def test_order_is_language_independent(self):
-        ru = ["Мои действия", "Срочное", "К сведению", "Не подтверждено"]
-        en = ["My actions", "Urgent", "FYI", "Unconfirmed"]
+        ru = ["Срочное", "Мои действия", "К сведению", "Не подтверждено"]
+        en = ["Urgent", "My actions", "FYI", "Unconfirmed"]
         assert [L.section_sort_weight(t) for t in ru] == [0, 1, 2, 3]
         assert [L.section_sort_weight(t) for t in en] == [0, 1, 2, 3]
 
@@ -86,6 +86,22 @@ class TestStrings:
         assert L.confidence_text(0.3, "ru") == "низкая"
         assert L.confidence_text(0.29, "ru") == "очень низкая"
         assert L.confidence_text(0.95, "en") == "very high"
+
+    def test_should_show_confidence_only_for_borderline(self):
+        # High / very high: label is noise, suppressed.
+        assert L.should_show_confidence(0.95) is False
+        assert L.should_show_confidence(0.7) is False  # band boundary == high
+        # Borderline («средняя» band) surfaces the label.
+        assert L.should_show_confidence(0.69) is True
+        assert L.should_show_confidence(0.5) is True
+
+    def test_should_show_confidence_suppressed_by_weak_evidence(self):
+        # weak_evidence wins at any confidence — the ⚠ marker is the signal.
+        assert L.should_show_confidence(0.5, weak_evidence=True) is False
+        assert L.should_show_confidence(0.95, weak_evidence=True) is False
+
+    def test_confidence_display_max_is_high_band_boundary(self):
+        assert L.CONFIDENCE_DISPLAY_MAX == 0.7
 
 
 class TestConfigDefault:

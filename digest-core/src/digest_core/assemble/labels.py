@@ -44,9 +44,11 @@ SECTION_TITLES: dict[str, dict[str, str]] = {
 }
 
 # Sort weights by key (unknown sections sort last, preserving prior behavior).
+# Urgent leads so time-critical items surface first, then My actions, FYI, and
+# the Unconfirmed quarantine stays last.
 SECTION_ORDER_BY_KEY: dict[str, int] = {
-    MY_ACTIONS: 0,
-    URGENT: 1,
+    URGENT: 0,
+    MY_ACTIONS: 1,
     FYI: 2,
     UNCONFIRMED: 3,
 }
@@ -215,6 +217,25 @@ def report_strings(language: str) -> dict[str, str]:
 def stage_banner(stage: str, language: str) -> str:
     strings = report_strings(language)
     return strings.get(f"banner_{stage}", strings["banner_pipeline"])
+
+
+# Show the confidence label only when it adds signal: borderline items below
+# this threshold (the «средняя» band; the extraction prompt already drops <0.5,
+# so in practice this surfaces only 0.5–0.69 items). At or above it (high / very
+# high), the label is noise and is suppressed.
+CONFIDENCE_DISPLAY_MAX = 0.7
+
+
+def should_show_confidence(confidence: float, weak_evidence: bool = False) -> bool:
+    """Whether a renderer should print the confidence label for an item.
+
+    Shown only for borderline items (``confidence < CONFIDENCE_DISPLAY_MAX``) and
+    never when ``weak_evidence`` is set — the «⚠ слабое обоснование» marker is the
+    signal there, and the two must not co-appear and contradict each other.
+    """
+    if weak_evidence:
+        return False
+    return confidence < CONFIDENCE_DISPLAY_MAX
 
 
 def confidence_text(confidence: float, language: str) -> str:
