@@ -893,8 +893,8 @@ class Config(BaseSettings):
         if "observability" in yaml_config:
             self._merge_model(self.observability, yaml_config["observability"], env_prefix="OBS")
         # Explicit branch: a YAML `retention:` section is otherwise silently
-        # ignored (the `_apply_yaml_config` pattern is NOT universal — e.g.
-        # `threading` lacks one). env_prefix gives DIGEST_RETENTION_* precedence.
+        # ignored (the `_apply_yaml_config` pattern is NOT universal — every
+        # section needs its own line). env_prefix gives DIGEST_RETENTION_* precedence.
         if "retention" in yaml_config:
             self._merge_model(self.retention, yaml_config["retention"], env_prefix="RETENTION")
         if "report" in yaml_config:
@@ -952,6 +952,12 @@ class Config(BaseSettings):
             self._merge_model(self.eval, yaml_config["eval"], env_prefix="EVAL")
         if "extract" in yaml_config:
             self._merge_model(self.extract, yaml_config["extract"], env_prefix="EXTRACT")
+        # PR12a `threading` section: was schema-only and silently ignored from
+        # YAML (no merge branch), so `embedding_merge` — a PC-2-gated /v1/embeddings
+        # egress flag — could only ever be set, with no effect, in config.yaml.
+        # env_prefix gives DIGEST_THREADING_* precedence over the YAML values.
+        if "threading" in yaml_config:
+            self._merge_model(self.threading, yaml_config["threading"], env_prefix="THREADING")
 
     def _merge_model(
         self,

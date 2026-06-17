@@ -227,8 +227,8 @@ def test_retention_env_overrides(monkeypatch):
 def test_yaml_retention_keep_days_is_honored(tmp_path, monkeypatch):
     """Regression: the `retention:` YAML branch in _apply_yaml_config exists.
 
-    `threading` ships WITHOUT such a branch, so we cannot assume the pattern is
-    universal — assert retention's branch is wired by loading a real YAML.
+    The `_apply_yaml_config` pattern is per-section (every section needs its own
+    branch line) — assert retention's branch is wired by loading a real YAML.
     """
     # Ensure no ENV override masks the YAML value.
     monkeypatch.delenv("DIGEST_RETENTION_KEEP_DAYS", raising=False)
