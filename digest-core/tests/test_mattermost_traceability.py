@@ -1,8 +1,10 @@
-"""Traceable Mattermost delivery (PR5).
+"""Recipient-facing Mattermost delivery (owner decision C5/C8).
 
-Each digest item now carries a P2 traceability sub-line (evidence id + a link to
-the JSON artifact) in the delivered message — previously it carried none. No
-``Источники`` header is added (keeps test_e2e_pipeline green).
+The delivered message strips operator metadata: no ``ev: <id>`` token, no local
+``[json](...)`` link, and no trace/budget footer. What survives is recipient
+signal — the ``⚠ слабое обоснование`` (weak evidence) and ``↻ повтор`` (repeat)
+badges. The evidence ids / json paths / budget remain in the persisted run
+artifacts, just not in the message a human receives.
 """
 
 from types import SimpleNamespace
@@ -12,8 +14,8 @@ from digest_core.deliver.mattermost import MattermostDeliverer
 from digest_core.llm.schemas import Digest
 
 
-def _deliverer():
-    return MattermostDeliverer(MattermostDeliverConfig())
+def _deliverer(language: str = "ru"):
+    return MattermostDeliverer(MattermostDeliverConfig(), language=language)
 
 
 def _digest(items):
@@ -26,7 +28,9 @@ def _digest(items):
     )
 
 
-def test_item_gets_evidence_subline_with_json_link():
+def test_delivered_message_strips_operator_metadata():
+    # Even with a json_path threaded for compat, the message must not leak the
+    # internal evidence id nor the local operator filesystem link.
     digest = _digest(
         [
             {
@@ -40,44 +44,76 @@ def test_item_gets_evidence_subline_with_json_link():
     )
     text = _deliverer()._format_digest(digest, "/out/digest-2026-03-29.json")
 
-    assert "↳ ev: ev_abc123def456" in text
-    assert "[json](/out/digest-2026-03-29.json#ev_abc123def456)" in text
-    assert "Источники" not in text  # no sources header (test_e2e_pipeline:284)
+    assert "ev:" not in text
+    assert "ev_abc123def456" not in text
+    assert "[json]" not in text
+    assert "Источники" not in text
+    # A plain item (no badges) gets no sub-line at all.
+    assert "↳" not in text
 
 
-def test_no_json_link_when_path_absent():
+def test_weak_evidence_item_keeps_weak_badge():
     digest = _digest(
         [
             {
                 "title": "Сделать X",
                 "due": None,
                 "evidence_id": "ev_xyz",
-                "confidence": 0.5,
+                "confidence": 0.6,
+                "weak_evidence": True,
                 "source_ref": {"type": "email", "msg_id": "m-2"},
             }
         ]
     )
     text = _deliverer()._format_digest(digest, None)
 
-    assert "↳ ev: ev_xyz" in text
+    assert "↳ ⚠ слабое обоснование" in text
+    assert "ev:" not in text
     assert "[json]" not in text
+
+
+def test_seen_before_item_keeps_repeat_badge():
+    digest = _digest(
+        [
+            {
+                "title": "Повторное действие",
+                "due": None,
+                "evidence_id": "ev_seen",
+                "confidence": 0.8,
+                "seen_before": True,
+                "source_ref": {"type": "email", "msg_id": "m-3"},
+            }
+        ]
+    )
+    text = _deliverer()._format_digest(digest, None)
+
+    assert "↳ ↻ повтор" in text
+    assert "ev:" not in text
+
+
+def test_both_badges_share_one_subline():
+    item = SimpleNamespace(evidence_id="ev_1", weak_evidence=True, seen_before=True)
+    line = _deliverer()._format_trace_line(item, "/p.json")
+    assert line == "   ↳ ⚠ слабое обоснование | ↻ повтор"
 
 
 def test_trace_line_helper_edge_cases():
     deliverer = _deliverer()
-    # system/status items are not traceable
+    # No badges -> no sub-line, regardless of evidence id or json_path.
+    assert deliverer._format_trace_line(SimpleNamespace(evidence_id="ev_1"), "/p.json") == ""
     assert deliverer._format_trace_line(SimpleNamespace(evidence_id="system"), "/p.json") == ""
-    assert deliverer._format_trace_line(SimpleNamespace(evidence_id=""), "/p.json") == ""
+    assert deliverer._format_trace_line(SimpleNamespace(evidence_id=""), None) == ""
 
-    # weak_evidence badge lights up once the gate (PR8) adds the field
+    # weak_evidence badge, no operator metadata.
     weak = SimpleNamespace(evidence_id="ev_1", weak_evidence=True)
     line = deliverer._format_trace_line(weak, "/p.json")
-    assert "↳ ev: ev_1" in line
-    assert "⚠ weak evidence" in line
+    assert line == "   ↳ ⚠ слабое обоснование"
+    assert "ev:" not in line
+    assert "[json]" not in line
 
 
 def test_status_item_has_no_trace_line():
-    # A degraded "Статус" digest item uses evidence_id="system" -> no sub-line.
+    # A degraded "Статус" digest item has no badges -> no sub-line.
     digest = Digest(
         schema_version="1.0",
         prompt_version="none",
@@ -99,4 +135,4 @@ def test_status_item_has_no_trace_line():
         ],
     )
     text = _deliverer()._format_digest(digest, "/out/digest.json")
-    assert "↳ ev:" not in text
+    assert "↳" not in text

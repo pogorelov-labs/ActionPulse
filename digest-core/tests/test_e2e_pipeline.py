@@ -282,7 +282,14 @@ def test_mattermost_delivery_formats_and_splits(monkeypatch):
     assert receipt["status"] == "sent"
     assert len(posts) >= 2
     assert "Источники" not in posts[0]["json"]["text"]
-    assert "trace-mm" in posts[-1]["json"]["text"]
+    # Owner C5/C8: the delivered message is recipient-facing — the trace_id
+    # (operator metadata) no longer leaks into any part. Splitting still works:
+    # every item title survives across the concatenated parts.
+    joined = "\n".join(p["json"]["text"] for p in posts)
+    assert "trace-mm" not in joined
+    assert "_trace:" not in joined
+    assert "Подготовить обновление статуса проекта" in joined
+    assert "Общий статус программы обновлен" in joined
 
 
 def test_pipeline_replay_runs_from_repo_root(monkeypatch, tmp_path):

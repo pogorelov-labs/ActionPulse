@@ -1,7 +1,8 @@
-"""Per-run LLM budget visibility (decision D6 / ADR-008 v2 visibility clause).
+"""Per-run LLM budget visibility (decision D6 / ADR-008 v2, narrowed by C5/C8).
 
-Every run must show the operator its call count and token spend vs budget —
-in run_meta, in the log, and in the MM trace footer.
+Every run must show the OPERATOR its call count and token spend vs budget — in
+run_meta and in the structured log. It must NOT appear in the recipient-facing
+MM message anymore (the trace/budget footer was removed).
 """
 
 import json
@@ -70,7 +71,9 @@ def test_gateway_counts_network_calls():
     assert gateway.last_request_meta["run_calls_made"] == 2
 
 
-def test_mm_footer_carries_budget():
+def test_mm_message_never_carries_budget():
+    # Owner C5/C8: the budget is operator-only. Even when a budget is threaded
+    # for signature compatibility, the delivered message must not surface it.
     deliverer = MattermostDeliverer(Config().deliver.mattermost)
     digest = Digest(
         schema_version="1.0",
@@ -86,10 +89,13 @@ def test_mm_footer_carries_budget():
         "tokens_pct": 71.6,
     }
     text = deliverer._format_digest(digest, None, budget)
-    assert "llm: 2 calls, 21476/30000 tok (71.6%)" in text
+    assert "llm:" not in text
+    assert "21476" not in text
+    assert "_trace:" not in text
+    assert "items:" not in text
 
     plain = deliverer._format_digest(digest, None, None)
-    assert "llm:" not in plain  # footer stays clean when no budget is known
+    assert "llm:" not in plain
 
 
 def test_run_meta_carries_llm_budget(monkeypatch, tmp_path):

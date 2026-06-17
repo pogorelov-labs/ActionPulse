@@ -595,7 +595,9 @@ def _stage_llm(
         llm_trace["error"] = str(llm_error)
     ctx.run_meta["llm_request_trace"] = llm_trace
 
-    # ADR-008 v2 visibility clause (D6): an invisible budget is not a budget.
+    # ADR-008 v2 visibility clause (D6), narrowed by owner C5/C8: the budget is
+    # operator-only — surfaced in run_meta and this structured log, no longer in
+    # the recipient-facing MM message. An invisible budget is not a budget.
     budget = _llm_budget_summary(llm_trace, ctx.config.llm)
     ctx.run_meta["llm_budget"] = budget
     logger.info("LLM budget", trace_id=ctx.trace_id, **budget)

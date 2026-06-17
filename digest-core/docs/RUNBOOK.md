@@ -146,10 +146,12 @@ loginctl enable-linger "$USER"      # run even when logged out
 - **Weak items** (`reranker.quarantine_weak`, default **on** per decision D1): items
   without an offset-verifiable span are withheld from the main sections into a
   trailing «Не подтверждено» section (still badged ⚠, never dropped).
-- **LLM budget (D6):** every run reports calls + tokens vs budget — in the log, in
-  `trace-*.meta.json` (`llm_budget`), and in the MM trace footer. The RateBroker
-  enforces per-stage call budgets (`llm.stage_call_budgets`); 15 RPM is the key
-  budget, the real ceilings are 3-parallel and per-call latency.
+- **LLM budget (D6, narrowed by C5/C8):** every run reports calls + tokens vs budget
+  to the **operator** — in the log and in `trace-*.meta.json` (`llm_budget`). It is no
+  longer printed in the MM message: the delivered digest is recipient-facing and
+  carries no trace/budget footer. The RateBroker enforces per-stage call budgets
+  (`llm.stage_call_budgets`); 15 RPM is the key budget, the real ceilings are
+  3-parallel and per-call latency.
 - **Logs:** structured JSON (structlog), emails redacted. Watch `status: partial`
   (a stage degraded) and `items_weak`.
 - **Metrics:** Prometheus on `:9108`, health on `:9109` — but the run is `oneshot`,

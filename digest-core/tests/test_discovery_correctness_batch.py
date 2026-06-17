@@ -95,11 +95,12 @@ def test_resolve_digest_date_explicit_date_untouched():
 
 
 # ---------------------------------------------------------------------------
-# FIX 2 (A2): footer item count excludes the UNCONFIRMED quarantine section.
+# FIX 2 (A2 -> superseded by C5/C8): the trace footer is gone from the delivered
+# message entirely — no `_trace:`, no `items:` count (operator metadata).
 # ---------------------------------------------------------------------------
 
 
-def test_footer_count_excludes_unconfirmed_section():
+def test_delivered_message_has_no_trace_footer():
     digest = _digest(
         [
             Section(
@@ -110,9 +111,9 @@ def test_footer_count_excludes_unconfirmed_section():
         ]
     )
     text = MattermostDeliverer(MattermostDeliverConfig())._format_digest(digest)
-    # 3 real actions, not 4 (the quarantined item is not counted).
-    assert "items: 3" in text
-    assert "items: 4" not in text
+    assert "_trace:" not in text
+    assert "items:" not in text
+    assert "trace-batch" not in text
 
 
 # ---------------------------------------------------------------------------
