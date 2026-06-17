@@ -27,7 +27,18 @@ from digest_core import paths
 LEGACY_LOG_DIRS = (Path.home() / ".digest-logs", Path("/tmp/digest-logs"))
 
 #: Default retention for "clean old digests" (menu + `clean --digests`).
+#: Kept as a stable constant for existing callers; the *bare* ``clean_digests()``
+#: default now reads ``retention.keep_days`` from config (see ``_USE_CONFIG``).
 DEFAULT_KEEP_DAYS = 14
+
+#: Sentinel for ``clean_digests``: when no explicit ``older_than_days`` is given,
+#: source the window from ``config.retention.keep_days`` instead of a hardcode.
+_USE_CONFIG = object()
+
+#: Artifact globs the retention sweep is allowed to delete in the out/ dir.
+#: Verbatim subjects/senders/quotes (PDn) live in the digest pair; the trace
+#: meta is payload-free but still run-identifying — all three are time-pruned.
+RETENTION_GLOBS = ("digest-*.json", "digest-*.md", "trace-*.meta.json")
 
 #: Path to the user config the logging toggle rewrites (wizard-generated,
 #: comment-free yaml — safe to round-trip). Module-level so tests monkeypatch.
@@ -114,12 +125,18 @@ def _digest_date(path: Path) -> Optional[datetime]:
     return None
 
 
-def clean_digests(older_than_days: Optional[int] = DEFAULT_KEEP_DAYS) -> Tuple[int, int]:
+def clean_digests(older_than_days: Optional[int] = _USE_CONFIG) -> Tuple[int, int]:
     """Delete digest artifacts (json/md/idem sidecars/trace meta).
 
     ``older_than_days=N`` keeps the last N days (digest files by the date in
     their name, trace meta by mtime); ``None`` removes everything in var/out.
+    With no argument the window is sourced from ``config.retention.keep_days``
+    (was a hardcoded 14) so there is one documented retention number; existing
+    callers that pass an explicit value (incl. ``DEFAULT_KEEP_DAYS``) are
+    unchanged.
     """
+    if older_than_days is _USE_CONFIG:
+        older_than_days = _config_keep_days()
     out = paths.out_dir(create=False)
     if not out.exists():
         return 0, 0
@@ -144,6 +161,71 @@ def clean_digests(older_than_days: Optional[int] = DEFAULT_KEEP_DAYS) -> Tuple[i
         if stamp < cutoff:
             targets.append(path)
     return _remove_files(targets)
+
+
+def _config_keep_days() -> int:
+    """``retention.keep_days`` from config, falling back to DEFAULT_KEEP_DAYS."""
+    from digest_core.config import Config
+
+    try:
+        return int(Config().retention.keep_days)
+    except Exception:  # noqa: BLE001 - a broken config must not break maintenance
+        return DEFAULT_KEEP_DAYS
+
+
+def prune_artifacts(config) -> dict:
+    """Time-prune on-disk digest artifacts by mtime (retention enforcement).
+
+    Deletes files in the resolved out/ dir (``paths.out_dir``) matching the
+    three :data:`RETENTION_GLOBS` (``digest-*.json``, ``digest-*.md``,
+    ``trace-*.meta.json``) whose mtime is older than
+    ``now - config.retention.keep_days days``. Returns per-glob deletion counts
+    plus a total: ``{"digest_json": N, "digest_md": N, "trace_meta": N,
+    "total": N, "keep_days": K}``.
+
+    Safety rails:
+      * Only the three globs above, only inside the resolved out/ dir — never
+        arbitrary paths, never a recursive walk outside out/ (``iterdir`` only,
+        glob anchored to ``out``).
+      * ``.state/`` operational files (``ews.syncstate``, ``last_run.json``,
+        the dedup ledger) live in a different directory and are never globbed.
+      * ``keep_days < 1`` is a no-op: nothing is deleted. With mtime-based
+        cutoff the current run's just-written files (mtime ~ now) are protected
+        inherently; the floor additionally guards against a misconfigured 0 that
+        would wipe the freshly written run.
+    """
+    keep_days = int(config.retention.keep_days)
+    counts = {"digest_json": 0, "digest_md": 0, "trace_meta": 0, "total": 0, "keep_days": keep_days}
+    if keep_days < 1:
+        return counts  # safety rail: never prune the current run
+
+    out = paths.out_dir(create=False)
+    if not out.exists():
+        return counts
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    glob_keys = {
+        "digest-*.json": "digest_json",
+        "digest-*.md": "digest_md",
+        "trace-*.meta.json": "trace_meta",
+    }
+    for pattern in RETENTION_GLOBS:
+        for path in out.glob(pattern):
+            if not path.is_file():
+                continue
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            if mtime >= cutoff:
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            counts[glob_keys[pattern]] += 1
+            counts["total"] += 1
+    return counts
 
 
 def file_logging_enabled() -> bool:

@@ -122,10 +122,27 @@ loginctl enable-linger "$USER"      # run even when logged out
   yet** (see §8). A single bad citation or a weak item never trips it.
 - **Idempotency:** a run skips unless `config_sha256 + content_sha256 +
   pipeline_version` changed (state in the `.idem.json` sidecar). `--force` bypasses.
+- **Retention** (`retention.enabled` default **on**, `retention.keep_days` default
+  **7**): at the end of a *real* run (not dry-run, not `--replay-ingest` /
+  `--dump-ingest`) ActionPulse prunes `var/out` artifacts (`digest-*.json`,
+  `digest-*.md`, `trace-*.meta.json`) whose mtime is older than the window. The
+  just-written run is protected by the mtime cutoff, and `keep_days < 1` is a no-op
+  safety rail. `.state/` operational files (sync watermark, `last_run.json`, dedup
+  ledger) are never touched. Pruning failures warn and the run continues; counts
+  land in `trace-*.meta.json` (`retention.pruned_counts`). Env override:
+  `DIGEST_RETENTION_ENABLED` / `DIGEST_RETENTION_KEEP_DAYS`.
+- **Delivery privacy guard (D4):** an incoming-webhook URL is an opaque token, so
+  ActionPulse cannot tell which channel it posts to. The setup wizard asks you to
+  confirm the target is a private DM/channel and stores
+  `deliver.mattermost.acknowledged_private`. While that flag is `false`, every run
+  emits one `mattermost_target_privacy_unconfirmed` warning (payload-free) before
+  delivery noting the personal digest may be visible to the channel audience — it
+  **never blocks** delivery. Set the flag (re-run setup) once the target is verified.
 - **Dedup ledger** (`memory.dedup_ledger`, default **on** per decision D3): repeat
   items get a «↻ повтор» badge, never suppressed. `.state/delivered-items.jsonl`
-  stores SHA-256 fingerprints only; the 14-day TTL sweep (`memory.dedup_ttl_days`)
-  **is the data-retention policy** — deleting the file is right-to-be-forgotten.
+  stores SHA-256 fingerprints only; the TTL sweep (`memory.dedup_ttl_days`, default
+  **7**, aligned with `retention.keep_days`) **is the data-retention policy** —
+  deleting the file is right-to-be-forgotten.
 - **Weak items** (`reranker.quarantine_weak`, default **on** per decision D1): items
   without an offset-verifiable span are withheld from the main sections into a
   trailing «Не подтверждено» section (still badged ⚠, never dropped).

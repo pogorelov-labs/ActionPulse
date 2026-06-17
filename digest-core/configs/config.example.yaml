@@ -65,6 +65,19 @@ deliver:
     webhook_url_env: "MM_WEBHOOK_URL"
     max_message_length: 16383
     include_trace_footer: true
+    # D4 delivery guard: a webhook URL is an opaque token, so the target
+    # audience is NOT derivable. Set true once you have confirmed the webhook
+    # points at a PRIVATE DM/channel (the setup wizard asks). While false, every
+    # run emits one privacy-unconfirmed warning before delivery — it never blocks.
+    acknowledged_private: false
+
+# Retention: time-prune on-disk artifacts at the end of a real run. The digest
+# pair carries verbatim subjects/senders/quotes (PDn); trace meta is payload-
+# free but run-identifying. Default 7 days; keep_days < 1 is a no-op safety rail.
+# Env overrides: DIGEST_RETENTION_ENABLED / DIGEST_RETENTION_KEEP_DAYS.
+retention:
+  enabled: true
+  keep_days: 7
 
 # Embedding-assisted thread merging (REDESIGN PR12a, cosine tier). OFF by
 # default: enabling sends thread-representative text to /v1/embeddings —
@@ -226,8 +239,10 @@ memory:
   # seen_before:true and «↻ повтор» in MM — annotate only, never suppress. The
   # ledger stores SHA-256 fingerprints only, in .state/delivered-items.jsonl;
   # the TTL sweep IS the retention policy (delete the file = forget everything).
+  # Aligned with retention.keep_days (one documented number); kept separate
+  # because the ledger stores hashes only.
   dedup_ledger: true
-  dedup_ttl_days: 14
+  dedup_ttl_days: 7
 
 reranker:
   # P2-gate support scoring on the fleet reranker (EP-12, D4/PC-2 approved).

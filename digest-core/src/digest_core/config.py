@@ -258,6 +258,16 @@ class MattermostDeliverConfig(BaseModel):
     )
     max_message_length: int = Field(default=16383, description="Mattermost max message size")
     include_trace_footer: bool = Field(default=True, description="Append trace footer to delivery")
+    acknowledged_private: bool = Field(
+        default=False,
+        description=(
+            "Operator confirmed the webhook targets a PRIVATE DM/channel, not a"
+            " shared team channel (D4). An incoming-webhook URL is an opaque"
+            " token, so the target audience is NOT derivable — when this is"
+            " False the run emits one privacy-unconfirmed warning before"
+            " delivery (never blocks). Set via the setup wizard."
+        ),
+    )
 
     def get_webhook_url(self) -> str:
         """Return the Mattermost incoming webhook URL."""
@@ -689,10 +699,54 @@ class MemoryConfig(BaseModel):
         ),
     )
     dedup_ttl_days: int = Field(
-        default=14,
+        default=7,
         ge=1,
-        description="Retention window for ledger fingerprints (TTL sweep on every load)",
+        description=(
+            "Retention window for ledger fingerprints (TTL sweep on every load)."
+            " Aligned with retention.keep_days so there is one documented number;"
+            " kept as a separate knob since the ledger stores hashes only."
+        ),
     )
+
+
+class RetentionConfig(BaseModel):
+    """Time-based pruning of on-disk digest artifacts (PDn-at-rest policy).
+
+    The run persists ``digest-*.json`` / ``digest-*.md`` (verbatim subjects,
+    sender name+address, body quotes/previews) and ``trace-*.meta.json``
+    (payload-free run meta) under the data home's ``var/out``. Without pruning
+    these accumulate indefinitely. ``keep_days`` is the single documented
+    retention window: when ``enabled``, the run prunes artifacts whose mtime is
+    older than ``now - keep_days days`` at the end of a real run. The dedup
+    ledger keeps its own TTL knob (hashes-only) defaulted to the same value.
+
+    Env overrides: ``DIGEST_RETENTION_ENABLED`` / ``DIGEST_RETENTION_KEEP_DAYS``.
+    """
+
+    enabled: bool = Field(
+        default=True, description="Auto-prune on-disk artifacts at the end of a real run"
+    )
+    keep_days: int = Field(
+        default=7,
+        description=(
+            "Retention window in days for var/out artifacts (mtime-based)."
+            " keep_days < 1 is treated as a no-op safety rail (never prunes)."
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        # ENV overrides apply even when there is no YAML `retention:` section
+        # (matching the operator-facing contract for the two documented vars).
+        env_enabled = os.getenv("DIGEST_RETENTION_ENABLED")
+        if "enabled" not in kwargs and env_enabled is not None and env_enabled != "":
+            kwargs["enabled"] = env_enabled.strip().lower() in ("1", "true", "yes", "on")
+        env_keep = os.getenv("DIGEST_RETENTION_KEEP_DAYS")
+        if "keep_days" not in kwargs and env_keep is not None and env_keep.strip() != "":
+            try:
+                kwargs["keep_days"] = int(env_keep)
+            except ValueError:
+                pass
+        super().__init__(**kwargs)
 
 
 class ReportConfig(BaseModel):
@@ -717,6 +771,7 @@ class Config(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     deliver: DeliverConfig = Field(default_factory=DeliverConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    retention: RetentionConfig = Field(default_factory=RetentionConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
     selection_buckets: SelectionBucketsConfig = Field(default_factory=SelectionBucketsConfig)
     selection_weights: SelectionWeightsConfig = Field(default_factory=SelectionWeightsConfig)
@@ -828,6 +883,11 @@ class Config(BaseSettings):
             self._merge_model(self.deliver.mattermost, mattermost_config, env_prefix="MM")
         if "observability" in yaml_config:
             self._merge_model(self.observability, yaml_config["observability"], env_prefix="OBS")
+        # Explicit branch: a YAML `retention:` section is otherwise silently
+        # ignored (the `_apply_yaml_config` pattern is NOT universal — e.g.
+        # `threading` lacks one). env_prefix gives DIGEST_RETENTION_* precedence.
+        if "retention" in yaml_config:
+            self._merge_model(self.retention, yaml_config["retention"], env_prefix="RETENTION")
         if "report" in yaml_config:
             self._merge_model(self.report, yaml_config["report"], env_prefix="REPORT")
         if "selection_buckets" in yaml_config:
