@@ -355,6 +355,243 @@ def paths_command():
         typer.echo(f"  {mark} {paths.LABELS.get(key, key):<12} {value}")
 
 
+def _open_store_or_exit():
+    """Open the message store or exit(1) with an actionable message."""
+    from digest_core.config import Config
+    from digest_core.store import HAS_SQLCIPHER, INSTALL_HINT, MessageStore, StoreError
+
+    cfg = Config().store
+    if not HAS_SQLCIPHER:
+        typer.echo(f"{FAIL} {INSTALL_HINT}", err=True)
+        raise typer.Exit(1)
+    if not cfg.enabled:
+        typer.echo(
+            f"{FAIL} Message store is off. Run `actionpulse store init`, set store.enabled: "
+            "true (or DIGEST_STORE_ENABLED=1), then run a digest.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    try:
+        return MessageStore.open(cfg)
+    except (StoreError, ValueError) as exc:
+        typer.echo(f"{FAIL} {exc}", err=True)
+        raise typer.Exit(1)
+
+
+def _store_embed_backend():
+    """Gateway EmbeddingsClient for semantic/hybrid query embedding (needs corp net)."""
+    from digest_core.config import Config
+    from digest_core.llm.fleet import EmbeddingsClient
+    from digest_core.llm.rate_broker import RateBroker
+
+    cfg = Config()
+    broker = RateBroker(
+        fleet_rpm=cfg.llm.fleet_rpm,
+        burst=cfg.llm.fleet_burst,
+        default_rpm=cfg.llm.rate_limit_rpm,
+        stage_call_budgets=cfg.llm.stage_call_budgets,
+    )
+    return EmbeddingsClient(
+        cfg.llm, model=cfg.store.embedding_model, rate_broker=broker, stage="embeddings"
+    )
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Search text"),
+    mode: str = typer.Option(None, "--mode", help="keyword | semantic | hybrid"),
+    keyword: bool = typer.Option(False, "--keyword", help="Keyword (FTS5) only"),
+    semantic: bool = typer.Option(False, "--semantic", help="Semantic (vector) only"),
+    hybrid: bool = typer.Option(False, "--hybrid", help="Hybrid (RRF); needs embeddings"),
+    source: str = typer.Option(None, "--source", help="Filter by source: ews | mm"),
+    since: str = typer.Option(None, "--since", help="Only on/after YYYY-MM-DD"),
+    limit: int = typer.Option(None, "--limit", help="Max results"),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Search the encrypted message store (FTS5 keyword / cosine semantic / hybrid).
+
+    Keyword search is fully offline. Semantic/hybrid embed the query via the corp
+    gateway and need the corp network (or recorded fleet calls).
+    """
+    chosen = "keyword" if keyword else "semantic" if semantic else "hybrid" if hybrid else mode
+    store = _open_store_or_exit()
+    try:
+        eff_mode = chosen or store.config.search_default_mode
+        backend = None
+        if eff_mode in ("semantic", "hybrid"):
+            try:
+                backend = _store_embed_backend()
+            except Exception as exc:  # noqa: BLE001 - actionable CLI error
+                typer.echo(
+                    f"{FAIL} {eff_mode} search needs the embeddings gateway: {exc}", err=True
+                )
+                raise typer.Exit(1)
+        hits = store.search(
+            query, mode=eff_mode, backend=backend, source=source, since=since, limit=limit
+        )
+    finally:
+        store.close()
+
+    if json_out:
+        import json as _json
+
+        payload = [
+            {
+                "message_id": h.message_id,
+                "score": round(h.score, 6),
+                "subject": h.subject,
+                "snippet": h.snippet,
+                "received_at": h.received_at,
+                "source": h.source,
+                "author": h.author_email,
+                "provenance": h.provenance,
+            }
+            for h in hits
+        ]
+        typer.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    if not hits:
+        typer.echo(
+            f"{FAIL} No matches. The store may be empty (run a digest with the store enabled) "
+            "or lack vectors for semantic search (`actionpulse store reembed`)."
+        )
+        return
+    for h in hits:
+        subj = (h.subject or "")[:48]
+        snippet = " ".join((h.snippet or "").split())[:80]
+        typer.echo(f"  {h.received_at[:10]}  {h.source:<5}  {subj:<48}  {snippet}")
+
+
+store_app = typer.Typer(help="Manage the encrypted message store (opt-in).")
+app.add_typer(store_app, name="store")
+
+
+@store_app.command("init")
+def store_init():
+    """Generate the encryption key (if missing) and show how to enable the store.
+
+    The key is written to ~/.config/actionpulse/env (chmod 600), the same secret
+    channel as EWS_PASSWORD / MM_PAT. Losing it makes the store unreadable.
+    """
+    import os
+    import secrets
+
+    from digest_core.ui.menu import ENV_PATH
+
+    existing = os.getenv("DIGEST_STORE_KEY")
+    if not existing and ENV_PATH.exists():
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            if line.startswith("DIGEST_STORE_KEY="):
+                existing = line.split("=", 1)[1].strip()
+                break
+    if existing:
+        typer.echo(f"{OK} DIGEST_STORE_KEY already set ({ENV_PATH}).")
+    else:
+        key = secrets.token_hex(32)
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ENV_PATH, "a", encoding="utf-8") as handle:
+            handle.write(f"\nDIGEST_STORE_KEY={key}\n")
+        os.chmod(ENV_PATH, 0o600)
+        typer.echo(f"{OK} Generated DIGEST_STORE_KEY in {ENV_PATH} (chmod 600).")
+        typer.echo("    Keep it safe — losing the key makes the encrypted store unreadable.")
+    typer.echo(
+        "Enable the store: add `store:\\n  enabled: true` to configs/config.yaml "
+        "(or export DIGEST_STORE_ENABLED=1), then run a digest to populate it."
+    )
+
+
+@store_app.command("stats")
+def store_stats():
+    """Show store contents (rows by source, chunks/embeddings, age) and disk size."""
+    from digest_core import maintenance
+
+    store = _open_store_or_exit()
+    try:
+        st = store.stats()
+    finally:
+        store.close()
+    by_source = ", ".join(f"{k}={v}" for k, v in st["by_source"].items()) or "—"
+    db_path = Path(store.config.resolved_db_path())
+    size = db_path.stat().st_size if db_path.exists() else 0
+    typer.echo(f"  messages    {st['messages']}  ({by_source})")
+    typer.echo(f"  chunks      {st['chunks']}")
+    typer.echo(f"  embeddings  {st['embeddings']}")
+    typer.echo(f"  window      {st['oldest'] or '—'} … {st['newest'] or '—'}")
+    typer.echo(f"  db size     {maintenance.format_bytes(size)}  {db_path}")
+
+
+@store_app.command("purge")
+def store_purge(
+    ttl_days: int = typer.Option(None, "--ttl-days", help="Override the configured TTL"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt"),
+):
+    """Apply the TTL now — delete messages older than the retention window."""
+    store = _open_store_or_exit()
+    try:
+        days = ttl_days if ttl_days is not None else store.config.ttl_days
+        if not yes:
+            typer.confirm(f"Delete store messages older than {days} days?", abort=True)
+        deleted = store.sweep_ttl(days)
+        store.vacuum()
+    finally:
+        store.close()
+    typer.echo(f"{OK} Purged {deleted} message(s) older than {days} days.")
+
+
+@store_app.command("reembed")
+def store_reembed():
+    """Fill the embedding backlog (chunks without a vector). Needs the corp network."""
+    store = _open_store_or_exit()
+    try:
+        try:
+            backend = _store_embed_backend()
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"{FAIL} embeddings gateway unavailable: {exc}", err=True)
+            raise typer.Exit(1)
+        result = store.embed_backlog(backend)
+    finally:
+        store.close()
+    typer.echo(f"{OK} Embedded {result['embedded']} chunk(s).")
+
+
+@store_app.command("vacuum")
+def store_vacuum():
+    """Reclaim free space in the encrypted DB after large deletes."""
+    store = _open_store_or_exit()
+    try:
+        store.vacuum()
+    finally:
+        store.close()
+    typer.echo(f"{OK} Vacuumed the store.")
+
+
+@store_app.command("drop")
+def store_drop(yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt")):
+    """Delete the entire store database file (irreversible)."""
+    from digest_core.config import Config
+
+    db_path = Path(Config().store.resolved_db_path())
+    if not db_path.exists():
+        typer.echo(f"{OK} No store database at {db_path}.")
+        return
+    if not yes:
+        typer.confirm(f"Permanently delete the store at {db_path}?", abort=True)
+    removed = 0
+    for p in (
+        db_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        try:
+            if p.exists():
+                p.unlink()
+                removed += 1
+        except OSError:
+            continue
+    typer.echo(f"{OK} Deleted the store ({removed} file(s)).")
+
+
 @app.command()
 def diagnose():
     """Run environment diagnostics.
