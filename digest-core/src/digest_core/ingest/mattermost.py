@@ -49,6 +49,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Deque, Dict, List, Optional, Protocol
 
 import httpx
@@ -56,6 +57,7 @@ import structlog
 
 from digest_core.config import MattermostSourceConfig, TimeConfig
 from digest_core.ingest.ews import NormalizedMessage
+from digest_core.ingest.watermark import SourceWatermark
 from digest_core.progress import NullSink, ProgressSink, emit
 
 logger = structlog.get_logger()
@@ -766,6 +768,8 @@ class MattermostSourceAdapter:
         client: Optional[MattermostReadClient] = None,
         http_client: Optional[_HttpClient] = None,
         sink: ProgressSink = NullSink(),
+        incremental: bool = True,
+        state_dir: Optional[Path] = None,
     ) -> None:
         """Build the adapter.
 
@@ -783,6 +787,14 @@ class MattermostSourceAdapter:
         self._config = config
         self._time_config = time_config
         self._sink = sink
+        # Incremental load (BR: per-source high-water marks). When a state dir is
+        # provided and ``incremental`` is True, the per-source watermark narrows
+        # the window to "since last seen"; otherwise the full window is fetched
+        # (first run, no watermark, or an explicit back-dated run). Mirrors EWS.
+        self._incremental = incremental
+        self._watermark = (
+            SourceWatermark(state_dir=state_dir, source="mm") if state_dir is not None else None
+        )
         #: Outcome of the last ``fetch()`` — mirrors ``EWSIngest.last_fetch_stats``
         #: so a degrade (skipped channels) is never invisible. Populated by fetch().
         self.last_fetch_stats: dict = {}
@@ -848,6 +860,19 @@ class MattermostSourceAdapter:
              quote-capped to ``dm_max_quote_chars``.
         """
         start_ms, end_ms = self._window_ms(digest_date)
+        # Incremental window (BR: per-source high-water marks): raise the start
+        # floor to "since last seen" minus the overlap re-read window. Every
+        # downstream step (pre-gate on last_post_at, per-channel early-stop) already
+        # keys off start_ms, so this narrows the scan with no further change. A
+        # back-dated run (incremental=False) or a missing watermark keeps the full
+        # window. Re-reads from the overlap are absorbed by pipeline/store dedup.
+        watermark_used: Optional[str] = None
+        if self._incremental and self._watermark is not None:
+            window_start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+            eff_start = self._watermark.effective_start(window_start)
+            if eff_start != window_start:
+                start_ms = int(eff_start.timestamp() * 1000)
+                watermark_used = eff_start.isoformat()
 
         me = self._client.get_me()
         owner_id = me.get("id") or ""
@@ -972,6 +997,17 @@ class MattermostSourceAdapter:
             if keep_meta.channel_kind in ("dm", "gm"):
                 dm_messages += 1
 
+        # Advance the watermark to the latest post actually seen (NOT the window
+        # end) so a post arriving after the last item is not skipped next run.
+        # No-op on a quiet window (observed_max is None) so the mark never ratchets
+        # past unseen posts.
+        watermark_advanced: Optional[str] = None
+        if self._incremental and self._watermark is not None:
+            observed_max = max((m.datetime_received for m in messages), default=None)
+            self._watermark.advance(observed_max)
+            if observed_max is not None:
+                watermark_advanced = observed_max.astimezone(timezone.utc).isoformat()
+
         # Record the outcome so a degrade is never invisible (mirrors EWSIngest).
         # The AIMD fields (rate_limit_hits / retries / max_concurrency_reached)
         # surface how hard the controller had to work — a high rate_limit_hits
@@ -991,6 +1027,10 @@ class MattermostSourceAdapter:
             "dm_scope": dm_scope,
             "dm_channels_scanned": len(dm_to_fetch),
             "dm_messages": dm_messages,
+            # Per-source incremental watermark (PR1): the window floor used and the
+            # mark advanced to (max observed received time, DMs included).
+            "watermark_used": watermark_used,
+            "watermark_advanced_to": watermark_advanced,
         }
         # Final progress emit carries the summary so the live footer shows skips.
         emit(

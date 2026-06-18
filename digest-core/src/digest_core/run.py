@@ -133,6 +133,10 @@ class RunContext:
     #: existing live path and tests that build a RunContext without specifying
     #: sources are unchanged. ``_stage_ingest`` builds the adapter list from this.
     sources: List[str] = field(default_factory=lambda: ["ews"])
+    #: Incremental load: True for a normal "today" run (per-source watermarks
+    #: narrow each source's fetch to "since last seen"); False for an explicit
+    #: back-dated run, so a back-fill fetches the full requested window.
+    incremental: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +256,10 @@ def _init_context(
     start_health_server(port=9109, llm_config=config.llm)
 
     digest_date = _resolve_digest_date(from_date, config.time.user_timezone)
+    # Incremental load only for the canonical daily "today" run; an explicit
+    # back-dated request (a date or "yesterday") fetches the full requested
+    # window so a back-fill is never truncated by a later run's watermark.
+    incremental = (from_date or "today").strip().lower() == "today"
     output_dir = Path(out).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / f"digest-{digest_date}.json"
@@ -327,6 +335,7 @@ def _init_context(
         rate_broker=rate_broker,
         log_file=log_file,
         run_meta=run_meta,
+        incremental=incremental,
     )
 
 
@@ -343,6 +352,8 @@ def _build_source_adapters(
     ingest: EWSIngest,
     config: Config | None = None,
     sink: ProgressSink | None = None,
+    *,
+    incremental: bool = True,
 ) -> tuple[List[SourceAdapter], List[SourceAdapter]]:
     """Build the live adapter list from ``--sources``, split by strictness.
 
@@ -373,7 +384,7 @@ def _build_source_adapters(
                 seen_ews = True
         elif key in _MM_SOURCE_NAMES:
             if not seen_mm:
-                lenient_adapters.append(_build_mm_adapter(config, sink))
+                lenient_adapters.append(_build_mm_adapter(config, sink, incremental=incremental))
                 seen_mm = True
         else:
             # An unrecognized source must fail loudly so a typo or a not-yet-built
@@ -385,7 +396,9 @@ def _build_source_adapters(
     return strict_adapters, lenient_adapters
 
 
-def _build_mm_adapter(config: Config | None, sink: ProgressSink | None = None) -> SourceAdapter:
+def _build_mm_adapter(
+    config: Config | None, sink: ProgressSink | None = None, *, incremental: bool = True
+) -> SourceAdapter:
     """Construct the Mattermost mentions adapter, or raise an actionable error.
 
     Selecting ``--sources mm`` is an explicit operator request; if the source is
@@ -415,9 +428,36 @@ def _build_mm_adapter(config: Config | None, sink: ProgressSink | None = None) -
             f"Mattermost source selected (--sources mm) but the PAT is not set: {exc}. "
             f"Export ${mm_cfg.token_env} (the personal access token; ENV only, never YAML)."
         ) from exc
+    # Per-source watermark lives under the run's state dir (honors --state),
+    # independent of the optional message store so incremental load works store-off.
+    state_dir = config.resolved_state_dir()
     if sink is not None:
-        return MattermostSourceAdapter(mm_cfg, config.time, sink=sink)
-    return MattermostSourceAdapter(mm_cfg, config.time)
+        return MattermostSourceAdapter(
+            mm_cfg, config.time, sink=sink, incremental=incremental, state_dir=state_dir
+        )
+    return MattermostSourceAdapter(
+        mm_cfg, config.time, incremental=incremental, state_dir=state_dir
+    )
+
+
+def _dedup_messages(messages: List[NormalizedMessage]) -> List[NormalizedMessage]:
+    """Drop duplicate ``(source, msg_id)`` messages, keeping first occurrence.
+
+    BR §0 requires "дедуп" for ALL sources. This is a cheap, pipeline-level safety
+    net that holds even when the optional message store is off: it collapses the
+    overlap-window re-reads introduced by the per-source watermark and a message
+    that appears in two EWS folders. Duplicate messages share an identical
+    ``msg_id`` within a source, so keeping the first is loss-free.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: List[NormalizedMessage] = []
+    for m in messages:
+        key = (getattr(m, "source", "email") or "email", m.msg_id or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(m)
+    return out
 
 
 def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
@@ -441,7 +481,11 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         ingest_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "ingest")
         ingest = EWSIngest(
-            ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics, sink=ctx.sink
+            ctx.config.ews,
+            time_config=ctx.config.time,
+            metrics=ctx.metrics,
+            sink=ctx.sink,
+            incremental=ctx.incremental,
         )
         # Route the live fetch through the multi-source seam (PR12b), now driven by
         # ``--sources`` (P1a). The adapter list is built from ``ctx.sources``; an
@@ -455,7 +499,7 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         # only EWS selected (the default), this is exactly one
         # ``run_sources([EWSSourceAdapter], strict=True)`` call — behavior-preserving.
         strict_adapters, lenient_adapters = _build_source_adapters(
-            ctx.sources, ingest, ctx.config, ctx.sink
+            ctx.sources, ingest, ctx.config, ctx.sink, incremental=ctx.incremental
         )
         envelopes = []
         if strict_adapters:
@@ -463,9 +507,17 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         if lenient_adapters:
             envelopes += run_sources(lenient_adapters, ctx.digest_date, strict=False)
         messages = messages_from_envelopes(envelopes)
+        # Pipeline-level dedup by (source, msg_id) — the BR's "дедуп for ALL
+        # sources" at the message level. Holds even with the optional store off:
+        # it collapses overlap-window re-reads and a message present in two EWS
+        # folders, before counting/normalizing.
+        pre_dedup = len(messages)
+        messages = _dedup_messages(messages)
         ctx.metrics.record_emails_total(len(messages), "fetched")
         fetch_stats = dict(getattr(ingest, "last_fetch_stats", {}) or {})
         ingest_counts: Dict[str, Any] = {"messages": len(messages)}
+        if pre_dedup != len(messages):
+            ingest_counts["duplicates"] = pre_dedup - len(messages)
         if fetch_stats.get("retries"):
             ingest_counts["retries"] = fetch_stats["retries"]
         # A skipped channel in a lenient source (MM) is a real degrade — surface

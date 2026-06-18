@@ -1387,6 +1387,18 @@ class Config(BaseSettings):
                 continue
             setattr(model, field_name, _coerce_env_value(field_info.annotation, raw))
 
+    def resolved_state_dir(self) -> "Path":
+        """The run's state directory (single source of truth for all sources).
+
+        Derived from the EWS sync-state path so the ``--state`` override (which
+        run.py routes through ``ews.sync_state_path``) is honored for every
+        source's watermark, the dedup ledger, and ``last_run.json``. Mirrors the
+        idiom already used for the dedup ledger in run.py.
+        """
+        from pathlib import Path
+
+        return Path(self.ews.resolved_sync_state_path()).expanduser().parent
+
     def get_ews_password(self) -> str:
         """Get EWS password from environment.
 
