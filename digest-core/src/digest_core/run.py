@@ -465,8 +465,9 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
 
     Replay mode returns already-normalized messages.
     Live mode fetches from EWS then normalizes.
-    Also handles --dump-ingest snapshot writing.
+    Also handles --dump-ingest snapshot writing and the opt-in store persist.
     """
+    raw_by_id: Dict[str, str] = {}
     if ctx.replay_ingest:
         replay_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "ingest")
@@ -548,6 +549,10 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
 
         normalize_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "normalize")
+        # Capture the raw (pre-normalize) bodies before NORMALIZE rebuilds each
+        # message and overwrites text_body — the store keeps body_raw alongside
+        # the cleaned body. (Replay has no separate raw body; raw_by_id stays {}.)
+        raw_by_id = {m.msg_id: m.text_body for m in messages}
         messages = _normalize_messages(messages, ctx.config, sink=ctx.sink)
         _finish_stage(ctx, "normalize", normalize_start, messages=len(messages))
 
@@ -555,7 +560,82 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         snapshot_path = Path(ctx.dump_ingest).expanduser()
         _dump_ingest_snapshot(snapshot_path, messages, ctx.digest_date)
 
+    # Opt-in archive: persist what was fetched (live OR replay) to the encrypted
+    # store. Runs after NORMALIZE so both raw and normalized bodies are available;
+    # a no-op when store.enabled is false. Non-fatal — a store failure never breaks
+    # the digest (degrade-not-drop), so it is safe even on dry-run.
+    _persist_to_store(ctx, messages, raw_by_id)
+
     return messages
+
+
+def _build_store_embeddings(ctx: RunContext):
+    """EmbeddingsClient for the store's opt-in embed-on-ingest.
+
+    Same fleet/record-replay discipline as the threading tier
+    (``_build_thread_embeddings``): under ``--replay-llm`` it runs only when the
+    fleet sidecar exists. Model comes from ``store.embedding_model``.
+    """
+    from digest_core.llm.fleet import EmbeddingsClient
+
+    replay = None
+    if ctx.replay_llm:
+        sidecar = Path(f"{ctx.replay_llm}.fleet.json")
+        if not sidecar.exists():
+            logger.warning(
+                "Store embed-on-ingest disabled for this replay run: no fleet sidecar",
+                sidecar=str(sidecar),
+                trace_id=ctx.trace_id,
+            )
+            return None
+        replay = str(sidecar)
+    return EmbeddingsClient(
+        ctx.config.llm,
+        model=ctx.config.store.embedding_model,
+        rate_broker=ctx.rate_broker,
+        record=f"{ctx.record_llm}.fleet.json" if ctx.record_llm else None,
+        replay=replay,
+        stage="embeddings",
+        sink=ctx.sink,
+    )
+
+
+def _persist_to_store(
+    ctx: RunContext, messages: List[NormalizedMessage], raw_by_id: Dict[str, str]
+) -> None:
+    """Persist fetched messages to the opt-in encrypted store (non-fatal side-channel).
+
+    No-op unless ``config.store.enabled``. Any failure (missing driver, bad key,
+    IO) logs a warning and returns — it must never break the digest. Embedding is
+    gated by ``store.embed_on_ingest`` (default off) so the default path stays
+    offline on --dry-run/--replay. The store is NOT a pipeline stage, so it emits
+    no stage events; its outcome lands in ``run_meta['store']``.
+    """
+    cfg = getattr(ctx.config, "store", None)
+    if cfg is None or not cfg.enabled:
+        return
+    try:
+        from digest_core.store import MessageStore
+
+        with MessageStore.open(cfg) as store:
+            stats = store.upsert_messages(
+                messages, raw_by_id=raw_by_id, pipeline_version=PIPELINE_VERSION
+            )
+            swept = store.sweep_ttl()
+            store_meta: Dict[str, Any] = {"enabled": True, **stats, "ttl_swept": swept}
+            if cfg.embed_on_ingest:
+                backend = _build_store_embeddings(ctx)
+                if backend is not None:
+                    store_meta["embedded"] = store.embed_backlog(backend).get("embedded", 0)
+        ctx.run_meta["store"] = store_meta
+        logger.info(
+            "message_store_persisted",
+            trace_id=ctx.trace_id,
+            **{k: v for k, v in store_meta.items() if k != "enabled"},
+        )
+    except Exception as exc:  # degrade-not-drop: a store failure never fails the run
+        logger.warning("message_store_persist_failed", error=str(exc), trace_id=ctx.trace_id)
+        ctx.run_meta["store"] = {"enabled": True, "error": str(exc)}
 
 
 def _stage_threads(ctx: RunContext, messages: List[NormalizedMessage]) -> list:
