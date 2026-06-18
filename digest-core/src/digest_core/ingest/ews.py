@@ -163,6 +163,38 @@ class NormalizedMessage:
         return self.from_email or self.sender_email or ""
 
 
+def compute_time_window(
+    digest_date: str, time_config: TimeConfig, lookback_hours: int = 24
+) -> tuple[datetime, datetime]:
+    """Pure digest time-window math, returning aware-UTC ``(start, end)``.
+
+    Shared by EWS ingest and any other source (e.g. the Mattermost adapter) so
+    all sources use one window definition. Pure — no I/O, no global side effects
+    (unlike constructing an ``EWSIngest``, whose ``__init__`` mutates exchangelib's
+    SSL context). ``lookback_hours`` is used only for the ``rolling_24h`` window.
+    """
+    user_tz = pytz.timezone(time_config.user_timezone)
+
+    if time_config.window == "calendar_day":
+        # Calendar day: 00:00:00 to 23:59:59 in user timezone
+        start_date = datetime.strptime(digest_date, "%Y-%m-%d").replace(tzinfo=user_tz)
+        end_date = start_date.replace(hour=23, minute=59, second=59)
+        start_utc = to_utc(start_date)
+        end_utc = to_utc(end_date)
+    else:  # rolling_24h
+        now_utc = datetime.now(timezone.utc)
+        end_utc = now_utc
+        start_utc = now_utc - timedelta(hours=lookback_hours)
+
+    logger.info(
+        "Time window calculated",
+        window_type=time_config.window,
+        start_utc=start_utc.isoformat(),
+        end_utc=end_utc.isoformat(),
+    )
+    return start_utc, end_utc
+
+
 class EWSIngest:
     """EWS email ingestion with NTLM authentication."""
 
@@ -271,31 +303,7 @@ class EWSIngest:
         self, digest_date: str, time_config: TimeConfig
     ) -> tuple[datetime, datetime]:
         """Calculate time window for email fetching. Returns UTC datetimes."""
-        user_tz = pytz.timezone(time_config.user_timezone)
-
-        if time_config.window == "calendar_day":
-            # Calendar day: 00:00:00 to 23:59:59 in user timezone
-            start_date = datetime.strptime(digest_date, "%Y-%m-%d").replace(tzinfo=user_tz)
-            end_date = start_date.replace(hour=23, minute=59, second=59)
-
-            # Convert to UTC using our utilities
-            start_utc = to_utc(start_date)
-            end_utc = to_utc(end_date)
-
-        else:  # rolling_24h
-            # Rolling 24 hours from now (use standard UTC)
-            now_utc = datetime.now(timezone.utc)
-            end_utc = now_utc
-            start_utc = now_utc - timedelta(hours=self.config.lookback_hours)
-
-        logger.info(
-            "Time window calculated",
-            window_type=time_config.window,
-            start_utc=start_utc.isoformat(),
-            end_utc=end_utc.isoformat(),
-        )
-
-        return start_utc, end_utc
+        return compute_time_window(digest_date, time_config, self.config.lookback_hours)
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(FETCH_MAX_ATTEMPTS),

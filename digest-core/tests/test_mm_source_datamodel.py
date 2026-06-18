@@ -444,7 +444,13 @@ def test_build_source_adapters_unknown_source_errors():
         runner._build_source_adapters(["telegram"], object())
 
 
-def test_build_source_adapters_mm_not_yet_built_errors():
-    """P1a builds no real MM adapter; selecting "mm" must fail loudly (it is P1b)."""
-    with pytest.raises(ValueError, match="Unknown ingest source"):
-        runner._build_source_adapters(["mm"], object())
+def test_build_source_adapters_mm_unconfigured_errors():
+    """Selecting "mm" while unconfigured (no base_url / MM_PAT) fails loudly (P1b).
+
+    P1b builds a real MM adapter, but only when configured. With a default
+    Config (no base_url, MM_PAT unset) the build must raise an actionable error
+    rather than degrade to a silent empty digest.
+    """
+    cfg = Config()
+    with pytest.raises(ValueError, match="Mattermost source selected"):
+        runner._build_source_adapters(["mm"], object(), cfg)
