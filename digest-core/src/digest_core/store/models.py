@@ -11,6 +11,18 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+#: Guardrail #9 (design §6; matches run.py's dump redaction): a DM body (1:1 'D'
+#: / group 'G') must NEVER be persisted at rest — it is third-party PII the owner
+#: may process only transiently for the digest, not archive. The store therefore
+#: redacts DM bodies on write (the row + metadata are kept; the content is not).
+_DM_CHANNEL_TYPES = frozenset({"D", "G"})
+DM_AT_REST_REDACTION = "[DM content redacted at rest]"
+
+
+def is_dm(source: str, mm_channel_type: Optional[str]) -> bool:
+    """True iff a message is a Mattermost DM (1:1 'D' or group 'G')."""
+    return (source or "").lower() == "mm" and mm_channel_type in _DM_CHANNEL_TYPES
+
 
 def build_urn(source: str, msg_id: str) -> str:
     """Stable URN id for a message (BR v3.0 ``urn:email:..`` / ``urn:mm:..``).
@@ -53,16 +65,23 @@ def message_to_row(
     pre-normalize body when provided by the caller (the pipeline hook captures it
     before NORMALIZE overwrites it), else it falls back to the normalized body.
     """
-    urn = build_urn(getattr(msg, "source", "email"), msg.msg_id)
+    source = getattr(msg, "source", "email") or "email"
+    urn = build_urn(source, msg.msg_id)
     body_norm = getattr(msg, "body_norm", "") or getattr(msg, "text_body", "") or ""
     body_raw = raw_body if raw_body is not None else body_norm
+    mm_channel_type = getattr(msg, "mm_channel_type", None)
+    if is_dm(source, mm_channel_type):
+        # Guardrail #9: keep the DM row (metadata) but never its body at rest.
+        body_raw = DM_AT_REST_REDACTION
+        body_norm = DM_AT_REST_REDACTION
     received = _to_utc(getattr(msg, "datetime_received", None))
     return {
         "id": urn,
-        "source": getattr(msg, "source", "email") or "email",
+        "source": source,
         "canonical_url": None,
         "thread_id": getattr(msg, "conversation_id", None),
         "parent_id": None,
+        "mm_channel_type": mm_channel_type,
         "received_at": received.isoformat(),
         "received_epoch": int(received.timestamp()),
         "author_display": getattr(msg, "from_name", None),

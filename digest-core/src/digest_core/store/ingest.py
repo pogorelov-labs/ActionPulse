@@ -16,22 +16,22 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from digest_core.store.chunking import chunk_id, chunk_text
-from digest_core.store.models import message_to_row
+from digest_core.store.models import is_dm, message_to_row
 from digest_core.store.schema import CURRENT_SCHEMA_VERSION
 
 _COLUMNS = (
-    "id, source, canonical_url, thread_id, parent_id, received_at, received_epoch, "
-    "author_display, author_email, author_role, subject, body_raw, body_normalized, "
-    "content_hash, lang, importance, is_flagged, has_attachments, attachment_types, "
-    "to_recipients, cc_recipients, risk_level, pipeline_version, schema_version, "
-    "first_seen_at, last_seen_at, ingested_at"
+    "id, source, canonical_url, thread_id, parent_id, mm_channel_type, received_at, "
+    "received_epoch, author_display, author_email, author_role, subject, body_raw, "
+    "body_normalized, content_hash, lang, importance, is_flagged, has_attachments, "
+    "attachment_types, to_recipients, cc_recipients, risk_level, pipeline_version, "
+    "schema_version, first_seen_at, last_seen_at, ingested_at"
 )
 _VALUES = (
-    ":id, :source, :canonical_url, :thread_id, :parent_id, :received_at, :received_epoch, "
-    ":author_display, :author_email, :author_role, :subject, :body_raw, :body_normalized, "
-    ":content_hash, :lang, :importance, :is_flagged, :has_attachments, :attachment_types, "
-    ":to_recipients, :cc_recipients, :risk_level, :pipeline_version, :schema_version, "
-    ":now, :now, :now"
+    ":id, :source, :canonical_url, :thread_id, :parent_id, :mm_channel_type, :received_at, "
+    ":received_epoch, :author_display, :author_email, :author_role, :subject, :body_raw, "
+    ":body_normalized, :content_hash, :lang, :importance, :is_flagged, :has_attachments, "
+    ":attachment_types, :to_recipients, :cc_recipients, :risk_level, :pipeline_version, "
+    ":schema_version, :now, :now, :now"
 )
 _INSERT_SQL = f"INSERT INTO messages ({_COLUMNS}) VALUES ({_VALUES})"
 
@@ -40,7 +40,8 @@ _INSERT_SQL = f"INSERT INTO messages ({_COLUMNS}) VALUES ({_VALUES})"
 _UPDATE_SQL = """
 UPDATE messages SET
     source = :source, canonical_url = :canonical_url, thread_id = :thread_id,
-    parent_id = :parent_id, received_at = :received_at, received_epoch = :received_epoch,
+    parent_id = :parent_id, mm_channel_type = :mm_channel_type,
+    received_at = :received_at, received_epoch = :received_epoch,
     author_display = :author_display, author_email = :author_email, author_role = :author_role,
     subject = :subject, body_raw = :body_raw, body_normalized = :body_normalized,
     content_hash = :content_hash, lang = :lang, importance = :importance,
@@ -112,16 +113,21 @@ def upsert_messages(
                 raw_body=raw.get(getattr(msg, "msg_id", "")),
             )
             params = {**row, "now": now_iso}
+            # DM bodies are redacted at rest (guardrail #9) → no real content to
+            # chunk/embed/search; persist the row but skip chunk creation.
+            dm = is_dm(row["source"], row.get("mm_channel_type"))
             existing = conn.execute(
                 "SELECT content_hash FROM messages WHERE id = :id", {"id": row["id"]}
             ).fetchone()
             if existing is None:
                 conn.execute(_INSERT_SQL, params)
-                _replace_chunks(conn, row["id"], row["body_normalized"])
+                if not dm:
+                    _replace_chunks(conn, row["id"], row["body_normalized"])
                 inserted += 1
             elif existing[0] != row["content_hash"]:
                 conn.execute(_UPDATE_SQL, params)
-                _replace_chunks(conn, row["id"], row["body_normalized"])
+                if not dm:
+                    _replace_chunks(conn, row["id"], row["body_normalized"])
                 updated += 1
             else:
                 conn.execute(_TOUCH_SQL, {"id": row["id"], "now": now_iso})

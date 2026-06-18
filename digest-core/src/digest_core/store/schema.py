@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS messages (
     canonical_url    TEXT,                       -- v3.0 seam
     thread_id        TEXT,                       -- = NormalizedMessage.conversation_id
     parent_id        TEXT,                       -- v3.0 seam (mm reply parent)
+    mm_channel_type  TEXT,                       -- mm: 'O'/'P' channel, 'D'/'G' DM
     received_at      TEXT NOT NULL,             -- UTC ISO-8601
     received_epoch   INTEGER NOT NULL,          -- int epoch seconds (range/TTL)
     author_display   TEXT,
