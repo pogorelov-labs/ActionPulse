@@ -35,10 +35,16 @@ from digest_core import run as runner
 from digest_core.config import Config, MattermostSourceConfig, TimeConfig
 from digest_core.evidence.split import EvidenceSplitter
 from digest_core.ingest.mattermost import (
+    _DEFAULT_RETRY_AFTER_S,
+    _MAX_RETRY_AFTER_S,
+    MattermostRateLimited,
     MattermostReadClient,
     MattermostSourceAdapter,
+    _AdaptiveChannelFetcher,
+    _ChannelResult,
     _is_system_or_bot,
     _mention_regex,
+    _parse_retry_after,
 )
 from digest_core.ingest.source_adapter import SourceAdapter
 from digest_core.threads.build import ThreadBuilder
@@ -751,17 +757,24 @@ def test_per_channel_skip_surfaced_in_progress_detail():
 
 
 def test_last_fetch_stats_populated_full_counts():
-    """No-skip happy path: last_fetch_stats carries the full count shape."""
+    """No-skip happy path: last_fetch_stats carries the full count shape.
+
+    The shape now also carries the AIMD telemetry fields (rate_limit_hits /
+    retries / max_concurrency_reached). On a clean 3-channel run with no
+    throttling there are no rate-limit hits and no retries; whether the ceiling
+    was reached depends on the AIMD band, so it is asserted separately.
+    """
     adapter = _make_adapter_with_sink(_multi_channel_http(), _RecordingSink())
     adapter.fetch(_DIGEST_DATE)
     stats = adapter.last_fetch_stats
-    assert stats == {
-        "channels_total": 3,
-        "channels_active": 3,
-        "channels_scanned": 3,
-        "channels_skipped": 0,
-        "mentions": 3,
-    }
+    assert stats["channels_total"] == 3
+    assert stats["channels_active"] == 3
+    assert stats["channels_scanned"] == 3
+    assert stats["channels_skipped"] == 0
+    assert stats["mentions"] == 3
+    assert stats["rate_limit_hits"] == 0
+    assert stats["retries"] == 0
+    assert "max_concurrency_reached" in stats
 
 
 def test_nullsink_default_is_behavior_preserving():
@@ -793,3 +806,482 @@ def test_read_client_low_level_uses_bearer_header():
     assert me["username"] == _OWNER_USERNAME
     assert captured["headers"]["Authorization"] == "Bearer secret-token"
     assert captured["url"] == "https://mm.corp/api/v4/users/me"
+
+
+# ---------------------------------------------------------------------------
+# 8. Adaptive-concurrency (AIMD) parallel fetcher
+#
+# All offline, payload-free, and HANG-PROOF: every test uses a tiny pool, a
+# fake client whose "slow" responses raise immediately (never a real 30s wait),
+# and an injected/patched sleep so Retry-After back-off is instant. Each test
+# asserts completion (the fetch returns), so a controller bug surfaces as a
+# failed assertion, never a hung suite.
+# ---------------------------------------------------------------------------
+
+
+class _RateLimitedResponse:
+    """A fake HTTP 429 response carrying a Retry-After header.
+
+    Mirrors the slice of ``httpx.Response`` the client reads on the 429 path
+    (``status_code`` + ``headers.get``). ``raise_for_status`` is never reached
+    for a 429 because the client raises ``MattermostRateLimited`` first.
+    """
+
+    def __init__(self, retry_after: str | None = "0") -> None:
+        self.status_code = 429
+        self.headers = {} if retry_after is None else {"Retry-After": retry_after}
+
+    def raise_for_status(self):  # pragma: no cover - never reached for 429
+        raise AssertionError("429 must be intercepted before raise_for_status")
+
+    def json(self):  # pragma: no cover - never reached for 429
+        raise AssertionError("429 body must not be read")
+
+
+def _many_channel_routes(n: int) -> tuple[dict, dict, list[str]]:
+    """Build routes for ``n`` active channels each with one @owner mention.
+
+    Returns (routes_get, routes_post, channel_ids). Channels are staggered by
+    ``last_post_at`` so the active-sort order is deterministic.
+    """
+    me = {"id": _OWNER_ID, "username": _OWNER_USERNAME, "email": "me@corp"}
+    teams = [{"id": "team-1"}]
+    cids = [f"chan-{i}" for i in range(n)]
+    chans = [
+        {
+            "id": cid,
+            "display_name": cid,
+            "name": cid,
+            "last_post_at": _MID_DAY_MS + (n - i) * 1000,
+        }
+        for i, cid in enumerate(cids)
+    ]
+
+    def _postlist(cid: str) -> dict:
+        post = {
+            "id": f"p-{cid}",
+            "root_id": "",
+            "user_id": "author-1",
+            "channel_id": cid,
+            "create_at": _MID_DAY_MS,
+            "delete_at": 0,
+            "type": "",
+            "message": f"{_OWNER_HANDLE} please review {cid}",
+        }
+        return {"order": [f"p-{cid}"], "posts": {f"p-{cid}": post}}
+
+    routes_get = {
+        "/api/v4/users/me": me,
+        "/api/v4/users/me/teams": teams,
+        "/api/v4/users/me/teams/team-1/channels": chans,
+    }
+    for cid in cids:
+        routes_get[f"/api/v4/channels/{cid}/posts"] = _postlist(cid)
+    routes_post = {
+        "/api/v4/users/ids": [
+            {"id": "author-1", "username": "alice.author", "email": "alice@corp"},
+        ],
+    }
+    return routes_get, routes_post, cids
+
+
+class _ProgrammableHttp(_FakeHttp):
+    """A fake http whose per-channel GET can be programmed to 429 / timeout.
+
+    ``rate_limit_plan`` maps a channel id → number of leading 429s before the
+    real PostList is served. ``timeout_channels`` is a set of channel ids whose
+    GET always raises ``httpx.ReadTimeout`` (simulated instantly — no real wait).
+    A thread-safe counter records how many times each channel was attempted.
+    """
+
+    def __init__(
+        self,
+        routes_get: dict,
+        routes_post: dict,
+        *,
+        rate_limit_plan: dict[str, int] | None = None,
+        timeout_channels: set[str] | None = None,
+        retry_after: str | None = "0",
+    ) -> None:
+        super().__init__(routes_get, routes_post)
+        self._rl_plan = dict(rate_limit_plan or {})
+        self._timeouts = set(timeout_channels or set())
+        self._retry_after = retry_after
+        self._lock = __import__("threading").Lock()
+        self.channel_attempts: dict[str, int] = {}
+
+    def get(self, url, *, params=None, headers=None):
+        # Identify a per-channel posts GET.
+        for cid in list(self._rl_plan) + list(self._timeouts):
+            if url.endswith(f"/channels/{cid}/posts"):
+                with self._lock:
+                    self.calls.append(("GET", url))
+                    self.channel_attempts[cid] = self.channel_attempts.get(cid, 0) + 1
+                    remaining_429 = self._rl_plan.get(cid, 0)
+                    if remaining_429 > 0:
+                        self._rl_plan[cid] = remaining_429 - 1
+                        return _RateLimitedResponse(self._retry_after)
+                if cid in self._timeouts:
+                    raise httpx.ReadTimeout("simulated slow channel")
+                # Fall through to the normal route for a served PostList.
+                break
+        return super().get(url, params=params, headers=headers)
+
+
+def _adapter_from_http(http: _FakeHttp, **cfg_overrides) -> MattermostSourceAdapter:
+    client = MattermostReadClient(
+        "https://mm.corp", "fake-pat-not-a-real-token", http_client=http, per_page=200
+    )
+    return MattermostSourceAdapter(
+        MattermostSourceConfig(base_url="https://mm.corp", **cfg_overrides),
+        _utc_time_config(),
+        client=client,
+    )
+
+
+# -- 8a. Retry-After header parsing (pure unit) -----------------------------
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("5", 5.0),
+        ("0.5", 0.5),
+        ("  3  ", 3.0),
+        (None, _DEFAULT_RETRY_AFTER_S),  # absent → fallback
+        ("not-a-number", _DEFAULT_RETRY_AFTER_S),  # HTTP-date / garbage → fallback
+        ("0", _DEFAULT_RETRY_AFTER_S),  # zero clamps to the fallback (never sleep 0)
+        ("-2", _DEFAULT_RETRY_AFTER_S),  # negative clamps to the fallback
+        ("30", 30.0),  # under the ceiling → unchanged
+        ("3600", _MAX_RETRY_AFTER_S),  # huge value clamps to the ceiling (no coordinator freeze)
+    ],
+)
+def test_parse_retry_after(value, expected):
+    assert _parse_retry_after(value) == expected
+
+
+def test_client_raises_rate_limited_on_429():
+    """A 429 response → MattermostRateLimited(retry_after) from the client."""
+
+    class _Http429:
+        def get(self, url, *, params=None, headers=None):
+            return _RateLimitedResponse("7")
+
+        def post(self, url, *, json=None, headers=None):  # pragma: no cover
+            return _FakeResponse([])
+
+    client = MattermostReadClient("https://mm.corp", "fake", http_client=_Http429())
+    with pytest.raises(MattermostRateLimited) as ei:
+        client.get_posts("chan-x")
+    assert ei.value.retry_after == 7.0
+
+
+# -- 8b. Correctness / equivalence to the sequential path -------------------
+
+
+def _sequential_mention_ids(routes_get, routes_post) -> set[str]:
+    """Compute the mention set the way the OLD sequential loop would, via a
+    single-worker, no-retry adaptive fetch (concurrency=1 is the sequential
+    degenerate case) — the reference set for the equivalence assertion."""
+    http = _FakeHttp(dict(routes_get), dict(routes_post))
+    adapter = _adapter_from_http(http, min_concurrency=1, max_concurrency=1)
+    return {m.msg_id for m in adapter.fetch(_DIGEST_DATE)}
+
+
+def test_adaptive_returns_same_mention_set_as_sequential():
+    """Concurrency changes HOW fast, never WHAT: the parallel fetch returns the
+    SAME set of mentions as the single-worker (sequential) path."""
+    routes_get, routes_post, cids = _many_channel_routes(8)
+
+    reference = _sequential_mention_ids(routes_get, routes_post)
+    assert reference == {f"mm:p-{cid}" for cid in cids}  # sanity: all 8 found
+
+    http = _FakeHttp(dict(routes_get), dict(routes_post))
+    adapter = _adapter_from_http(http, min_concurrency=2, max_concurrency=6)
+    parallel = {m.msg_id for m in adapter.fetch(_DIGEST_DATE)}
+
+    assert parallel == reference
+
+
+# -- 8c. AIMD additive-increase ramp ----------------------------------------
+
+
+def test_aimd_ramps_up_toward_max_concurrency_on_all_success():
+    """With every channel succeeding, the limit ADDITIVELY increases over time
+    and reaches the ceiling (additive-increase, no decrease without a 429)."""
+    routes_get, routes_post, _ = _many_channel_routes(30)
+    http = _FakeHttp(routes_get, routes_post)
+    fetcher = _AdaptiveChannelFetcher(
+        channels=http._routes_get["/api/v4/users/me/teams/team-1/channels"],
+        total_active=30,
+        fetch_channel=lambda ch: _ChannelResult(kept_posts=[], author_ids=set()),
+        sink=_RecordingSink(),
+        min_concurrency=2,
+        max_concurrency=8,
+        max_retries_per_channel=2,
+        sleep=lambda _s: None,
+    )
+    outcome = fetcher.run()
+
+    assert outcome.channels_scanned == 30
+    assert outcome.max_concurrency_reached is True
+    # Strictly non-decreasing ramp from the floor toward the ceiling, capped.
+    hist = outcome.limit_history
+    assert hist[0] == 3  # first success: 2 -> 3 (additive +1 from the floor)
+    assert max(hist) == 8  # reaches the ceiling
+    assert hist == sorted(hist)  # monotonic non-decreasing (no 429 ⇒ no decrease)
+    assert all(v <= 8 for v in hist)  # never exceeds the cap
+
+
+# -- 8d. 429 multiplicative-decrease + Retry-After honored + retry success ---
+
+
+def test_aimd_429_backs_off_and_retries_to_success():
+    """A channel that 429s (with Retry-After) → the limit DROPS multiplicatively,
+    the hit is counted, the channel is retried (Retry-After honored via injected
+    sleep), and the final result still includes that channel's mention."""
+    routes_get, routes_post, cids = _many_channel_routes(12)
+    # The first 11 channels succeed (ramp the limit up), then chan-11 429s once
+    # before succeeding — so a decrease is observable against a raised limit.
+    http = _ProgrammableHttp(
+        routes_get,
+        routes_post,
+        rate_limit_plan={"chan-11": 1},
+        retry_after="0.01",  # tiny; sleep is patched to a no-op below anyway
+    )
+    slept: list[float] = []
+    fetcher = _AdaptiveChannelFetcher(
+        channels=http._routes_get["/api/v4/users/me/teams/team-1/channels"],
+        total_active=12,
+        fetch_channel=lambda ch: _fetch_via_client(http, ch),
+        sink=_RecordingSink(),
+        min_concurrency=2,
+        max_concurrency=8,
+        max_retries_per_channel=2,
+        sleep=slept.append,  # record the back-off; never actually sleep
+    )
+    outcome = fetcher.run()
+
+    assert outcome.rate_limit_hits == 1
+    assert outcome.retries == 1
+    # Retry-After was honored (the controller slept the parsed window once).
+    assert slept == [0.01]
+    # Multiplicative decrease is visible: some completion halved the limit, so the
+    # history is NOT globally monotonic (unlike the all-success ramp).
+    hist = outcome.limit_history
+    assert any(hist[i + 1] < hist[i] for i in range(len(hist) - 1)), hist
+    # chan-11 was attempted twice (429 then success) and ultimately fetched.
+    assert http.channel_attempts["chan-11"] == 2
+    kept_ids = {p.get("id") for p, _ in outcome.kept_posts}
+    assert "p-chan-11" in kept_ids
+    assert len(outcome.kept_posts) == 12  # every channel's mention present
+
+
+def _fetch_via_client(http: _FakeHttp, channel: dict) -> _ChannelResult:
+    """Worker that exercises the REAL client path (so 429 detection fires).
+
+    Mirrors ``MattermostSourceAdapter._fetch_channel`` but standalone for the
+    direct-fetcher tests: pages one channel via the real client and keeps the
+    owner mention. The client raises ``MattermostRateLimited`` on a 429.
+    """
+    client = MattermostReadClient("https://mm.corp", "fake", http_client=http, per_page=200)
+    mention_re = _mention_regex(_OWNER_USERNAME)
+    start_ms = int(datetime(2026, 3, 29, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    end_ms = int(datetime(2026, 3, 29, 23, 59, 59, tzinfo=timezone.utc).timestamp() * 1000) + 1
+    kept: list = []
+    authors: set = set()
+    page = 0
+    while True:
+        pl = client.get_posts(channel["id"], page=page, per_page=200)
+        order = (pl or {}).get("order") or []
+        posts = (pl or {}).get("posts") or {}
+        for pid in order:
+            post = posts.get(pid) or {}
+            ca = int(post.get("create_at") or 0)
+            if ca < start_ms or ca >= end_ms:
+                continue
+            if mention_re.search(post.get("message") or ""):
+                kept.append((post, channel))
+                if post.get("user_id"):
+                    authors.add(post["user_id"])
+        if len(order) < 200:
+            break
+        page += 1
+    return _ChannelResult(kept_posts=kept, author_ids=authors)
+
+
+def test_aimd_429_through_full_adapter_fetch():
+    """End-to-end through ``adapter.fetch()``: a 429 channel is retried to success
+    and its mention lands in the returned messages (Retry-After patched fast)."""
+    routes_get, routes_post, cids = _many_channel_routes(5)
+    http = _ProgrammableHttp(
+        routes_get, routes_post, rate_limit_plan={"chan-3": 1}, retry_after="0.01"
+    )
+    adapter = _adapter_from_http(http, min_concurrency=2, max_concurrency=4)
+    messages = adapter.fetch(_DIGEST_DATE)
+
+    kept = {m.msg_id for m in messages}
+    assert kept == {f"mm:p-{cid}" for cid in cids}  # all 5, incl. the 429'd one
+    stats = adapter.last_fetch_stats
+    assert stats["rate_limit_hits"] == 1
+    assert stats["retries"] == 1
+    assert stats["channels_skipped"] == 0
+    assert stats["channels_scanned"] == 5
+
+
+def test_aimd_429_exhausts_retries_then_skips():
+    """A channel that 429s MORE than max_retries is eventually skipped+counted
+    (the rate-limit path also honors the retry budget, not infinite retry)."""
+    routes_get, routes_post, cids = _many_channel_routes(4)
+    # chan-2 429s on every attempt (1 initial + 2 retries = 3 attempts) → skip.
+    http = _ProgrammableHttp(
+        routes_get, routes_post, rate_limit_plan={"chan-2": 99}, retry_after="0.01"
+    )
+    adapter = _adapter_from_http(
+        http, min_concurrency=2, max_concurrency=4, max_retries_per_channel=2
+    )
+    messages = adapter.fetch(_DIGEST_DATE)
+
+    kept = {m.msg_id for m in messages}
+    assert "mm:p-chan-2" not in kept  # exhausted → skipped
+    assert len(kept) == 3  # the other three still returned
+    stats = adapter.last_fetch_stats
+    assert stats["channels_skipped"] == 1
+    assert stats["rate_limit_hits"] == 3  # 1 initial + 2 retry attempts all 429'd
+    assert http.channel_attempts["chan-2"] == 3  # initial + 2 retries
+
+
+# -- 8e. Timeout resilience (regression: slow channel ≠ rate signal) ---------
+
+
+def test_aimd_timeout_retried_then_skipped_others_fetched():
+    """A channel that always times out is retried ``max_retries`` then SKIPPED;
+    the limit is NOT decreased (a timeout is not back-pressure); other channels
+    are still fetched and the result is non-empty."""
+    routes_get, routes_post, cids = _many_channel_routes(6)
+    http = _ProgrammableHttp(routes_get, routes_post, timeout_channels={"chan-2"})
+    adapter = _adapter_from_http(
+        http, min_concurrency=2, max_concurrency=4, max_retries_per_channel=2
+    )
+    messages = adapter.fetch(_DIGEST_DATE)
+
+    kept = {m.msg_id for m in messages}
+    assert "mm:p-chan-2" not in kept  # timed out on every attempt → skipped
+    assert len(kept) == 5  # the other five still produced mentions
+    assert messages, "a timeout must NOT collapse the adapter to empty"
+    stats = adapter.last_fetch_stats
+    assert stats["channels_skipped"] == 1
+    assert stats["channels_scanned"] == 5
+    assert stats["rate_limit_hits"] == 0  # a timeout is NOT a rate-limit hit
+    assert stats["retries"] == 2  # chan-2 retried twice before the skip
+    assert http.channel_attempts["chan-2"] == 3  # initial + 2 retries
+
+
+def test_aimd_timeout_does_not_decrease_limit():
+    """Directly assert the AIMD invariant: a timeout leaves ``limit`` unchanged
+    (only a 429 triggers multiplicative-decrease)."""
+
+    def _worker(ch):
+        if ch["id"] == "chan-3":
+            raise httpx.ReadTimeout("slow")
+        return _ChannelResult(kept_posts=[], author_ids=set())
+
+    routes_get, routes_post, _ = _many_channel_routes(20)
+    fetcher = _AdaptiveChannelFetcher(
+        channels=routes_get["/api/v4/users/me/teams/team-1/channels"],
+        total_active=20,
+        fetch_channel=_worker,
+        sink=_RecordingSink(),
+        min_concurrency=2,
+        max_concurrency=8,
+        max_retries_per_channel=2,
+        sleep=lambda _s: None,
+    )
+    outcome = fetcher.run()
+    # No 429 anywhere ⇒ the limit history is monotonic non-decreasing despite the
+    # timeout+retries on chan-3 (the timeout never shrank the limit).
+    assert outcome.limit_history == sorted(outcome.limit_history)
+    assert outcome.rate_limit_hits == 0
+    assert outcome.channels_skipped == 1
+
+
+# -- 8f. No deadlock: mixed success / 429 / timeout, more chans than workers --
+
+
+def test_aimd_no_deadlock_mixed_workload():
+    """A mixed workload (success + 429 + timeout) across MORE channels than
+    ``max_concurrency`` completes and returns within the test — proving the
+    coordinator loop terminates (work+retry empty AND in_flight==0) and never
+    hangs. A controller bug would surface here as a hung future / failed
+    completion assertion, not a frozen suite."""
+    routes_get, routes_post, cids = _many_channel_routes(40)  # >> max_concurrency
+    http = _ProgrammableHttp(
+        routes_get,
+        routes_post,
+        rate_limit_plan={"chan-5": 1, "chan-17": 2, "chan-31": 1},
+        timeout_channels={"chan-9", "chan-22"},
+        retry_after="0.001",
+    )
+    adapter = _adapter_from_http(
+        http, min_concurrency=2, max_concurrency=6, max_retries_per_channel=2
+    )
+    messages = adapter.fetch(_DIGEST_DATE)
+
+    kept = {m.msg_id for m in messages}
+    # 2 channels time out on every attempt → skipped; the other 38 are fetched
+    # (the 429'd ones recover within their retry budget).
+    assert "mm:p-chan-9" not in kept
+    assert "mm:p-chan-22" not in kept
+    assert len(kept) == 38
+    stats = adapter.last_fetch_stats
+    assert stats["channels_skipped"] == 2
+    assert stats["channels_scanned"] == 38
+    assert stats["rate_limit_hits"] == 4  # 1 + 2 + 1 across the three 429 channels
+    # done covers every active channel exactly once (numerator == denominator).
+    assert stats["channels_scanned"] + stats["channels_skipped"] == 40
+
+
+def test_aimd_empty_channel_set_terminates():
+    """Degenerate input: zero active channels → the loop terminates immediately
+    with an empty result (no work, no in-flight, no hang)."""
+    fetcher = _AdaptiveChannelFetcher(
+        channels=[],
+        total_active=0,
+        fetch_channel=lambda ch: _ChannelResult(kept_posts=[], author_ids=set()),
+        sink=_RecordingSink(),
+        min_concurrency=2,
+        max_concurrency=8,
+        max_retries_per_channel=2,
+        sleep=lambda _s: None,
+    )
+    outcome = fetcher.run()
+    assert outcome.kept_posts == []
+    assert outcome.channels_scanned == 0
+    assert outcome.done == 0
+
+
+def test_aimd_malformed_channel_counted_not_fetched():
+    """A channel object with no id still advances the % denominator (done) but is
+    never submitted as work (mirrors the old loop's malformed-channel handling)."""
+    good = {"id": "chan-0", "display_name": "ok", "name": "ok", "last_post_at": _MID_DAY_MS}
+    bad = {"display_name": "no-id", "last_post_at": _MID_DAY_MS}  # missing id
+    calls: list[str] = []
+
+    def _worker(ch):
+        calls.append(ch["id"])
+        return _ChannelResult(kept_posts=[], author_ids=set())
+
+    fetcher = _AdaptiveChannelFetcher(
+        channels=[good, bad],
+        total_active=2,
+        fetch_channel=_worker,
+        sink=_RecordingSink(),
+        min_concurrency=2,
+        max_concurrency=4,
+        max_retries_per_channel=2,
+        sleep=lambda _s: None,
+    )
+    outcome = fetcher.run()
+    assert calls == ["chan-0"]  # only the well-formed channel was fetched
+    assert outcome.done == 2  # but BOTH count toward the denominator
+    assert outcome.channels_scanned == 1

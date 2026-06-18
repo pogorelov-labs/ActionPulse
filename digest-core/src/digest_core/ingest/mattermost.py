@@ -42,9 +42,13 @@ reaction harvest, and the chat-extraction prompt are later phases (§8).
 
 from __future__ import annotations
 
+import collections
+import concurrent.futures
 import re
+import threading
+import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Protocol
+from typing import Callable, Deque, Dict, List, Optional, Protocol
 
 import httpx
 import structlog
@@ -54,6 +58,52 @@ from digest_core.ingest.ews import NormalizedMessage
 from digest_core.progress import NullSink, ProgressSink, emit
 
 logger = structlog.get_logger()
+
+#: Fallback Retry-After when a 429 carries no parseable header (seconds). Kept
+#: small so a header-less 429 still backs off but does not stall the whole run.
+_DEFAULT_RETRY_AFTER_S = 1.0
+#: Upper clamp on Retry-After. The sleep runs on the coordinator thread, so an
+#: unbounded value (a misbehaving gateway/proxy sending Retry-After: 3600) would
+#: freeze the whole MM ingest. Retries are bounded and a channel is skipped when
+#: exhausted, so capping the per-sleep wait bounds worst-case wall-clock without
+#: losing the back-off intent.
+_MAX_RETRY_AFTER_S = 60.0
+
+
+class MattermostRateLimited(Exception):
+    """Raised by the read client on HTTP 429 (a rate-limit signal, not a failure).
+
+    Carries ``retry_after`` (seconds) parsed from the ``Retry-After`` header so
+    the adaptive fetcher can honor the server's back-off window. This is a
+    DISTINCT exception (not a generic ``HTTPStatusError``) so the AIMD controller
+    can tell a rate-limit signal — which means "slow down, then retry" — apart
+    from a slow/broken channel (a timeout, which means "this channel is sick").
+    """
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(f"Mattermost rate limited (retry_after={retry_after:.1f}s)")
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: object) -> float:
+    """Parse a ``Retry-After`` header value into seconds (delta-seconds form).
+
+    Mattermost emits the integer delta-seconds form (RFC 9110 §10.2.3). We accept
+    a numeric string/float; anything absent or unparseable (including the rarer
+    HTTP-date form) falls back to ``_DEFAULT_RETRY_AFTER_S`` so we still back off.
+    A negative or zero value is clamped to the fallback (never sleep <= 0); a
+    large value is clamped to ``_MAX_RETRY_AFTER_S`` so a misbehaving gateway
+    cannot freeze the coordinator (the sleep runs single-threaded).
+    """
+    if value is None:
+        return _DEFAULT_RETRY_AFTER_S
+    try:
+        secs = float(str(value).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_RETRY_AFTER_S
+    if secs <= 0:
+        return _DEFAULT_RETRY_AFTER_S
+    return min(secs, _MAX_RETRY_AFTER_S)
 
 
 class _HttpClient(Protocol):
@@ -96,8 +146,35 @@ class MattermostReadClient:
 
     def _get(self, path: str, params: Optional[dict] = None) -> object:
         resp = self._http.get(f"{self._api}{path}", params=params, headers=self._auth)
+        self._raise_if_rate_limited(resp)
         resp.raise_for_status()
         return resp.json()
+
+    @staticmethod
+    def _raise_if_rate_limited(resp: object) -> None:
+        """Translate an HTTP 429 into ``MattermostRateLimited`` (with Retry-After).
+
+        A distinct rate-limit exception lets the adaptive fetcher back off and
+        retry instead of treating the channel as broken. Every other status code
+        (incl. other 4xx/5xx) falls through to the caller's ``raise_for_status``,
+        so non-429 errors propagate exactly as before. ``status_code``/``headers``
+        are read defensively: a fake response that omits them is treated as
+        non-429 (preserving the legacy offline fakes that only implement
+        ``raise_for_status``/``json``).
+        """
+        status = getattr(resp, "status_code", None)
+        if status != 429:
+            return
+        headers = getattr(resp, "headers", None) or {}
+        retry_after_raw = None
+        try:
+            # httpx.Headers is case-insensitive; a plain dict may not be.
+            retry_after_raw = headers.get("Retry-After")
+            if retry_after_raw is None and hasattr(headers, "get"):
+                retry_after_raw = headers.get("retry-after")
+        except Exception:  # noqa: BLE001 - header access is best-effort
+            retry_after_raw = None
+        raise MattermostRateLimited(_parse_retry_after(retry_after_raw))
 
     def _post_read(self, path: str, json: object) -> object:
         """POST used purely as a batch READ (``/users/ids``) — verified non-mutating.
@@ -222,6 +299,300 @@ def _short_channel(name: str) -> str:
     return name[: _CHANNEL_LABEL_MAX - 1] + "…"
 
 
+class _ChannelResult:
+    """The kept posts + author ids from one channel's successful fetch."""
+
+    __slots__ = ("kept_posts", "author_ids")
+
+    def __init__(self, kept_posts: List[tuple[dict, dict]], author_ids: set[str]) -> None:
+        self.kept_posts = kept_posts
+        self.author_ids = author_ids
+
+
+class _FetchOutcome:
+    """The aggregate result of an adaptive fetch run (returned to ``fetch()``)."""
+
+    __slots__ = (
+        "kept_posts",
+        "author_ids",
+        "channels_scanned",
+        "channels_skipped",
+        "done",
+        "rate_limit_hits",
+        "retries",
+        "max_concurrency_reached",
+        "limit_history",
+    )
+
+    def __init__(self) -> None:
+        self.kept_posts: List[tuple[dict, dict]] = []
+        self.author_ids: set[str] = set()
+        self.channels_scanned = 0
+        self.channels_skipped = 0
+        self.done = 0
+        self.rate_limit_hits = 0
+        self.retries = 0
+        self.max_concurrency_reached = False
+        #: The value of ``limit`` recorded after each completion-driven AIMD
+        #: adjustment (observability — used by tests to assert the ramp/back-off
+        #: shape). Not surfaced in ``last_fetch_stats`` (it is debug-only).
+        self.limit_history: List[int] = []
+
+
+#: After a 429, suppress additive-increase for this many subsequent successful
+#: completions, so the controller does not immediately re-overshoot the limit it
+#: just halved. A small cooldown is the standard AIMD "don't grow into the wall
+#: you just hit" guard.
+_INCREASE_COOLDOWN_COMPLETIONS = 3
+
+
+class _AdaptiveChannelFetcher:
+    """Adaptive-concurrency (AIMD) parallel fetcher for the channel scan.
+
+    **Why.** The sequential scan paid the full per-channel latency in series (a
+    live dry-run: 6m51s over 67 channels, 9 skipped on 15s timeouts). This fetches
+    channels in PARALLEL on a thread pool while *self-tuning* the in-flight limit
+    to the maximum throughput the corp gateway tolerates — classic AIMD: additive
+    increase on success, multiplicative decrease on HTTP 429.
+
+    **Design.** One COORDINATOR thread owns the control loop; a
+    ``ThreadPoolExecutor(max_workers=max_concurrency)`` runs the per-channel
+    workers. The coordinator submits work while ``in_flight < limit`` and there is
+    work (a primary work deque + a retry deque), then blocks on
+    ``concurrent.futures.wait(..., FIRST_COMPLETED)`` and reacts to each finished
+    future:
+
+      * **success** → record the channel's posts; *additive increase*
+        ``limit = min(max_concurrency, limit + 1)`` (unless a recent 429 cooldown
+        is active); count toward progress and emit one ``on_stage_progress``.
+      * **MattermostRateLimited** → *multiplicative decrease*
+        ``limit = max(min_concurrency, limit // 2)``; start the increase cooldown;
+        ``time.sleep(retry_after)`` (the server's window, honored); REQUEUE the
+        channel (up to ``max_retries_per_channel``). The limit change does NOT
+        touch the pool size (``max_workers`` is fixed at ``max_concurrency``) — it
+        gates how many we keep in flight, so shrinking is immediate and free.
+      * **timeout / other transient error** → NOT a rate signal, so ``limit`` is
+        left UNCHANGED; requeue (up to ``max_retries_per_channel``); after retries
+        are exhausted the channel is *skipped + counted* (the existing resilience:
+        its mentions are lost, the run continues).
+
+    **Thread-safety.** Every mutation of shared control state (``limit``, the
+    deques, the counters, the in-flight map) happens under one ``threading.Lock``
+    held by the coordinator. Worker threads ONLY run ``_fetch_channel`` (pure
+    per-channel reads) and never touch the lock, the counters, or the sink — so
+    the progress sink is written from a single thread and cannot race.
+
+    **Termination (no deadlock).** The loop ends exactly when the work deque AND
+    the retry deque are empty AND ``in_flight == 0``. It can never wedge: the
+    coordinator never blocks except in ``futures.wait`` while ``in_flight > 0``,
+    and every future resolves (success OR exception) — a stuck worker would surface
+    as a hung future, but the per-request ``httpx`` timeout bounds that, after
+    which the future raises and the coordinator skips+counts the channel. The
+    cooldown ``sleep`` happens on the coordinator only AFTER a future resolved, so
+    it cannot delay draining the pool. (A ``sleep`` injection point is provided so
+    tests run instantly.)
+    """
+
+    def __init__(
+        self,
+        *,
+        channels: List[dict],
+        total_active: int,
+        fetch_channel: Callable[[dict], "_ChannelResult"],
+        sink: ProgressSink,
+        min_concurrency: int,
+        max_concurrency: int,
+        max_retries_per_channel: int,
+        sleep: Optional[Callable[[float], None]] = None,
+    ) -> None:
+        self._channels = channels
+        self._total_active = total_active
+        self._fetch_channel = fetch_channel
+        self._sink = sink
+        # Clamp the AIMD band so a misconfig (min>max) can never deadlock submit.
+        self._max_concurrency = max(1, int(max_concurrency))
+        self._min_concurrency = max(1, min(int(min_concurrency), self._max_concurrency))
+        self._max_retries = max(0, int(max_retries_per_channel))
+        # Resolved at call time (not as a default arg) so a test that monkeypatches
+        # ``mattermost.time.sleep`` reliably makes the back-off instant.
+        self._sleep = sleep if sleep is not None else time.sleep
+
+        self._lock = threading.Lock()
+        #: Dynamic in-flight ceiling (the AIMD variable). Starts modest.
+        self._limit = self._min_concurrency
+        #: Suppress additive-increase for N completions after a 429.
+        self._increase_cooldown = 0
+        #: Primary work + requeue deques (channel, attempt_count).
+        self._work: Deque[tuple[dict, int]] = collections.deque(
+            (ch, 0) for ch in channels if ch.get("id")
+        )
+        self._retry: Deque[tuple[dict, int]] = collections.deque()
+        #: Malformed channels (no id) still count toward the % denominator.
+        self._malformed = sum(1 for ch in channels if not ch.get("id"))
+
+        self._outcome = _FetchOutcome()
+
+    # -- internal helpers (all called under self._lock or single-threaded) --
+
+    def _next_work(self) -> Optional[tuple[dict, int]]:
+        """Pop the next unit (retries first so a requeued channel resumes soon)."""
+        if self._retry:
+            return self._retry.popleft()
+        if self._work:
+            return self._work.popleft()
+        return None
+
+    def _emit_progress(self, channel_name: str, found_this_channel: int) -> None:
+        """Emit one per-channel progress event (COORDINATOR thread only)."""
+        emit(
+            self._sink,
+            "on_stage_progress",
+            "ingest",
+            self._outcome.done,
+            self._total_active,
+            "channels",
+            # Live detail shows the channel, its found-count, and the live limit
+            # (``↑Nw``) so the footer makes the self-tuning visible.
+            detail=(
+                f"#{_short_channel(channel_name)} · "
+                f"{found_this_channel} found · ↑{self._limit}w"
+            ),
+        )
+
+    def run(self) -> "_FetchOutcome":
+        """Drive the AIMD control loop to completion and return the outcome."""
+        # Malformed channels carry no work but still advance the denominator.
+        self._outcome.done += self._malformed
+
+        # The pool is sized to the hard ceiling; the dynamic ``limit`` (<= max)
+        # gates how many we keep IN FLIGHT, so the pool never blocks on submit.
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._max_concurrency,
+            thread_name_prefix="mm-chan",
+        ) as pool:
+            in_flight: Dict[concurrent.futures.Future, tuple[dict, int]] = {}
+
+            while True:
+                # 1) Fill up to the current dynamic limit while work remains.
+                while len(in_flight) < self._limit:
+                    unit = self._next_work()
+                    if unit is None:
+                        break
+                    channel, attempt = unit
+                    fut = pool.submit(self._fetch_channel, channel)
+                    in_flight[fut] = (channel, attempt)
+
+                # 2) Termination: nothing running and nothing queued ⇒ done.
+                if not in_flight:
+                    break
+
+                # 3) Block until at least one future resolves (never hang: every
+                #    future resolves, bounded by the per-request httpx timeout).
+                finished, _ = concurrent.futures.wait(
+                    in_flight, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for fut in finished:
+                    channel, attempt = in_flight.pop(fut)
+                    self._handle_completion(fut, channel, attempt)
+
+        return self._outcome
+
+    def _handle_completion(
+        self,
+        fut: concurrent.futures.Future,
+        channel: dict,
+        attempt: int,
+    ) -> None:
+        """React to one finished future: AIMD adjust, record/requeue, progress.
+
+        Runs ONLY on the coordinator thread (the single caller of ``run``), so the
+        counters, deques, ``limit`` and sink are all touched single-threaded. The
+        lock still guards ``limit``/the deques because a future's worker thread is
+        gone by the time we are here, but a defensive lock keeps the invariant
+        explicit and cheap.
+        """
+        channel_name = channel.get("display_name") or channel.get("name") or channel.get("id")
+        try:
+            result = fut.result()
+        except MattermostRateLimited as rl:
+            # Rate signal: multiplicative DECREASE + cooldown, then honor
+            # Retry-After and requeue (does not consume a "skip").
+            with self._lock:
+                self._outcome.rate_limit_hits += 1
+                self._limit = max(self._min_concurrency, self._limit // 2)
+                self._increase_cooldown = _INCREASE_COOLDOWN_COMPLETIONS
+                self._outcome.limit_history.append(self._limit)
+            logger.warning(
+                "Mattermost channel rate-limited; backing off",
+                channel_id=str(channel.get("id") or "")[:8],  # truncated — payload-free
+                retry_after_s=round(rl.retry_after, 2),
+                new_limit=self._limit,
+            )
+            # Sleep the server's window on the coordinator (after the future
+            # resolved, so it never delays draining the rest of the pool).
+            if rl.retry_after > 0:
+                self._sleep(rl.retry_after)
+            self._requeue_or_skip(channel, attempt, channel_name, is_rate_limit=True)
+            return
+        except Exception as exc:  # noqa: BLE001 - timeout / transient: NOT a rate signal
+            # A slow/broken channel. Do NOT change the limit (it is not gateway
+            # back-pressure). Retry the channel; skip+count when exhausted.
+            self._requeue_or_skip(channel, attempt, channel_name, is_rate_limit=False, error=exc)
+            return
+
+        # Success → record + additive INCREASE (unless a recent 429 cools it).
+        with self._lock:
+            self._outcome.kept_posts.extend(result.kept_posts)
+            self._outcome.author_ids |= result.author_ids
+            self._outcome.channels_scanned += 1
+            self._outcome.done += 1
+            if self._increase_cooldown > 0:
+                self._increase_cooldown -= 1
+            elif self._limit < self._max_concurrency:
+                self._limit += 1
+            if self._limit >= self._max_concurrency:
+                self._outcome.max_concurrency_reached = True
+            self._outcome.limit_history.append(self._limit)
+            found_this_channel = len(result.kept_posts)
+        self._emit_progress(channel_name, found_this_channel)
+
+    def _requeue_or_skip(
+        self,
+        channel: dict,
+        attempt: int,
+        channel_name: str,
+        *,
+        is_rate_limit: bool,
+        error: Optional[BaseException] = None,
+    ) -> None:
+        """Requeue a channel for another attempt, or skip+count when exhausted."""
+        if attempt < self._max_retries:
+            with self._lock:
+                self._outcome.retries += 1
+                self._retry.append((channel, attempt + 1))
+            if not is_rate_limit:
+                logger.info(
+                    "Mattermost channel transient error; retrying",
+                    channel_id=str(channel.get("id") or "")[:8],  # truncated
+                    error_type=type(error).__name__ if error else "RateLimited",
+                    attempt=attempt + 1,
+                    max_retries=self._max_retries,
+                )
+            return
+        # Retries exhausted → skip + count (resilience: run continues).
+        with self._lock:
+            self._outcome.channels_skipped += 1
+            self._outcome.done += 1
+        logger.warning(
+            "Mattermost channel skipped (retries exhausted); continuing",
+            channel_id=str(channel.get("id") or "")[:8],  # truncated id — payload-free
+            error_type=(
+                "RateLimited" if is_rate_limit else (type(error).__name__ if error else "Unknown")
+            ),
+        )
+        self._emit_progress(channel_name, 0)
+
+
 class MattermostSourceAdapter:
     """A ``SourceAdapter`` that surfaces @-mentions of the owner from Mattermost.
 
@@ -248,9 +619,10 @@ class MattermostSourceAdapter:
         ``httpx.Client`` from the config (base_url + PAT from ENV).
 
         ``sink`` receives intra-stage progress events (``on_stage_progress``) so
-        the 65-active-channel sequential scan reports a live %; it defaults to
-        ``NullSink()`` so nothing renders unless ``run.py`` threads in a real
-        sink (behavior-preserving for every existing caller).
+        the active-channel scan reports a live % (emitted from the adaptive
+        fetcher's coordinator thread only); it defaults to ``NullSink()`` so
+        nothing renders unless ``run.py`` threads in a real sink
+        (behavior-preserving for every existing caller).
         """
         self._config = config
         self._time_config = time_config
@@ -333,7 +705,7 @@ class MattermostSourceAdapter:
         )
         # Starting event: the scan denominator (``total_active``) is now known, so
         # the live footer can render a real percentage (0/N) before the first
-        # channel is fetched — sequential 65-channel scans no longer feel hung.
+        # channel is fetched — a large channel scan no longer feels hung.
         emit(
             self._sink,
             "on_stage_progress",
@@ -344,53 +716,30 @@ class MattermostSourceAdapter:
             detail="scanning mentions",
         )
 
-        kept_posts: List[tuple[dict, dict]] = []  # (post, channel)
-        author_ids: set[str] = set()
-        channels_scanned = 0  # channels whose post fetch+parse completed cleanly
-        channels_skipped = 0  # channels abandoned on a per-channel fetch error
-        done = 0  # channels processed so far (scanned + skipped), the % numerator
-        for channel in active:
-            channel_id = channel.get("id")
-            if not channel_id:
-                # A malformed channel object still counts toward the denominator
-                # progress-wise; nothing to fetch, so advance and move on.
-                done += 1
-                continue
-            channel_name = channel.get("display_name") or channel.get("name") or channel_id
-            # Per-channel resilience (the live-bug fix): one channel's timeout/HTTP
-            # error MUST NOT propagate out of fetch(). If it did, run_sources(
-            # strict=False) would drop the WHOLE adapter → a silent "0 messages".
-            # Instead we log payload-free, count the skip, and keep going so the
-            # mentions from the channels that DID succeed are still returned.
-            try:
-                for post in self._iter_window_posts(channel_id, start_ms, end_ms):
-                    message = post.get("message") or ""
-                    if not mention_re.search(message):
-                        continue
-                    kept_posts.append((post, channel))
-                    uid = post.get("user_id")
-                    if uid:
-                        author_ids.add(uid)
-                channels_scanned += 1
-            except Exception as exc:  # noqa: BLE001 - per-channel degrade, never fatal
-                channels_skipped += 1
-                logger.warning(
-                    "Mattermost channel skipped (fetch error); continuing",
-                    channel_id=channel_id[:8],  # truncated id only — payload-free
-                    error_type=type(exc).__name__,
-                )
-            done += 1
-            # Per-channel progress: 1..N over the known denominator. The detail is
-            # the owner's own channel display name (short) + the running kept count.
-            emit(
-                self._sink,
-                "on_stage_progress",
-                "ingest",
-                done,
-                total_active,
-                "channels",
-                detail=f"#{_short_channel(channel_name)} · {len(kept_posts)} found",
-            )
+        # Adaptive-concurrency fetch: the channels are paged in PARALLEL under a
+        # self-tuning (AIMD) in-flight limit. This replaces the old sequential
+        # loop (a live dry-run took 6m51s over 67 channels, skipping 9 on 15s
+        # timeouts). The per-channel work, resilience, and progress contract are
+        # preserved exactly — only HOW channels are visited changed. Progress is
+        # emitted from the COORDINATOR thread only (worker threads never touch the
+        # sink), so there is no sink race.
+        fetcher = _AdaptiveChannelFetcher(
+            channels=active,
+            total_active=total_active,
+            fetch_channel=lambda channel: self._fetch_channel(
+                channel, start_ms, end_ms, mention_re
+            ),
+            sink=self._sink,
+            min_concurrency=self._config.min_concurrency,
+            max_concurrency=self._config.max_concurrency,
+            max_retries_per_channel=self._config.max_retries_per_channel,
+        )
+        result = fetcher.run()
+        kept_posts = result.kept_posts
+        author_ids = result.author_ids
+        channels_scanned = result.channels_scanned
+        channels_skipped = result.channels_skipped
+        done = result.done
 
         authors = self._resolve_authors(list(author_ids))
 
@@ -408,12 +757,19 @@ class MattermostSourceAdapter:
             )
 
         # Record the outcome so a degrade is never invisible (mirrors EWSIngest).
+        # The AIMD fields (rate_limit_hits / retries / max_concurrency_reached)
+        # surface how hard the controller had to work — a high rate_limit_hits
+        # means the gateway throttled us; max_concurrency_reached means we found
+        # headroom and the cap (not the gateway) was the bound.
         self.last_fetch_stats = {
             "channels_total": len(channels),
             "channels_active": total_active,
             "channels_scanned": channels_scanned,
             "channels_skipped": channels_skipped,
             "mentions": len(messages),
+            "rate_limit_hits": result.rate_limit_hits,
+            "retries": result.retries,
+            "max_concurrency_reached": result.max_concurrency_reached,
         }
         # Final progress emit carries the summary so the live footer shows skips.
         emit(
@@ -437,8 +793,43 @@ class MattermostSourceAdapter:
             channels_scanned=channels_scanned,
             channels_skipped=channels_skipped,
             mentions=len(messages),
+            rate_limit_hits=result.rate_limit_hits,
+            retries=result.retries,
+            max_concurrency_reached=result.max_concurrency_reached,
         )
         return messages
+
+    # -- per-channel worker ------------------------------------------------
+
+    def _fetch_channel(
+        self,
+        channel: dict,
+        start_ms: int,
+        end_ms: int,
+        mention_re: "re.Pattern[str]",
+    ) -> "_ChannelResult":
+        """Fetch + parse ONE channel's in-window @owner mentions (worker body).
+
+        This is the exact per-channel work the old sequential loop did, lifted
+        into a function so it can run on a worker thread: page the window with
+        ``_iter_window_posts`` (unchanged), keep posts that @-mention the owner,
+        and collect their author ids. Returns a ``_ChannelResult`` on success;
+        **raises** on any fetch error (``MattermostRateLimited`` for a 429,
+        ``httpx.ReadTimeout``/other for a slow or broken channel) so the
+        coordinator — not the worker — decides retry vs. skip vs. back-off. The
+        worker NEVER touches shared state or the progress sink (thread-safety).
+        """
+        kept: List[tuple[dict, dict]] = []
+        author_ids: set[str] = set()
+        for post in self._iter_window_posts(channel["id"], start_ms, end_ms):
+            message = post.get("message") or ""
+            if not mention_re.search(message):
+                continue
+            kept.append((post, channel))
+            uid = post.get("user_id")
+            if uid:
+                author_ids.add(uid)
+        return _ChannelResult(kept_posts=kept, author_ids=author_ids)
 
     # -- helpers -----------------------------------------------------------
 
