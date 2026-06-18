@@ -327,14 +327,21 @@ class MattermostDeliverConfig(BaseModel):
     channel_name: str = Field(
         default="actionpulse-digest",
         description=(
-            "Team-unique slug for the dedicated private channel (``delivery_target="
-            "'private_channel'``). Used as the idempotency key: each run looks the"
-            " channel up by name and creates it only when absent — never duplicated."
+            "Base slug for the dedicated private channel (``delivery_target="
+            "'private_channel'``). The ACTUAL channel name is suffixed with the"
+            " owner's Mattermost user_id (``<channel_name>-<user_id>``) because a"
+            " channel slug is unique PER TEAM — a fixed slug would collide once a"
+            " second person on the same team runs ActionPulse. The per-user slug"
+            " is the idempotency key: each run looks it up and creates it only when"
+            " absent. Invisible to the user (the friendly display name shows)."
         ),
     )
     channel_display_name: str = Field(
         default="ActionPulse Digest",
-        description="Human-readable display name for the dedicated private channel.",
+        description=(
+            "Human-readable display name for the dedicated private channel. Need"
+            " NOT be unique (only the slug is), so it is shared across users."
+        ),
     )
     team: str = Field(
         default="",
