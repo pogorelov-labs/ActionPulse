@@ -337,7 +337,14 @@ class MattermostSourceConfig(BaseModel):
         le=200,
         description="Posts-per-page for GET /channels/{id}/posts (server-enforced cap is 200).",
     )
-    timeout_s: int = Field(default=30, description="Per-request HTTP timeout in seconds.")
+    timeout_s: int = Field(
+        default=15,
+        description=(
+            "Per-request HTTP timeout in seconds. Deliberately tight (15s) so a"
+            " single hung channel ``get_posts`` is abandoned fast and that channel"
+            " skipped, rather than stalling the whole sequential scan. Configurable."
+        ),
+    )
     verify_ssl: bool = Field(
         default=True, description="Verify TLS certificates (testing only off)."
     )
