@@ -101,3 +101,16 @@ def test_message_to_row_uses_explicit_raw_body():
     row = message_to_row(msg, schema_version=1, raw_body="<html>raw original</html>")
     assert row["body_raw"] == "<html>raw original</html>"
     assert row["body_normalized"] == "<html>clean</html>"
+
+
+def test_store_env_overrides_apply_without_yaml_section(monkeypatch):
+    """Regression: DIGEST_STORE_* generic overrides must apply via Config() even when
+    config.yaml has no `store:` section (it ships commented out). The store merge runs
+    unconditionally so these don't silently no-op."""
+    from digest_core.config import Config
+
+    monkeypatch.setenv("DIGEST_STORE_VECTOR_DTYPE", "float16")
+    monkeypatch.setenv("DIGEST_STORE_SEARCH_DEFAULT_MODE", "keyword")
+    cfg = Config()
+    assert cfg.store.vector_dtype == "float16"
+    assert cfg.store.search_default_mode == "keyword"

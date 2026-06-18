@@ -38,7 +38,11 @@ def _cfg(tmp_path, monkeypatch, **over):
     return StoreConfig(db_path=str(tmp_path / "messages.db"), **over)
 
 
-def _msg(msg_id, body, *, subject="Subject", source="email", when=None):
+def _msg(msg_id, body, *, subject="Subject", source="email", when=None, mm_channel_type=None):
+    # mm messages default to an OPEN channel ('O') — a kept, searchable work artifact.
+    # (DMs are 'D'/'G'; a missing type now fails closed and is redacted, see store/dm.)
+    if source == "mm" and mm_channel_type is None:
+        mm_channel_type = "O"
     return NormalizedMessage(
         msg_id=msg_id,
         conversation_id="c-" + msg_id,
@@ -47,6 +51,7 @@ def _msg(msg_id, body, *, subject="Subject", source="email", when=None):
         subject=subject,
         text_body=body,
         source=source,
+        mm_channel_type=mm_channel_type,
     )
 
 
@@ -144,3 +149,75 @@ def test_content_change_recreates_chunks_and_clears_embeddings(tmp_path, monkeyp
         store.embed_backlog(FakeEmbed())
         # Now semantic finds it under the new topic, not the old one.
         assert store.search("release", mode="semantic", backend=FakeEmbed())
+
+
+# --------------------------------------------------------------------------- #
+# Hardening (review findings)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "query", ["budget AND status", "budget OR release", "AND", 'budget "', "NEAR"]
+)
+def test_fts_operator_queries_do_not_crash(tmp_path, monkeypatch, query):
+    """User queries containing FTS5 operators/quotes are treated as literal terms,
+    never parsed as syntax (which used to raise OperationalError and crash search)."""
+    with MessageStore.open(_cfg(tmp_path, monkeypatch)) as store:
+        _seed(store)
+        hits = store.search(query, mode="keyword")  # must not raise
+        assert isinstance(hits, list)
+
+
+def test_embed_backlog_count_mismatch_raises(tmp_path, monkeypatch):
+    from digest_core.store.ingest import StoreEmbedError
+
+    class _ShortEmbed:
+        def embed(self, texts):
+            return []  # fewer vectors than inputs
+
+    with MessageStore.open(_cfg(tmp_path, monkeypatch)) as store:
+        store.upsert_messages([_msg("a@corp", "approve the budget")])
+        with pytest.raises(StoreEmbedError):
+            store.embed_backlog(_ShortEmbed())
+
+
+def test_embed_backlog_dim_drift_raises(tmp_path, monkeypatch):
+    from digest_core.store.ingest import StoreEmbedError
+
+    class _DimEmbed:
+        def __init__(self, dim):
+            self.dim = dim
+
+        def embed(self, texts):
+            return [[0.1] * self.dim for _ in texts]
+
+    with MessageStore.open(_cfg(tmp_path, monkeypatch)) as store:
+        store.upsert_messages([_msg("a@corp", "first message")])
+        store.embed_backlog(_DimEmbed(4))  # establishes dim=4 for the model
+        store.upsert_messages([_msg("b@corp", "second message")])
+        with pytest.raises(StoreEmbedError):
+            store.embed_backlog(_DimEmbed(8))  # 8 != established 4 → reject
+
+
+def test_reembed_force_after_model_switch(tmp_path, monkeypatch):
+    db = str(tmp_path / "messages.db")
+    monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
+    with MessageStore.open(StoreConfig(db_path=db, embedding_model="model-a")) as store:
+        _seed(store)
+        store.embed_backlog(FakeEmbed())
+    # Switch the configured model: a plain reembed finds no work; search goes empty.
+    with MessageStore.open(StoreConfig(db_path=db, embedding_model="model-b")) as store:
+        assert store.embed_backlog(FakeEmbed())["embedded"] == 0
+        assert store.search("budget", mode="semantic", backend=FakeEmbed()) == []
+        # --force drops the stale vectors and re-embeds under model-b.
+        assert store.reembed(FakeEmbed(), force=True)["embedded"] >= 1
+        assert store.search("budget", mode="semantic", backend=FakeEmbed())
+
+
+def test_bruteforce_max_rows_caps_loaded_vectors(tmp_path, monkeypatch):
+    with MessageStore.open(_cfg(tmp_path, monkeypatch, bruteforce_max_rows=1)) as store:
+        _seed(store)
+        store.embed_backlog(FakeEmbed())
+        # Cap=1 → at most one chunk's vector is loaded for scoring.
+        hits = store.search("budget", mode="semantic", backend=FakeEmbed(), limit=10)
+        assert len(hits) <= 1

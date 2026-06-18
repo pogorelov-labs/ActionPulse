@@ -19,7 +19,7 @@ from digest_core.store import HAS_SQLCIPHER, MessageStore
 pytestmark = pytest.mark.skipif(not HAS_SQLCIPHER, reason="sqlcipher3 not installed (store extra)")
 
 
-def _msg(msg_id: str, body: str, source: str = "email") -> NormalizedMessage:
+def _msg(msg_id: str, body: str, source: str = "email", mm_channel_type=None) -> NormalizedMessage:
     return NormalizedMessage(
         msg_id=msg_id,
         conversation_id="c-1",
@@ -30,6 +30,7 @@ def _msg(msg_id: str, body: str, source: str = "email") -> NormalizedMessage:
         to_recipients=["u@corp"],
         cc_recipients=[],
         source=source,
+        mm_channel_type=mm_channel_type,
     )
 
 
@@ -130,3 +131,48 @@ def test_replay_path_persists_store(tmp_path, monkeypatch):
         row = store.conn.execute("SELECT id, body_raw, body_normalized FROM messages").fetchone()
     assert row[0] == "urn:email:r1@corp"
     assert row[1] == row[2]  # replay has no separate raw body → raw == normalized
+
+
+def test_dm_redacted_through_real_normalize(tmp_path, monkeypatch):
+    """Regression for the BLOCKER: a DM pushed through the REAL NORMALIZE stage must
+    still be redacted at rest. NORMALIZE used to drop mm_channel_type, so by the time
+    the store saw a DM the field was None and the body was persisted unredacted."""
+    from digest_core.store.models import DM_AT_REST_REDACTION
+
+    ctx = _ctx(tmp_path, monkeypatch, enabled=True)
+    fake = _FakeIngest(
+        [
+            _msg("mm:dm1", "secret 1:1 NEEDLEX", source="mm", mm_channel_type="D"),
+            _msg("mm:gm1", "group secret NEEDLEY", source="mm", mm_channel_type="G"),
+            _msg("mm:ch1", "public channel budget post", source="mm", mm_channel_type="O"),
+        ],
+        ctx.config.time,
+    )
+    monkeypatch.setattr(runner, "EWSIngest", lambda *a, **k: fake)
+
+    runner._stage_ingest(ctx)
+    with MessageStore.open(ctx.config.store) as store:
+        rows = {
+            r[0]: (r[1], r[2])
+            for r in store.conn.execute(
+                "SELECT id, body_raw, body_normalized FROM messages"
+            ).fetchall()
+        }
+        chunk_msgs = {
+            r[0] for r in store.conn.execute("SELECT DISTINCT message_id FROM chunks").fetchall()
+        }
+    assert rows["urn:mm:dm1"] == (DM_AT_REST_REDACTION, DM_AT_REST_REDACTION)
+    assert rows["urn:mm:gm1"] == (DM_AT_REST_REDACTION, DM_AT_REST_REDACTION)
+    assert "budget" in rows["urn:mm:ch1"][1]  # 'O' channel post kept + chunked
+    assert chunk_msgs == {"urn:mm:ch1"}
+    raw = (tmp_path / "messages.db").read_bytes()
+    assert b"NEEDLEX" not in raw and b"NEEDLEY" not in raw  # DM bodies never at rest
+
+
+def test_store_enabled_suppresses_pre_ingest_skip(tmp_path, monkeypatch):
+    """Regression for the BLOCKER: with the store enabled, the pre-ingest freshness
+    skip must be suppressed so _stage_ingest (and thus _persist_to_store) always runs
+    — otherwise a same-day re-run silently bypasses the archive. The skip itself still
+    fires when the store is off (covered by test_idempotency)."""
+    assert runner._store_archiving(_ctx(tmp_path, monkeypatch, enabled=True)) is True
+    assert runner._store_archiving(_ctx(tmp_path, monkeypatch, enabled=False)) is False

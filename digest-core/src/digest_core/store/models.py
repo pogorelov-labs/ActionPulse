@@ -11,17 +11,19 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-#: Guardrail #9 (design §6; matches run.py's dump redaction): a DM body (1:1 'D'
-#: / group 'G') must NEVER be persisted at rest — it is third-party PII the owner
-#: may process only transiently for the digest, not archive. The store therefore
-#: redacts DM bodies on write (the row + metadata are kept; the content is not).
-_DM_CHANNEL_TYPES = frozenset({"D", "G"})
+#: Guardrail #9 (design §6): a DM body is third-party PII the owner may process
+#: transiently for the digest but NEVER archive at rest. Only Mattermost OPEN ('O')
+#: and PRIVATE ('P') CHANNEL posts are email-equivalent work artifacts safe to keep;
+#: DMs ('D'/'G') AND any unknown/missing channel type are redacted. The gate is
+#: FAIL-CLOSED — a privacy boundary on third-party content must not persist a body
+#: just because the channel type was indeterminate (e.g. lost in a rebuild/replay).
 DM_AT_REST_REDACTION = "[DM content redacted at rest]"
+_MM_BODY_AT_REST_OK = frozenset({"O", "P"})
 
 
-def is_dm(source: str, mm_channel_type: Optional[str]) -> bool:
-    """True iff a message is a Mattermost DM (1:1 'D' or group 'G')."""
-    return (source or "").lower() == "mm" and mm_channel_type in _DM_CHANNEL_TYPES
+def redact_mm_body_at_rest(source: str, mm_channel_type: Optional[str]) -> bool:
+    """True when a Mattermost body must NOT be stored at rest (DM or unknown type)."""
+    return (source or "").lower() == "mm" and mm_channel_type not in _MM_BODY_AT_REST_OK
 
 
 def build_urn(source: str, msg_id: str) -> str:
@@ -70,8 +72,9 @@ def message_to_row(
     body_norm = getattr(msg, "body_norm", "") or getattr(msg, "text_body", "") or ""
     body_raw = raw_body if raw_body is not None else body_norm
     mm_channel_type = getattr(msg, "mm_channel_type", None)
-    if is_dm(source, mm_channel_type):
-        # Guardrail #9: keep the DM row (metadata) but never its body at rest.
+    if redact_mm_body_at_rest(source, mm_channel_type):
+        # Guardrail #9 (fail-closed): keep the row + metadata, never the body at rest
+        # for DMs ('D'/'G') or any mm message with an unknown/missing channel type.
         body_raw = DM_AT_REST_REDACTION
         body_norm = DM_AT_REST_REDACTION
     received = _to_utc(getattr(msg, "datetime_received", None))

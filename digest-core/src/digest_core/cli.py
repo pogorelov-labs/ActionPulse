@@ -426,9 +426,13 @@ def search(
                     f"{FAIL} {eff_mode} search needs the embeddings gateway: {exc}", err=True
                 )
                 raise typer.Exit(1)
-        hits = store.search(
-            query, mode=eff_mode, backend=backend, source=source, since=since, limit=limit
-        )
+        try:
+            hits = store.search(
+                query, mode=eff_mode, backend=backend, source=source, since=since, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 - clean CLI error, never a traceback
+            typer.echo(f"{FAIL} search failed: {exc}", err=True)
+            raise typer.Exit(1)
     finally:
         store.close()
 
@@ -490,9 +494,13 @@ def store_init():
     else:
         key = secrets.token_hex(32)
         ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(ENV_PATH, "a", encoding="utf-8") as handle:
+        os.chmod(ENV_PATH.parent, 0o700)
+        # Create/append with 0600 from the start (os.open with mode) so the 256-bit
+        # key never lands in a world-readable file, even momentarily, before chmod.
+        fd = os.open(ENV_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(f"\nDIGEST_STORE_KEY={key}\n")
-        os.chmod(ENV_PATH, 0o600)
+        os.chmod(ENV_PATH, 0o600)  # tighten if the file pre-existed with looser perms
         typer.echo(f"{OK} Generated DIGEST_STORE_KEY in {ENV_PATH} (chmod 600).")
         typer.echo("    Keep it safe — losing the key makes the encrypted store unreadable.")
     typer.echo(
@@ -540,8 +548,17 @@ def store_purge(
 
 
 @store_app.command("reembed")
-def store_reembed():
-    """Fill the embedding backlog (chunks without a vector). Needs the corp network."""
+def store_reembed(
+    force: bool = typer.Option(
+        False, "--force", help="Drop existing vectors first (use after changing the model/dtype)"
+    ),
+):
+    """Fill the embedding backlog (chunks without a vector). Needs the corp network.
+
+    After changing store.embedding_model or vector_dtype, pass --force: every chunk
+    still has its stale vector, so a plain reembed finds no work and semantic search
+    would return empty.
+    """
     store = _open_store_or_exit()
     try:
         try:
@@ -549,10 +566,14 @@ def store_reembed():
         except Exception as exc:  # noqa: BLE001
             typer.echo(f"{FAIL} embeddings gateway unavailable: {exc}", err=True)
             raise typer.Exit(1)
-        result = store.embed_backlog(backend)
+        try:
+            result = store.reembed(backend, force=force)
+        except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
+            typer.echo(f"{FAIL} reembed failed: {exc}", err=True)
+            raise typer.Exit(1)
     finally:
         store.close()
-    typer.echo(f"{OK} Embedded {result['embedded']} chunk(s).")
+    typer.echo(f"{OK} Embedded {result['embedded']} chunk(s); {result['pending']} still pending.")
 
 
 @store_app.command("vacuum")

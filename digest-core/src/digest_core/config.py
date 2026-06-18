@@ -1352,8 +1352,11 @@ class Config(BaseSettings):
             self._merge_model(self.retention, yaml_config["retention"], env_prefix="RETENTION")
         if "report" in yaml_config:
             self._merge_model(self.report, yaml_config["report"], env_prefix="REPORT")
-        if "store" in yaml_config:
-            self._merge_model(self.store, yaml_config["store"], env_prefix="STORE")
+        # Merge store UNCONDITIONALLY (even when the YAML has no `store:` section —
+        # config.example ships it commented out): _merge_model also applies the
+        # generic DIGEST_STORE_<FIELD> env overrides, so e.g. DIGEST_STORE_DB_PATH /
+        # DIGEST_STORE_VECTOR_DTYPE work for an operator who never wrote a store block.
+        self._merge_model(self.store, yaml_config.get("store", {}), env_prefix="STORE")
         if "selection_buckets" in yaml_config:
             self._merge_model(
                 self.selection_buckets,

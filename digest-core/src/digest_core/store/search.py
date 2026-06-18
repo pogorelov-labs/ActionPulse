@@ -16,6 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 _RRF_K = 60
 
@@ -40,10 +44,15 @@ class SearchHit:
 
 
 def _fts_query(query: str) -> Optional[str]:
-    """Robust FTS5 query: implicit-AND of the word tokens (drops punctuation that
-    would otherwise be parsed as FTS operators). Returns None for an empty query."""
+    """Robust FTS5 MATCH string: AND of the query's word tokens, each wrapped as an
+    FTS5 **string literal** so operators (AND/OR/NOT/NEAR) and punctuation are matched
+    as literal terms instead of parsed as syntax. Without the quoting, a user query
+    like ``budget AND status`` — or a bare ``AND`` — raises ``OperationalError: fts5:
+    syntax error`` and crashes keyword()/hybrid(). Returns None for an empty query."""
     tokens = _WORD_RE.findall(query or "")
-    return " ".join(tokens) if tokens else None
+    if not tokens:
+        return None
+    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
 def _since_epoch(since: Optional[str]) -> Optional[int]:
@@ -103,31 +112,63 @@ def keyword(
     return hits
 
 
-def _load_matrix(conn, model: str, source: Optional[str], since: Optional[str]):
-    """Return (chunk_ids, message_ids, np.ndarray[N,dim] float32) for the model."""
+def _load_matrix(
+    conn, model: str, source: Optional[str], since: Optional[str], *, max_rows: Optional[int] = None
+):
+    """Return (chunk_ids, np.ndarray[N,dim] float32) for the model.
+
+    Bounded + defensive:
+    * ``max_rows`` caps how many vectors are loaded (most-recent first), so an
+      unfiltered semantic search over a huge corpus can't OOM. A hit cap is logged.
+    * vectors whose decoded dim disagrees with the modal dim are SKIPPED (a gateway/
+      model drift would otherwise crash ``np.vstack`` and brick ALL search).
+    """
     import numpy as np
 
     where_extra, params = _filters(source, since)
     params["model"] = model
     sql = (
-        "SELECT e.chunk_id, c.message_id, e.dim, e.vector "
+        "SELECT e.chunk_id, e.dim, e.vector "
         "FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id "
         "JOIN messages m ON m.id = c.message_id "
-        "WHERE e.model = :model" + where_extra
+        "WHERE e.model = :model" + where_extra + " ORDER BY m.received_epoch DESC"
     )
+    if max_rows:
+        sql += " LIMIT :max_rows"
+        params["max_rows"] = int(max_rows)
     rows = conn.execute(sql, params).fetchall()
     if not rows:
-        return [], [], np.empty((0, 0), dtype=np.float32)
+        return [], np.empty((0, 0), dtype=np.float32)
+    if max_rows and len(rows) >= int(max_rows):
+        logger.warning(
+            "store_search_truncated",
+            loaded=len(rows),
+            cap=int(max_rows),
+            hint="semantic search limited to the most recent rows; filter with --since/--source",
+        )
+    expected_dim = rows[0][1]
     chunk_ids: List[str] = []
-    message_ids: List[str] = []
     vecs: List[Any] = []
-    for cid, mid, dim, blob in rows:
-        itemsize = (len(blob) // dim) if dim else 4
+    skipped = 0
+    for cid, dim, blob in rows:
+        if not dim or dim != expected_dim or len(blob) % dim != 0:
+            skipped += 1
+            continue
+        itemsize = len(blob) // dim
         np_dtype = np.float16 if itemsize == 2 else np.float32
-        vecs.append(np.frombuffer(blob, dtype=np_dtype).astype(np.float32))
+        vec = np.frombuffer(blob, dtype=np_dtype).astype(np.float32)
+        if vec.shape[0] != expected_dim:
+            skipped += 1
+            continue
         chunk_ids.append(cid)
-        message_ids.append(mid)
-    return chunk_ids, message_ids, np.vstack(vecs)
+        vecs.append(vec)
+    if skipped:
+        logger.warning(
+            "store_search_dim_mismatch", skipped=skipped, expected_dim=expected_dim, model=model
+        )
+    if not vecs:
+        return [], np.empty((0, 0), dtype=np.float32)
+    return chunk_ids, np.vstack(vecs)
 
 
 def semantic(
@@ -139,6 +180,7 @@ def semantic(
     model: str = "bge-m3",
     source: Optional[str] = None,
     since: Optional[str] = None,
+    max_rows: Optional[int] = None,
 ) -> List[SearchHit]:
     import numpy as np
 
@@ -147,10 +189,20 @@ def semantic(
     qvecs = backend.embed([query])
     if not qvecs:
         return []
-    chunk_ids, message_ids, mat = _load_matrix(conn, model, source, since)
+    chunk_ids, mat = _load_matrix(conn, model, source, since, max_rows=max_rows)
     if mat.shape[0] == 0:
         return []
     q = np.asarray(qvecs[0], dtype=np.float32)
+    # Guard a query-vs-stored dim mismatch (e.g. the gateway model changed) — bail
+    # gracefully instead of raising a numpy broadcast error on the dot product.
+    if q.shape[0] != mat.shape[1]:
+        logger.warning(
+            "store_search_query_dim_mismatch",
+            query_dim=int(q.shape[0]),
+            stored_dim=int(mat.shape[1]),
+            model=model,
+        )
+        return []
     q = q / (np.linalg.norm(q) or 1.0)
     mat_n = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12)
     sims = mat_n @ q
@@ -205,10 +257,13 @@ def hybrid(
     model: str = "bge-m3",
     source: Optional[str] = None,
     since: Optional[str] = None,
+    max_rows: Optional[int] = None,
 ) -> List[SearchHit]:
     pool = max(limit * 4, 50)
     kw = keyword(conn, query, limit=pool, source=source, since=since)
-    sem = semantic(conn, backend, query, limit=pool, model=model, source=source, since=since)
+    sem = semantic(
+        conn, backend, query, limit=pool, model=model, source=source, since=since, max_rows=max_rows
+    )
     fused: Dict[str, Dict[str, Any]] = {}
     for rank, hit in enumerate(kw, 1):
         e = fused.setdefault(hit.message_id, {"hit": hit, "score": 0.0, "prov": {}})
