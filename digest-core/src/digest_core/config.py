@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 import structlog
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
 
@@ -492,6 +492,88 @@ class MattermostSourceConfig(BaseModel):
     verify_ssl: bool = Field(
         default=True, description="Verify TLS certificates (testing only off)."
     )
+
+    # -- Direct messages (P3, design §2.2 / §6 LVL4) ----------------------
+    # DMs are the highest-privacy source: a 1:1/group DM carries a
+    # counterparty's authored messages (third-party PII fed to the LLM). The
+    # whole block is HARD-OFF by default; any scope that exposes counterparty
+    # text (`selected`/`all`) is refused at load time unless the owner has
+    # acknowledged consent (the model validator below). The DM allowlist matches
+    # the *counterparty's identity*, NOT the channel id/name/display_name the
+    # channel allowlist uses — a D/G channel has no human-readable name.
+    dm_scope: Literal["off", "own_posts_only", "selected", "all"] = Field(
+        default="off",
+        description=(
+            "DM ingest privacy ladder (LVL4, HARD-OFF default). off → "
+            "own_posts_only (only the owner's OWN DM posts; counterparty text "
+            "dropped before the LLM — no third-party PII, no consent needed) → "
+            "selected (per-partner allowlist; full thread, counterparty text "
+            "quote-capped) → all (every DM + group-DM; discouraged). 'selected' "
+            "and 'all' REQUIRE dm_consent_acknowledged. Group-DMs (channel type "
+            "'G') are governed by this same scope, classified AS DMs. See "
+            "docs/research/MATTERMOST_INTEGRATION_DESIGN.md §2.2/§6."
+        ),
+    )
+    dm_allowlist: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Counterparty identities ingested under dm_scope='selected'. Matches "
+            "a DM's NON-owner member by user_id (exact) OR @username OR email "
+            "(case-insensitive, trimmed) — NOT by channel id/name/display_name "
+            "(a D/G channel has no human-readable name, so the channel-allowlist "
+            "matcher does not apply). For a group-DM, the DM is kept iff ANY "
+            "non-owner member matches. Empty list under 'selected' = effective "
+            "OFF (graceful, no error). Enforced BEFORE any content GET."
+        ),
+    )
+    dm_max_quote_chars: int = Field(
+        default=280,
+        ge=0,
+        description=(
+            "Verbatim cap on COUNTERPARTY text per DM post (the owner's OWN posts "
+            "are uncapped). Applies under 'selected'/'all'. 0 = strip all "
+            "counterparty text. Deliberately NOT surfaced in the wizard/menu "
+            "(YAML-only) — it is a privacy boundary, not a casual knob."
+        ),
+    )
+    dm_consent_acknowledged: bool = Field(
+        default=False,
+        description=(
+            "Owner acknowledged that DM counterparty text is third-party PII fed "
+            "to the LLM. REQUIRED when dm_scope in ('selected','all'). NOT a "
+            "secret → lives in config.yaml and persists across re-runs (mirrors "
+            "acknowledged_private). Hand-setting this True in YAML is a footgun, "
+            "not informed consent — the wizard/menu sets it alongside a timestamp."
+        ),
+    )
+    dm_consent_acknowledged_at: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 UTC timestamp the DM consent ack was given (audit trail + "
+            "staleness). Set by the wizard/menu alongside dm_consent_acknowledged; "
+            "re-affirm when older than the staleness window. None when scope is "
+            "off/own_posts_only."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_dm_consent(self) -> "MattermostSourceConfig":
+        """Refuse to load a counterparty-exposing DM scope without consent.
+
+        Load-bearing privacy gate: a hand-edited config that sets
+        ``dm_scope=selected``/``all`` but leaves ``dm_consent_acknowledged``
+        False raises at construction (config load) — before any pipeline stage
+        can read a DM. 'off' and 'own_posts_only' never require consent (no
+        third-party text reaches the LLM).
+        """
+        if self.dm_scope in ("selected", "all") and not self.dm_consent_acknowledged:
+            raise ValueError(
+                f"mm_source.dm_scope={self.dm_scope!r} requires "
+                "dm_consent_acknowledged=true (DM counterparty text is "
+                "third-party PII fed to the LLM). Re-run `actionpulse` → "
+                "Mattermost DMs (or `setup`) to consent, or set dm_scope=off."
+            )
+        return self
 
     def get_base_url(self) -> str:
         """Resolve the base URL: ENV (``base_url_env``) wins over YAML ``base_url``."""
@@ -1116,6 +1198,15 @@ class Config(BaseSettings):
         # from YAML (the token lives behind `token_env`, not a config field).
         if "mm_source" in yaml_config:
             self._merge_model(self.mm_source, yaml_config["mm_source"], env_prefix="MM_SOURCE")
+            # `_merge_model` setattrs onto the existing instance, so the
+            # `mode="after"` model validator does NOT re-fire (pydantic re-runs it
+            # only on construction; `validate_assignment=True` would wrongly raise
+            # mid-merge if dm_scope is set before dm_consent_acknowledged).
+            # Reconstruct from the MERGED state so the DM consent gate
+            # (selected/all require dm_consent_acknowledged) is enforced on LOAD —
+            # a hand-edited config.yaml cannot smuggle a counterparty-exposing
+            # scope past the validator.
+            self.mm_source = MattermostSourceConfig(**self.mm_source.model_dump())
         if "observability" in yaml_config:
             self._merge_model(self.observability, yaml_config["observability"], env_prefix="OBS")
         # Explicit branch: a YAML `retention:` section is otherwise silently

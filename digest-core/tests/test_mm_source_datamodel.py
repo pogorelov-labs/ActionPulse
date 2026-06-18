@@ -130,6 +130,89 @@ def test_source_not_in_content_sha256():
     assert runner._content_sha256([as_email]) == runner._content_sha256([as_mm])
 
 
+def test_mm_channel_type_defaults_none_and_settable():
+    """``mm_channel_type`` defaults to None (email) and is settable for mm."""
+    email = NormalizedMessage(msg_id="m1", conversation_id="c", subject="S", text_body="B")
+    assert email.mm_channel_type is None
+    dm = NormalizedMessage(
+        msg_id="mm:p1",
+        conversation_id="c",
+        subject="",
+        text_body="B",
+        source="mm",
+        mm_channel_type="D",
+    )
+    assert dm.mm_channel_type == "D"
+
+
+def test_mm_channel_type_not_in_content_sha256():
+    """Adding ``mm_channel_type`` must NOT change content hashes (idempotency).
+
+    Two messages identical in msg_id|subject|text_body but differing only in
+    ``mm_channel_type`` (and source) must hash to the SAME content sha —
+    ``_content_sha256`` hashes only those three fields, so the carrier is inert.
+    """
+    plain = NormalizedMessage(msg_id="m1", conversation_id="c", subject="Subj", text_body="Body")
+    with_type = NormalizedMessage(
+        msg_id="m1",
+        conversation_id="c",
+        subject="Subj",
+        text_body="Body",
+        source="mm",
+        mm_channel_type="G",
+    )
+    assert runner._content_sha256([plain]) == runner._content_sha256([with_type])
+
+
+def _dm_dump_msg(channel_type, text="secret counterparty text"):
+    return NormalizedMessage(
+        msg_id="mm:p1",
+        conversation_id="c1",
+        datetime_received=datetime(2026, 6, 18, tzinfo=timezone.utc),
+        sender_email="alice@corp",
+        subject="",
+        text_body=text,
+        body_norm=text,
+        to_recipients=["@me"],
+        source="mm",
+        mm_channel_type=channel_type,
+    )
+
+
+def test_serialize_redacts_dm_body_at_rest():
+    """A --dump-ingest snapshot must NOT persist raw DM (D/G) bodies (guardrail #9)."""
+    for ctype in ("D", "G"):
+        payload = runner._serialize_message(_dm_dump_msg(ctype))
+        assert payload["text_body"] == runner._DM_AT_REST_REDACTION
+        assert payload["body_norm"] == runner._DM_AT_REST_REDACTION
+        # Non-content fields survive (id/recipients are not message text).
+        assert payload["msg_id"] == "mm:p1"
+        assert payload["mm_channel_type"] == ctype
+
+
+def test_serialize_keeps_channel_and_mention_bodies():
+    """Public/private channel posts (O/P) are email-equivalent — NOT redacted."""
+    for ctype in ("O", "P"):
+        payload = runner._serialize_message(_dm_dump_msg(ctype, text="channel post body"))
+        assert payload["text_body"] == "channel post body"
+        assert payload["body_norm"] == "channel post body"
+
+
+def test_serialize_keeps_email_body():
+    msg = NormalizedMessage(
+        msg_id="<e@corp>",
+        conversation_id="c1",
+        datetime_received=datetime(2026, 6, 18, tzinfo=timezone.utc),
+        sender_email="boss@corp",
+        subject="Re: plan",
+        text_body="email body",
+        body_norm="email body",
+        to_recipients=["me@corp"],
+    )
+    payload = runner._serialize_message(msg)
+    assert payload["text_body"] == "email body"
+
+
 def test_old_snapshot_without_source_replays_as_email(tmp_path):
     """An old --dump-ingest snapshot (no `source` key) replays as source="email"."""
     snapshot = tmp_path / "old-ingest.json"

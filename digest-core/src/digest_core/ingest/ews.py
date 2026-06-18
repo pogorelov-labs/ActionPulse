@@ -89,6 +89,16 @@ class NormalizedMessage:
     #: idempotency/replay — are unchanged by adding it.
     source: str = "email"
 
+    #: Mattermost channel TYPE for an mm message — 'O'/'P' (open/private "op"
+    #: channels), 'D' (1:1 direct), 'G' (group DM). ``None`` for email and for any
+    #: mm message whose channel type was not derivable. This is an AUDIT carrier:
+    #: it lets a later dump-redaction pass identify DM-sourced text ('D'/'G')
+    #: without re-deriving the type from the channel object. Like ``source`` it is
+    #: kw-only with a default and is deliberately NOT part of ``_content_sha256``
+    #: (run.py hashes only msg_id|subject|body), so existing email/mm content
+    #: hashes — and thus idempotency/replay — are byte-identical after adding it.
+    mm_channel_type: Optional[str] = None
+
     def __init__(
         self,
         msg_id: str,
@@ -113,6 +123,7 @@ class NormalizedMessage:
         body_norm: str = "",
         received_at: Optional[datetime] = None,
         source: str = "email",
+        mm_channel_type: Optional[str] = None,
     ) -> None:
         sender_email = sender_email or sender or from_email
         to_recipients = list(to_recipients or to_emails or [])
@@ -141,6 +152,7 @@ class NormalizedMessage:
         object.__setattr__(self, "body_norm", body_norm)
         object.__setattr__(self, "received_at", received_at)
         object.__setattr__(self, "source", source)
+        object.__setattr__(self, "mm_channel_type", mm_channel_type)
         self.__post_init__()
 
     def __post_init__(self) -> None:
