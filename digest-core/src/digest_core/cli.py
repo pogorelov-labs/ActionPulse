@@ -494,9 +494,13 @@ def store_init():
     else:
         key = secrets.token_hex(32)
         ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(ENV_PATH, "a", encoding="utf-8") as handle:
+        os.chmod(ENV_PATH.parent, 0o700)
+        # Create/append with 0600 from the start (os.open with mode) so the 256-bit
+        # key never lands in a world-readable file, even momentarily, before chmod.
+        fd = os.open(ENV_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(f"\nDIGEST_STORE_KEY={key}\n")
-        os.chmod(ENV_PATH, 0o600)
+        os.chmod(ENV_PATH, 0o600)  # tighten if the file pre-existed with looser perms
         typer.echo(f"{OK} Generated DIGEST_STORE_KEY in {ENV_PATH} (chmod 600).")
         typer.echo("    Keep it safe — losing the key makes the encrypted store unreadable.")
     typer.echo(
