@@ -334,21 +334,33 @@ def _init_context(
 #: "ews" is the adapter name — both select the same live EWS source.
 _EWS_SOURCE_NAMES = frozenset({"ews", "email"})
 
+#: Source names that map to the Mattermost mentions adapter (P1b).
+_MM_SOURCE_NAMES = frozenset({"mm", "mattermost"})
+
 
 def _build_source_adapters(
-    sources: Sequence[str], ingest: EWSIngest
+    sources: Sequence[str], ingest: EWSIngest, config: Config | None = None
 ) -> tuple[List[SourceAdapter], List[SourceAdapter]]:
-    """Build the live adapter list from ``--sources``, split by strictness (P1a).
+    """Build the live adapter list from ``--sources``, split by strictness.
 
-    Returns ``(strict_adapters, lenient_adapters)``. EWS is strict (config errors
-    must crash); a future Mattermost adapter would be appended to the lenient list
-    so it degrades-not-drops. An unknown source name raises ``ValueError`` rather
-    than being silently ignored. With the default ``["ews"]`` this returns a single
-    strict ``EWSSourceAdapter`` and an empty lenient list — behavior-preserving.
+    Returns ``(strict_adapters, lenient_adapters)``.
+
+    * EWS is STRICT (``strict=True``): its config errors must crash the run via
+      the degradation policy (asserted in ``test_stage_ingest_seam.py``).
+    * Mattermost is LENIENT (``strict=False``): an MM outage degrades-not-drops
+      so a chat-source blip never takes down the email digest (P1b, design §4).
+
+    An unknown source name raises ``ValueError`` rather than being silently
+    ignored. Selecting ``mm`` while it is unconfigured (no ``base_url`` / no
+    ``MM_PAT``) raises a clear, actionable error BEFORE the run starts — that is
+    a config error and must not silently degrade to an empty digest. With the
+    default ``["ews"]`` this returns a single strict ``EWSSourceAdapter`` and an
+    empty lenient list — behavior-preserving.
     """
     strict_adapters: List[SourceAdapter] = []
     lenient_adapters: List[SourceAdapter] = []
     seen_ews = False
+    seen_mm = False
     for name in sources or ["ews"]:
         key = (name or "").strip().lower()
         if key in _EWS_SOURCE_NAMES:
@@ -356,15 +368,48 @@ def _build_source_adapters(
             if not seen_ews:
                 strict_adapters.append(EWSSourceAdapter(ingest))
                 seen_ews = True
+        elif key in _MM_SOURCE_NAMES:
+            if not seen_mm:
+                lenient_adapters.append(_build_mm_adapter(config))
+                seen_mm = True
         else:
-            # P1a builds no real Mattermost adapter (that is P1b). An unrecognized
-            # source must fail loudly so a typo or a not-yet-built source is never
-            # silently dropped.
+            # An unrecognized source must fail loudly so a typo or a not-yet-built
+            # source is never silently dropped.
             raise ValueError(
                 f"Unknown ingest source {name!r}. Known sources: "
-                f"{sorted(_EWS_SOURCE_NAMES)} (Mattermost ingest is P1b, not yet built)."
+                f"{sorted(_EWS_SOURCE_NAMES | _MM_SOURCE_NAMES)}."
             )
     return strict_adapters, lenient_adapters
+
+
+def _build_mm_adapter(config: Config | None) -> SourceAdapter:
+    """Construct the Mattermost mentions adapter, or raise an actionable error.
+
+    Selecting ``--sources mm`` is an explicit operator request; if the source is
+    not configured (no ``base_url`` and/or ``MM_PAT`` unset) we crash with a
+    message that says exactly what to set, rather than degrading to a silent
+    empty digest. The PAT is read from ENV by ``MattermostSourceConfig.get_token``.
+    """
+    # Imported lazily so the EWS-only default path never imports httpx-heavy MM.
+    from digest_core.ingest.mattermost import MattermostSourceAdapter
+
+    if config is None:
+        raise ValueError("Mattermost source selected but no Config is available to build it.")
+    mm_cfg = config.mm_source
+    base_url = mm_cfg.get_base_url()
+    if not base_url:
+        raise ValueError(
+            "Mattermost source selected (--sources mm) but no base URL is set. "
+            f"Set ${mm_cfg.base_url_env} or mm_source.base_url in config.yaml."
+        )
+    try:
+        mm_cfg.get_token()  # raises ValueError if the PAT env var is unset
+    except ValueError as exc:
+        raise ValueError(
+            f"Mattermost source selected (--sources mm) but the PAT is not set: {exc}. "
+            f"Export ${mm_cfg.token_env} (the personal access token; ENV only, never YAML)."
+        ) from exc
+    return MattermostSourceAdapter(mm_cfg, config.time)
 
 
 def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
@@ -401,7 +446,7 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         # globally flip ``strict=False`` (that would swallow EWS config errors). With
         # only EWS selected (the default), this is exactly one
         # ``run_sources([EWSSourceAdapter], strict=True)`` call — behavior-preserving.
-        strict_adapters, lenient_adapters = _build_source_adapters(ctx.sources, ingest)
+        strict_adapters, lenient_adapters = _build_source_adapters(ctx.sources, ingest, ctx.config)
         envelopes = []
         if strict_adapters:
             envelopes += run_sources(strict_adapters, ctx.digest_date, strict=True)

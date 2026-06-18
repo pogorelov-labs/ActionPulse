@@ -286,6 +286,74 @@ class MattermostDeliverConfig(BaseModel):
         return webhook_url
 
 
+class MattermostSourceConfig(BaseModel):
+    """Mattermost *ingest* (source) configuration — P1b mentions slice.
+
+    This is the READ side (a `SourceAdapter`), distinct from
+    ``MattermostDeliverConfig`` (the WRITE/webhook side). It reads posts that
+    ``@``-mention the owner via the authenticated v4 REST API with a personal
+    access token (PAT). The PAT is the owner's full ``system_user`` identity, so
+    the secret lives in ENV only (never YAML) — mirroring ``EWSConfig`` and
+    ``MattermostDeliverConfig``.
+
+    The authenticated REST API is corp-network-only (the edge proxy 403s any
+    external Bearer call), so this adapter is validated offline against mocks and
+    exercised live only from inside the corp network (ADR-012). See
+    ``docs/research/MATTERMOST_INTEGRATION_DESIGN.md`` §2.1 and
+    ``docs/research/MATTERMOST_PAT_INTEGRATION.md``.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable Mattermost mention ingest (default OFF; LVL3.5 gate).",
+    )
+    base_url_env: str = Field(
+        default="MM_BASE_URL",
+        description="Environment variable with the Mattermost base URL (e.g. https://mm.corp).",
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "Mattermost base URL. NOT a secret, so it may live in YAML; the"
+            " ``MM_BASE_URL`` env var (``base_url_env``) wins when set."
+        ),
+    )
+    token_env: str = Field(
+        default="MM_PAT",
+        description="Environment variable with the personal access token (secret; ENV only).",
+    )
+    max_channels: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Hard cap on channels paged per run after the ``last_post_at``"
+            " activity pre-gate, ordered most-recent-first. Bounds the read on an"
+            " owner who is a member of ~998 channels."
+        ),
+    )
+    per_page: int = Field(
+        default=200,
+        ge=1,
+        le=200,
+        description="Posts-per-page for GET /channels/{id}/posts (server-enforced cap is 200).",
+    )
+    timeout_s: int = Field(default=30, description="Per-request HTTP timeout in seconds.")
+    verify_ssl: bool = Field(
+        default=True, description="Verify TLS certificates (testing only off)."
+    )
+
+    def get_base_url(self) -> str:
+        """Resolve the base URL: ENV (``base_url_env``) wins over YAML ``base_url``."""
+        return (os.getenv(self.base_url_env, "") or self.base_url or "").rstrip("/")
+
+    def get_token(self) -> str:
+        """Return the PAT from ENV. Raises if unset — secrets are ENV-only."""
+        token = os.getenv(self.token_env, "")
+        if not token:
+            raise ValueError(f"Environment variable {self.token_env} not set")
+        return token
+
+
 class DeliverConfig(BaseModel):
     """Delivery target configuration."""
 
@@ -777,6 +845,7 @@ class Config(BaseSettings):
     # Sub-configurations
     time: TimeConfig = Field(default_factory=TimeConfig)
     ews: EWSConfig = Field(default_factory=EWSConfig)
+    mm_source: MattermostSourceConfig = Field(default_factory=MattermostSourceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     deliver: DeliverConfig = Field(default_factory=DeliverConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
@@ -890,6 +959,12 @@ class Config(BaseSettings):
         if "deliver" in yaml_config:
             mattermost_config = yaml_config["deliver"].get("mattermost", {})
             self._merge_model(self.deliver.mattermost, mattermost_config, env_prefix="MM")
+        # Explicit per-section branch (the `_apply_yaml_config` pattern is NOT
+        # universal — every section needs its own line). `mm_source` is the
+        # Mattermost INGEST config; the PAT secret is ENV-only and never merged
+        # from YAML (the token lives behind `token_env`, not a config field).
+        if "mm_source" in yaml_config:
+            self._merge_model(self.mm_source, yaml_config["mm_source"], env_prefix="MM_SOURCE")
         if "observability" in yaml_config:
             self._merge_model(self.observability, yaml_config["observability"], env_prefix="OBS")
         # Explicit branch: a YAML `retention:` section is otherwise silently
