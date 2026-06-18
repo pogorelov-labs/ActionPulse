@@ -133,6 +133,24 @@ retention:
   enabled: true
   keep_days: 7
 
+# Persistent encrypted message store (opt-in; default OFF). A SQLCipher-encrypted
+# SQLite archive of fetched messages for ALL sources, with FTS5 keyword +
+# brute-force-cosine semantic hybrid search. Its 30-day TTL is a SEPARATE
+# retention domain from the plaintext var/out artifacts above (7d) — the longer
+# window is acceptable because the store is encrypted at rest. DM (1:1 'D' / group
+# 'G') bodies are NEVER stored (guardrail #9): the row is kept, the body redacted.
+# Needs the `store` extra (uv sync --extra store) and DIGEST_STORE_KEY (ENV only;
+# `actionpulse store init` generates it). Env overrides use the STORE_/DIGEST_STORE_ prefix.
+# store:
+#   enabled: true
+#   ttl_days: 30
+#   embed_on_ingest: false   # default off → --dry-run/--replay stay offline; use `store reembed`
+#   embedding_model: "bge-m3"
+#   search_default_mode: "hybrid"   # keyword | semantic | hybrid
+#   vector_dtype: "float32"  # or float16 to halve vector RAM/disk
+#   # db_path: <data home>/var/store/messages.db   # default; override if needed
+#   # DIGEST_STORE_KEY required when enabled — ENV only, never here.
+
 # Embedding-assisted thread merging (REDESIGN PR12a, cosine tier). OFF by
 # default: enabling sends thread-representative text to /v1/embeddings —
 # live use is gated by PC-2; offline replay via the fleet sidecar is safe.

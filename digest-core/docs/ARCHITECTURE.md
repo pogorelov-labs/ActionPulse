@@ -1144,6 +1144,33 @@ digest-core/
 - **Consequence:** Delivery errors → `logger.warning()` + запись в `run_meta` / `delivery_receipt`.
   Отдельного Prometheus-счётчика доставки в MVP **нет** (см. §6.1). Pipeline exit code = 0 (success) даже при failed delivery.
 
+### ADR-014: Persistent encrypted message store (opt-in)
+
+- **Decision:** An optional `digest_core/store/` package persists fetched messages
+  for ALL sources in a single **SQLCipher-encrypted** SQLite file, with FTS5
+  keyword + brute-force-cosine (NumPy) semantic + RRF hybrid search. Default OFF
+  (install-time via the `store` extra AND runtime via `store.enabled`). It is wired
+  as a **non-fatal side-channel after Stage 2 NORMALIZE** — never a numbered pipeline
+  stage, never able to fail the digest. See ADR-004 (the per-source timestamp
+  watermark it shares for incremental load is now `ingest/watermark.py`).
+- **Rationale:** Prepare fetched data for future lookups / chunking / vectorization
+  / search without re-fetching. Encryption-at-rest lets the store keep a longer
+  window than the plaintext artifacts. `sqlite-vec` is deliberately NOT used — it
+  does not load into the SQLCipher fork; at the target scale (≤~100k rows)
+  brute-force cosine is ~5–20 ms, so an ANN index is unnecessary.
+- **Retention domains (three intentional numbers):** plaintext `var/out` = 7d
+  (`retention.keep_days`, P3), hash-only dedup ledger = 7d (`memory.dedup_ttl_days`),
+  **encrypted store = 30d** (`store.ttl_days`). The longer store window is justified
+  *because* it is encrypted at rest; the others hold plaintext PD and stay short.
+- **Privacy:** Guardrail #9 — a DM (mm channel type `D`/`G`) body is never persisted
+  at rest. The store keeps the DM row + metadata but redacts the body
+  (`[DM content redacted at rest]`, matching the `--dump-ingest` redaction) and does
+  not chunk/embed it. Embeddings reuse the gateway `EmbeddingsClient` (bge-m3); the
+  key is ENV-only (`DIGEST_STORE_KEY`); a lost key makes the DB unrecoverable.
+- **Consequence:** New deps in the `store` extra only (`sqlcipher3`/-binary +
+  `numpy`); the default install and `make test` stay driver-free (store tests are
+  `skipif(not HAS_SQLCIPHER)`). CLI: `search` + the `store` sub-app.
+
 ---
 
 ## 13. Known Technical Debt
