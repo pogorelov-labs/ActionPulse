@@ -76,6 +76,8 @@ Channels are lower-signal and noisier; they are opt-in at best.
 
 ## 3. Delivery design (MM as target)
 
+> **Status — P0 SHIPPED (api delivery).** `auth_mode: webhook|api` + `MattermostApiDeliverer` are implemented (`deliver/mattermost.py`, gated off; webhook stays default). As built: `delivery_target: private_channel` (owner's choice) is the **default api target** — find-or-create an owner-only private channel by `channel_name` (idempotent, stateless name-lookup), with **automatic self-DM fallback** on a `create_private_channel` 403; `self_dm` (option (a) below) is the validated fallback path. The D4 guard is auto-satisfied for a provably owner-only audience (`channel_type=="P" and member_count==1`, or self-DM). Per-part `post_id`s land in `run_meta['delivery_receipt']`. Offline-tested (`tests/test_mattermost_api_delivery.py`); **live POST is corp-validation-gated** (mock-only outside corp). NOT yet built: per-section threading + `delivered-posts.jsonl` (P1, for EP-15 reaction granularity). NOTE: the "@-escaping gap today" called out below is **stale** — `escape_mentions` shipped in #130 and the shared formatter applies it to both transports.
+
 Make MM a richer target via an `auth_mode: webhook|api` switch on `MattermostDeliverConfig` (`config.py:252`), **webhook default**, and a sibling `MattermostApiDeliverer` that reuses `_format_digest`/`_split_message` verbatim and only swaps the transport. Branch in `_stage_deliver` (`run.py:988-1013`) on `auth_mode`; the existing try/except already degrades-not-drops, and the receipt must keep the `status`/`error` keys (`run.py:1010-1011`) so the richer dict stays backward-tolerant.
 
 **Target options.**

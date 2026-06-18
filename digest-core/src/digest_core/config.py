@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import structlog
 from pydantic import BaseModel, Field, field_validator
@@ -274,8 +274,86 @@ class MattermostDeliverConfig(BaseModel):
             " shared team channel (D4). An incoming-webhook URL is an opaque"
             " token, so the target audience is NOT derivable — when this is"
             " False the run emits one privacy-unconfirmed warning before"
-            " delivery (never blocks). Set via the setup wizard."
+            " delivery (never blocks). Set via the setup wizard. Only consulted"
+            " in ``auth_mode='webhook'``; the ``api`` path proves the audience"
+            " structurally (see ``auth_mode``)."
         ),
+    )
+    # -- api mode (authenticated v4 REST via PAT; corp-network-only, ADR-012) --
+    auth_mode: Literal["webhook", "api"] = Field(
+        default="webhook",
+        description=(
+            "Delivery transport. ``webhook`` (default) POSTs to an opaque incoming"
+            " webhook URL — externally reachable, write-only, no post_id. ``api``"
+            " POSTs via the authenticated v4 REST API as the owner's PAT to a"
+            " provably-private target (a self-only private channel or the self-DM),"
+            " capturing post_ids for the EP-15 reaction loop. The authenticated API"
+            " is corp-network-only (the edge proxy 403s external Bearer), so ``api``"
+            " runs inside corp like EWS/LLM; webhook stays the external default."
+        ),
+    )
+    base_url_env: str = Field(
+        default="MM_BASE_URL",
+        description=(
+            "Env var with the Mattermost base URL for ``api`` mode (e.g."
+            " https://mm.corp). Same identity as the ingest adapter — one PAT"
+            " credential for read + delivery."
+        ),
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "Mattermost base URL for ``api`` mode. NOT a secret, so it may live in"
+            " YAML; ``MM_BASE_URL`` (``base_url_env``) wins when set."
+        ),
+    )
+    token_env: str = Field(
+        default="MM_PAT",
+        description=(
+            "Env var with the personal access token for ``api`` mode (secret; ENV"
+            " only, never YAML). Same PAT the ingest adapter uses."
+        ),
+    )
+    delivery_target: Literal["private_channel", "self_dm"] = Field(
+        default="private_channel",
+        description=(
+            "``api`` delivery target. ``private_channel`` finds-or-creates a"
+            " dedicated owner-only private channel (``channel_name``) and posts the"
+            " digest there — a clean, named home separate from notes-to-self."
+            " ``self_dm`` posts to the owner's [me,me] self-DM (the validated path)."
+            " Both make the audience provable, structurally satisfying the D4 guard."
+        ),
+    )
+    channel_name: str = Field(
+        default="actionpulse-digest",
+        description=(
+            "Team-unique slug for the dedicated private channel (``delivery_target="
+            "'private_channel'``). Used as the idempotency key: each run looks the"
+            " channel up by name and creates it only when absent — never duplicated."
+        ),
+    )
+    channel_display_name: str = Field(
+        default="ActionPulse Digest",
+        description="Human-readable display name for the dedicated private channel.",
+    )
+    team: str = Field(
+        default="",
+        description=(
+            "Team (id, name, or display_name) that hosts the private channel."
+            " Empty = the owner's first team. Ignored for ``self_dm``."
+        ),
+    )
+    fallback_to_self_dm: bool = Field(
+        default=True,
+        description=(
+            "If creating the private channel is denied (HTTP 403 — the corp build"
+            " may restrict ``create_private_channel``), fall back to self-DM"
+            " delivery (the validated path) instead of failing. Set False to make a"
+            " creation denial a hard error."
+        ),
+    )
+    verify_ssl: bool = Field(
+        default=True, description="Verify TLS certificates for ``api`` mode (testing only off)."
     )
 
     def get_webhook_url(self) -> str:
@@ -284,6 +362,17 @@ class MattermostDeliverConfig(BaseModel):
         if not webhook_url:
             raise ValueError(f"Environment variable {self.webhook_url_env} not set")
         return webhook_url
+
+    def get_base_url(self) -> str:
+        """Resolve the ``api``-mode base URL: ENV (``base_url_env``) wins over YAML."""
+        return (os.getenv(self.base_url_env, "") or self.base_url or "").rstrip("/")
+
+    def get_token(self) -> str:
+        """Return the ``api``-mode PAT from ENV. Raises if unset — secrets are ENV-only."""
+        token = os.getenv(self.token_env, "")
+        if not token:
+            raise ValueError(f"Environment variable {self.token_env} not set")
+        return token
 
 
 class MattermostSourceConfig(BaseModel):

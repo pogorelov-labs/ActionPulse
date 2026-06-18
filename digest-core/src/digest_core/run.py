@@ -24,7 +24,7 @@ import structlog
 
 from digest_core.assemble.markdown import MarkdownAssembler
 from digest_core.config import Config, RankerConfig
-from digest_core.deliver.mattermost import MattermostDeliverer
+from digest_core.deliver.mattermost import MattermostApiDeliverer, MattermostDeliverer
 from digest_core.eval.judge import LLMJudge
 from digest_core.evidence.citation_gate import CitationGate, support_recall
 from digest_core.llm.best_of_n import best_of_n_meta, select_best_candidate
@@ -1113,9 +1113,11 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
     if ctx.config.deliver.mattermost.enabled:
         deliver_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "deliver")
+        mm_cfg = ctx.config.deliver.mattermost
+        deliverer_cls = MattermostApiDeliverer if mm_cfg.auth_mode == "api" else MattermostDeliverer
         try:
-            delivery_receipt = MattermostDeliverer(
-                ctx.config.deliver.mattermost, language=ctx.config.report.language
+            delivery_receipt = deliverer_cls(
+                mm_cfg, language=ctx.config.report.language
             ).deliver_digest(
                 digest,
                 json_path=str(ctx.json_path),
