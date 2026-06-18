@@ -4,16 +4,56 @@ Configuration management using pydantic-settings.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import structlog
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _coerce_env_value(annotation: Any, raw: str) -> Any:
+    """Coerce an environment-variable string to a model field's declared type.
+
+    The env var arrives as a string; this turns it into the field's Python type
+    using the field's pydantic annotation, so ``"7"`` → ``int``, ``"false"`` →
+    ``bool`` (pydantic's lax bool accepts true/false/1/0/yes/no/on/off), ``"ru"``
+    → ``str`` / ``Literal``, ``"/p"`` → ``Optional[str]``. Complex types accept a
+    JSON literal (``'["a","b"]'`` / ``'{"k": 1}'``) and ``list`` fields also
+    accept a comma-separated string (``"a, b, c"``).
+
+    If nothing coerces, the raw string is returned unchanged so the model's own
+    validation (e.g. the ``mm_source`` reconstruct) surfaces a clear error rather
+    than this helper masking it.
+    """
+    adapter = TypeAdapter(annotation)
+    # 1. Direct lax coercion — scalars: int / float / bool / str / Literal / Optional.
+    try:
+        return adapter.validate_python(raw)
+    except ValidationError:
+        pass
+    # 2. JSON literal — lists/dicts: '["a","b"]', '{"k": 1}'.
+    try:
+        return adapter.validate_python(json.loads(raw))
+    except (ValueError, ValidationError):
+        pass
+    # 3. Comma-separated fallback for list-like fields ("a, b, c").
+    try:
+        return adapter.validate_python([part.strip() for part in raw.split(",") if part.strip()])
+    except ValidationError:
+        return raw
 
 
 class TimeConfig(BaseModel):
@@ -1283,28 +1323,62 @@ class Config(BaseSettings):
         env_field_map: Optional[Dict[str, str]] = None,
         env_prefix: Optional[str] = None,
     ) -> None:
-        """Merge YAML values into an existing model while preserving ENV precedence.
+        """Merge YAML values into an existing model, with ENV taking precedence.
 
-        ENV override is checked in this order for each field:
-        1. Explicit ``env_field_map`` entry (e.g. ``{"endpoint": "EWS_ENDPOINT"}``).
+        Per-field precedence (highest first):
+        1. Explicit ``env_field_map`` entry (e.g. ``{"endpoint": "EWS_ENDPOINT"}``)
+           — a mapped field never falls back to the generic name.
         2. Generic ``DIGEST_{env_prefix}_{FIELD}`` when *env_prefix* is given.
-        If the corresponding ENV variable is set (non-empty), the YAML value is
-        skipped so that the operator's ENV always wins.
+        3. The YAML ``value``.
+
+        When an ENV variable is set (non-empty) its string is coerced to the
+        field's declared type and APPLIED — the operator's ENV wins over both the
+        YAML value and the field default. Iteration is over the model's fields
+        (not just the YAML keys), so a ``DIGEST_<PREFIX>_<FIELD>`` override lands
+        even when the field is absent from YAML. That last case is the bug this
+        fixes: the previous code only ever used the ENV var as a signal to SKIP
+        the YAML value and never applied it, so a documented generic override
+        (e.g. ``DIGEST_MM_SOURCE_MAX_CHANNELS``/``DIGEST_LLM_TIMEOUT_S``) was a
+        no-op and the field kept its YAML value or default.
+
+        Secrets are unaffected: tokens/passwords/webhook URLs are read from
+        ``os.getenv`` at call time by the accessor methods (``get_password`` /
+        ``get_token`` / ``get_webhook_url`` / ``get_base_url``), never through this
+        merge. For ``mm_source`` the caller reconstructs the model from the merged
+        state, so an env-set ``dm_scope`` still flows through the DM-consent
+        ``model_validator`` — env cannot smuggle a counterparty-exposing scope
+        past that gate.
         """
         env_field_map = env_field_map or {}
+
+        def _env_raw(field_name: str) -> Optional[str]:
+            """Overriding ENV string for *field_name*, or None when unset/empty."""
+            if field_name in env_field_map:
+                # Explicit mapping takes priority and does NOT fall back to the
+                # generic prefix (so EWS_ENDPOINT beats DIGEST_EWS_ENDPOINT).
+                return os.getenv(env_field_map[field_name]) or None
+            if env_prefix:
+                return os.getenv(f"DIGEST_{env_prefix}_{field_name}".upper()) or None
+            return None
+
+        # `model_fields` is a class attribute (instance access is deprecated in
+        # pydantic v2.11); `model` is always a BaseModel instance here.
+        model_fields = type(model).model_fields
+
+        # 1. Apply YAML values, skipping any field an ENV var will override below.
         for key, value in values.items():
-            if not hasattr(model, key):
+            if key not in model_fields:
                 continue
-            # Check explicit mapping first
-            env_var = env_field_map.get(key)
-            if env_var and os.getenv(env_var):
+            if _env_raw(key) is not None:
                 continue
-            # Check generic prefix-based mapping
-            if env_prefix and not env_var:
-                generic_env = f"DIGEST_{env_prefix}_{key}".upper()
-                if os.getenv(generic_env):
-                    continue
             setattr(model, key, value)
+
+        # 2. Apply ENV overrides for every field that has one (env > YAML > default).
+        for field_name, field_info in model_fields.items():
+            raw = _env_raw(field_name)
+            if raw is None:
+                continue
+            setattr(model, field_name, _coerce_env_value(field_info.annotation, raw))
 
     def get_ews_password(self) -> str:
         """Get EWS password from environment.

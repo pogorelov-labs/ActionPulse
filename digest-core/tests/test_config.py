@@ -4,6 +4,7 @@ Test configuration classes and methods.
 
 import pytest
 import os
+from typing import List
 from unittest.mock import patch
 from digest_core.config import (
     EWSConfig,
@@ -11,6 +12,7 @@ from digest_core.config import (
     LLMConfig,
     TimeConfig,
     ObservabilityConfig,
+    _coerce_env_value,
 )
 
 
@@ -129,7 +131,7 @@ class TestEnvOverYamlPrecedence:
             assert config.ews.endpoint == "https://env-wins"
 
     def test_generic_env_prefix_wins_for_llm(self):
-        """DIGEST_LLM_TIMEOUT_S overrides YAML timeout_s."""
+        """DIGEST_LLM_TIMEOUT_S overrides YAML timeout_s — and is APPLIED + coerced."""
         with patch.dict(os.environ, {"DIGEST_LLM_TIMEOUT_S": "300"}, clear=False):
             config = Config()
             config._merge_model(
@@ -137,11 +139,12 @@ class TestEnvOverYamlPrecedence:
                 {"timeout_s": 45},
                 env_prefix="LLM",
             )
-            # ENV was set, so YAML should NOT overwrite
-            assert config.llm.timeout_s != 45
+            # ENV wins and lands as a coerced int (not the YAML 45, not the str "300").
+            assert config.llm.timeout_s == 300
+            assert isinstance(config.llm.timeout_s, int)
 
     def test_generic_env_prefix_wins_for_time(self):
-        """DIGEST_TIME_WINDOW overrides YAML window."""
+        """DIGEST_TIME_WINDOW overrides YAML window with the env value."""
         with patch.dict(os.environ, {"DIGEST_TIME_WINDOW": "rolling_24h"}, clear=False):
             config = Config()
             # Try to overwrite with a distinct YAML value
@@ -150,8 +153,8 @@ class TestEnvOverYamlPrecedence:
                 {"window": "some_other_mode"},
                 env_prefix="TIME",
             )
-            # ENV blocks YAML — value should NOT be "some_other_mode"
-            assert config.time.window != "some_other_mode"
+            # ENV value is applied, not merely "not the YAML value".
+            assert config.time.window == "rolling_24h"
 
     def test_generic_env_prefix_wins_for_degrade(self):
         """DIGEST_DEGRADE_ENABLE overrides YAML degrade.enable."""
@@ -192,7 +195,7 @@ class TestEnvOverYamlPrecedence:
                 {"log_level": "ERROR"},
                 env_prefix="OBS",
             )
-            assert config.observability.log_level != "ERROR"
+            assert config.observability.log_level == "DEBUG"
 
     def test_yaml_applies_when_no_env_set(self):
         """Without ENV, YAML values are applied normally."""
@@ -220,8 +223,8 @@ class TestEnvOverYamlPrecedence:
                 env_field_map={"endpoint": "EWS_ENDPOINT"},
                 env_prefix="EWS",
             )
-            # Explicit match skips before generic check
-            assert config.ews.endpoint != "yaml"
+            # Explicit map wins over both YAML and the generic prefix var.
+            assert config.ews.endpoint == "explicit"
 
 
 class TestConfigIntegration:
@@ -293,3 +296,165 @@ def test_yaml_threading_env_still_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("DIGEST_THREADING_EMBEDDING_MERGE", "false")
     cfg = Config()
     assert cfg.threading.embedding_merge is False  # ENV beats YAML
+
+
+class TestCoerceEnvValue:
+    """Unit tests for the env-string → field-type coercion helper.
+
+    The env var always arrives as a string; the field default may be int / bool /
+    list / str. A coercion bug here is silent (e.g. the truthy string "false"
+    landing in a bool field), so pin the type fidelity directly.
+    """
+
+    def test_int_coerced_to_int(self):
+        out = _coerce_env_value(int, "7")
+        assert out == 7 and isinstance(out, int)
+
+    def test_bool_false_is_false_not_truthy_string(self):
+        # The footgun: bool("false") is True. Must coerce to the bool False.
+        assert _coerce_env_value(bool, "false") is False
+        assert _coerce_env_value(bool, "0") is False
+        assert _coerce_env_value(bool, "off") is False
+
+    def test_bool_true_variants(self):
+        for raw in ("true", "1", "yes", "on"):
+            assert _coerce_env_value(bool, raw) is True
+
+    def test_str_passthrough(self):
+        assert _coerce_env_value(str, "ru") == "ru"
+
+    def test_list_comma_separated(self):
+        assert _coerce_env_value(List[str], "eng, ops, sec") == ["eng", "ops", "sec"]
+
+    def test_list_json_literal(self):
+        assert _coerce_env_value(List[str], '["x", "y"]') == ["x", "y"]
+
+
+def _config_with_yaml(tmp_path, monkeypatch, yaml_text):
+    """Build a full Config() with *yaml_text* as the highest-precedence layer."""
+    custom = tmp_path / "custom_config.yaml"
+    custom.write_text(yaml_text, encoding="utf-8")
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(custom))
+    return Config()
+
+
+class TestGenericEnvOverrideApplied:
+    """DIGEST_<PREFIX>_<FIELD> must APPLY the coerced env value (env > YAML > default).
+
+    Regression for the dead generic-override path: ``_merge_model`` used to read
+    the env var only as a signal to SKIP the YAML value and never applied it, so a
+    documented override like ``DIGEST_MM_SOURCE_MAX_CHANNELS`` /
+    ``DIGEST_LLM_TIMEOUT_S`` was a silent no-op and the field kept its YAML value
+    or default. These build a full ``Config()`` so the merge path runs end to end.
+    """
+
+    def test_int_field_env_overrides_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DIGEST_MM_SOURCE_MAX_CHANNELS", "7")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  max_channels: 50\n")
+        assert cfg.mm_source.max_channels == 7  # env beats YAML 50
+        assert isinstance(cfg.mm_source.max_channels, int)  # coerced, not the str "7"
+
+    def test_int_field_env_overrides_default_when_absent_from_yaml(self, tmp_path, monkeypatch):
+        # max_channels is in NO YAML layer -> env must still beat the default (200).
+        # This is the exact case the old code missed (it only iterated YAML keys).
+        monkeypatch.setenv("DIGEST_MM_SOURCE_MAX_CHANNELS", "7")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: false\n")
+        assert cfg.mm_source.max_channels == 7
+
+    def test_bool_field_env_overrides_yaml_and_coerces_false(self, tmp_path, monkeypatch):
+        # YAML says true; env "false" must win AND coerce to the bool False.
+        monkeypatch.setenv("DIGEST_DEGRADE_ENABLE", "false")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "degrade:\n  enable: true\n")
+        assert cfg.degrade.enable is False
+
+    def test_bool_field_env_overrides_default(self, tmp_path, monkeypatch):
+        # ranker.enabled defaults False; env "true" flips it with no YAML value.
+        monkeypatch.setenv("DIGEST_RANKER_ENABLED", "true")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "ranker:\n  log_positions: true\n")
+        assert cfg.ranker.enabled is True
+
+    def test_str_field_env_overrides_yaml(self, tmp_path, monkeypatch):
+        # Also a regression for the documented DIGEST_REPORT_LANGUAGE override,
+        # which flows ONLY through the (previously dead) generic prefix path.
+        monkeypatch.setenv("DIGEST_REPORT_LANGUAGE", "ru")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "report:\n  language: en\n")
+        assert cfg.report.language == "ru"
+
+    def test_list_field_env_comma_separated(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DIGEST_MM_SOURCE_CHANNEL_ALLOWLIST", "eng, ops, sec")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: false\n")
+        assert cfg.mm_source.channel_allowlist == ["eng", "ops", "sec"]
+
+
+class TestExplicitEnvFieldMapStillWins:
+    """The backward-compat explicit names (EWS_ENDPOINT, ...) keep their precedence."""
+
+    def test_explicit_map_overrides_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EWS_ENDPOINT", "https://env-explicit")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, 'ews:\n  endpoint: "https://yaml-value"\n')
+        assert cfg.ews.endpoint == "https://env-explicit"
+
+    def test_explicit_map_beats_generic_prefix(self, tmp_path, monkeypatch):
+        # Both EWS_ENDPOINT and the generic DIGEST_EWS_ENDPOINT are set; explicit wins.
+        monkeypatch.setenv("EWS_ENDPOINT", "https://explicit")
+        monkeypatch.setenv("DIGEST_EWS_ENDPOINT", "https://generic")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, 'ews:\n  endpoint: "https://yaml-value"\n')
+        assert cfg.ews.endpoint == "https://explicit"
+
+
+class TestSecretAccessorsUnaffected:
+    """Secrets are read from os.getenv at call time, never through _merge_model."""
+
+    def test_secret_accessors_still_resolve_from_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EWS_PASSWORD", "pw-secret")
+        monkeypatch.setenv("LLM_TOKEN", "llm-secret")
+        monkeypatch.setenv("MM_PAT", "pat-secret")
+        monkeypatch.setenv("MM_WEBHOOK_URL", "https://hook-secret")
+        monkeypatch.setenv("MM_BASE_URL", "https://mm.corp")
+        # A generic override on a sibling field must not disturb the secret reads.
+        monkeypatch.setenv("DIGEST_MM_SOURCE_MAX_CHANNELS", "7")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: true\n")
+        assert cfg.get_ews_password() == "pw-secret"
+        assert cfg.get_llm_token() == "llm-secret"
+        assert cfg.mm_source.get_token() == "pat-secret"
+        assert cfg.deliver.mattermost.get_webhook_url() == "https://hook-secret"
+        assert cfg.mm_source.get_base_url() == "https://mm.corp"
+        # ...and the generic override still landed alongside the untouched secrets.
+        assert cfg.mm_source.max_channels == 7
+
+
+class TestDmConsentGateWithEnvOverride:
+    """An env-set dm_scope must still flow through the DM-consent validator.
+
+    The merge setattrs onto the live instance (no re-validation), but the caller
+    reconstructs ``MattermostSourceConfig(**model_dump())`` after the mm_source
+    merge, so the ``model_validator`` fires on the merged-in env value. Env must
+    not be a side door around consent.
+    """
+
+    def test_dm_scope_all_via_env_without_consent_raises(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DIGEST_MM_SOURCE_DM_CONSENT_ACKNOWLEDGED", raising=False)
+        monkeypatch.setenv("DIGEST_MM_SOURCE_DM_SCOPE", "all")
+        with pytest.raises(ValueError, match="dm_consent_acknowledged"):
+            _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: true\n")
+
+    def test_dm_scope_selected_via_env_without_consent_raises(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DIGEST_MM_SOURCE_DM_CONSENT_ACKNOWLEDGED", raising=False)
+        monkeypatch.setenv("DIGEST_MM_SOURCE_DM_SCOPE", "selected")
+        with pytest.raises(ValueError, match="dm_consent_acknowledged"):
+            _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: true\n")
+
+    def test_dm_scope_all_via_env_with_consent_loads(self, tmp_path, monkeypatch):
+        # Consent acknowledged via env -> scope flows THROUGH validation and loads.
+        monkeypatch.setenv("DIGEST_MM_SOURCE_DM_SCOPE", "all")
+        monkeypatch.setenv("DIGEST_MM_SOURCE_DM_CONSENT_ACKNOWLEDGED", "true")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: true\n")
+        assert cfg.mm_source.dm_scope == "all"
+        assert cfg.mm_source.dm_consent_acknowledged is True
+
+    def test_dm_scope_own_posts_only_via_env_needs_no_consent(self, tmp_path, monkeypatch):
+        # own_posts_only exposes no third-party text -> no consent required.
+        monkeypatch.delenv("DIGEST_MM_SOURCE_DM_CONSENT_ACKNOWLEDGED", raising=False)
+        monkeypatch.setenv("DIGEST_MM_SOURCE_DM_SCOPE", "own_posts_only")
+        cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: true\n")
+        assert cfg.mm_source.dm_scope == "own_posts_only"
