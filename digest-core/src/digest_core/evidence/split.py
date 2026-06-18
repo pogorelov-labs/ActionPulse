@@ -426,14 +426,26 @@ class EvidenceSplitter:
         # Calculate priority score based on content characteristics
         priority_score = self._calculate_priority_score(content, message)
 
-        # Create source reference
+        # Create source reference. The type is authoritative — driven by the
+        # message's source TYPE, not hardcoded (P1a). Email messages keep
+        # ``{"type": "email", ...}`` byte-identical (the "email" default). For
+        # Mattermost the renderer prints ``Source: mm`` for free, and we surface
+        # the chat-native locators (``channel_id`` from the conversation, ``post_id``
+        # from the ``mm:<post_id>`` namespaced id) when they can be derived.
+        source_type = getattr(message, "source", "email")
         source_ref = {
-            "type": "email",
+            "type": source_type,
             "msg_id": message.msg_id,
             "conversation_id": conversation_id,
             "message_index": message_index,
             "chunk_index": chunk_index,
         }
+        if source_type == "mm":
+            if conversation_id:
+                source_ref["channel_id"] = conversation_id
+            mm_post_id = (message.msg_id or "").split("mm:", 1)[-1] if message.msg_id else ""
+            if mm_post_id and message.msg_id.startswith("mm:"):
+                source_ref["post_id"] = mm_post_id
 
         # Build message metadata
         message_metadata = {

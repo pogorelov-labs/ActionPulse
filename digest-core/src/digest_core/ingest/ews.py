@@ -80,6 +80,15 @@ class NormalizedMessage:
     body_norm: str = ""
     received_at: Optional[datetime] = None
 
+    #: Source TYPE of the message ("email" | "mm"), NOT the adapter name. EWS
+    #: messages keep the "email" default; a Mattermost adapter sets "mm". This
+    #: drives the markdown-safe normalize branch (run.py), the authoritative
+    #: ``source_ref['type']`` (evidence/split.py) and the source-aware threading
+    #: branch (threads/build.py). It is deliberately NOT part of
+    #: ``_content_sha256`` (run.py), so existing email content hashes — and thus
+    #: idempotency/replay — are unchanged by adding it.
+    source: str = "email"
+
     def __init__(
         self,
         msg_id: str,
@@ -103,6 +112,7 @@ class NormalizedMessage:
         message_id: str = "",
         body_norm: str = "",
         received_at: Optional[datetime] = None,
+        source: str = "email",
     ) -> None:
         sender_email = sender_email or sender or from_email
         to_recipients = list(to_recipients or to_emails or [])
@@ -130,6 +140,7 @@ class NormalizedMessage:
         object.__setattr__(self, "message_id", message_id)
         object.__setattr__(self, "body_norm", body_norm)
         object.__setattr__(self, "received_at", received_at)
+        object.__setattr__(self, "source", source)
         self.__post_init__()
 
     def __post_init__(self) -> None:
