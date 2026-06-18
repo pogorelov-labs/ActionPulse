@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import List
 
 import httpx
@@ -23,6 +24,39 @@ from digest_core.llm.schemas import Digest
 logger = structlog.get_logger()
 
 DEFAULT_PING_TEXT = report_strings(DEFAULT_LANGUAGE)["mm_ping_text"]
+
+# An @-mention at a word boundary: @handle / @channel / @here / @all. The
+# negative lookbehind excludes a mid-word "@" (e.g. an email address local@host),
+# which Mattermost does not treat as a mention anyway.
+_MENTION_RE = re.compile(r"(?<![\w/])@[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def escape_mentions(text: str) -> str:
+    """Neutralize Mattermost @-mentions in evidence-derived text.
+
+    Mattermost parses ``@handle``/``@channel``/``@here``/``@all`` out of the
+    message *text* at post time and notifies those users — there is no per-post
+    opt-out. A digest renders LLM-extracted titles (and, in future, quoted chat),
+    so quoted content like "ping @ivan before EOD" would ping a real Ivan on
+    delivery. We wrap each mention token in a backtick code span: the server-side
+    mention parser skips code spans, so this is true notification suppression,
+    not merely a rendering change (verified at the v11.3.0 parser level; see
+    docs/research/MATTERMOST_PAT_INTEGRATION.md §5). A handle cannot contain a
+    backtick, so a single-backtick fence is always valid for the token. Mid-word
+    "@" (email addresses) is left untouched. Idempotent: a token already inside a
+    backtick span is not re-wrapped.
+    """
+    if not text or "@" not in text:
+        return text
+
+    def _wrap(match: re.Match) -> str:
+        start = match.start()
+        # Skip if the token is already opened by a backtick (already escaped).
+        if start > 0 and text[start - 1] == "`":
+            return match.group(0)
+        return f"`{match.group(0)}`"
+
+    return _MENTION_RE.sub(_wrap, text)
 
 
 def _blen(s: str) -> int:
@@ -129,7 +163,8 @@ class MattermostDeliverer:
                         f" {self._confidence_label(item.confidence)}"
                     )
                 prefix = "-" if normalize_section(section.title) in (FYI, STATUS) else f"{index}."
-                section_lines.append(f"{prefix} {item.title}{due_part}{confidence_part}")
+                title = escape_mentions(item.title)
+                section_lines.append(f"{prefix} {title}{due_part}{confidence_part}")
                 trace_line = self._format_trace_line(item, json_path)
                 if trace_line:
                     section_lines.append(trace_line)
