@@ -1,0 +1,125 @@
+"""The encrypted message store facade: open/close + high-level operations.
+
+The only place that sets the SQLCipher key + PRAGMAs and runs schema
+bootstrap/migration. Everything is lazy: importing this module does NOT import
+``sqlcipher3`` (the driver is touched only in ``open``), so the store package is
+importable even when the ``store`` extra is absent.
+"""
+
+from __future__ import annotations
+
+import os
+from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
+
+import structlog
+
+from digest_core.store import ingest as _ingest
+from digest_core.store import retention as _retention
+from digest_core.store._driver import HAS_SQLCIPHER, INSTALL_HINT, connect, key_pragma
+from digest_core.store.schema import apply_schema, migrate
+
+logger = structlog.get_logger(__name__)
+
+
+class StoreError(RuntimeError):
+    """The store could not be opened or operated (driver missing, bad key, IO)."""
+
+
+class MessageStore:
+    """Facade over the encrypted SQLite DB. Use as a context manager."""
+
+    def __init__(self, conn, config: Any) -> None:
+        self.conn = conn
+        self.config = config
+
+    @classmethod
+    def open(cls, config: Any) -> "MessageStore":
+        """Open (creating if needed) the encrypted store described by ``config``.
+
+        Raises ``StoreError`` with an actionable message when the driver is
+        missing or the key is wrong; ``ValueError`` when ``DIGEST_STORE_KEY`` is
+        unset (surfaced from ``StoreConfig.get_key``).
+        """
+        if not HAS_SQLCIPHER:
+            raise StoreError(INSTALL_HINT)
+        key = config.get_key()
+        path = Path(config.resolved_db_path()).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existed = path.exists()
+        conn = connect(str(path))
+        try:
+            # PRAGMA key MUST be the first statement; the next read decrypts the
+            # header so a wrong key on an existing DB fails here, not mid-run.
+            conn.execute(key_pragma(key))
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            apply_schema(conn)
+            migrate(conn)
+        except Exception as exc:
+            with suppress(Exception):
+                conn.close()
+            if existed:
+                raise StoreError(
+                    "Could not open the encrypted store — wrong DIGEST_STORE_KEY, or the "
+                    f"file is not a SQLCipher database: {exc}"
+                ) from exc
+            raise StoreError(f"Could not initialize the encrypted store: {exc}") from exc
+        cls._harden_perms(path)
+        return cls(conn, config)
+
+    @staticmethod
+    def _harden_perms(path: Path) -> None:
+        """Best-effort 0600 on the DB and its WAL/SHM sidecars (defense in depth)."""
+        for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+            with suppress(OSError):
+                if p.exists():
+                    os.chmod(p, 0o600)
+
+    # -- operations --------------------------------------------------------
+
+    def upsert_messages(
+        self,
+        messages: Iterable[Any],
+        *,
+        raw_by_id: Optional[Dict[str, str]] = None,
+        pipeline_version: str = "",
+        now: Optional[datetime] = None,
+    ) -> Dict[str, int]:
+        return _ingest.upsert_messages(
+            self.conn,
+            messages,
+            raw_by_id=raw_by_id,
+            pipeline_version=pipeline_version,
+            now=now,
+        )
+
+    def sweep_ttl(self, ttl_days: Optional[int] = None, *, now: Optional[datetime] = None) -> int:
+        days = self.config.ttl_days if ttl_days is None else ttl_days
+        return _retention.sweep_ttl(self.conn, days, now=now)
+
+    def stats(self) -> Dict[str, Any]:
+        return _ingest.stats(self.conn)
+
+    def vacuum(self) -> None:
+        _retention.vacuum(self.conn)
+
+    def checkpoint(self) -> None:
+        _retention.checkpoint(self.conn)
+
+    def close(self) -> None:
+        with suppress(Exception):
+            _retention.checkpoint(self.conn)
+        with suppress(Exception):
+            self.conn.close()
+
+    def __enter__(self) -> "MessageStore":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.close()
+        return False

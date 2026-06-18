@@ -32,6 +32,19 @@ otel = [
     "opentelemetry-api>=1.27",
     "opentelemetry-sdk>=1.27",
 ]
+# Opt-in encrypted message store (digest_core.store). Install-time opt-in,
+# matching the runtime default-OFF: a default `uv sync` does NOT pull these.
+# Enable with `uv sync --extra store`.
+#   * Linux: sqlcipher3-binary ships a prebuilt SQLCipher (manylinux wheel).
+#   * macOS: sqlcipher3 builds from source (bundled SQLCipher amalgamation);
+#     needs openssl available — `brew install openssl@3` and, if the build can't
+#     find it, export CPPFLAGS/LDFLAGS pointing at the brew prefix.
+# Both distributions expose `import sqlcipher3`.
+store = [
+    "numpy>=1.26",
+    "sqlcipher3-binary>=0.6.0; platform_system == 'Linux'",
+    "sqlcipher3>=0.5.4; platform_system == 'Darwin'",
+]
 
 [dependency-groups]
 dev = [
