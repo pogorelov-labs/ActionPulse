@@ -113,7 +113,9 @@ class MarkdownAssembler:
                     item_confidence = item.get("confidence", 0)
                     item_evidence_id = item.get("evidence_id", "")
                     item_source_ref = item.get("source_ref", {})
-                    item_email_subject = item.get("email_subject")
+                    # Accept OLD-key dicts (email_subject) so a pre-rename
+                    # artifact rendered as a raw dict still shows its subject.
+                    item_source_subject = item.get("source_subject") or item.get("email_subject")
                     item_weak_evidence = item.get("weak_evidence", False)
                 else:
                     item_title = item.title
@@ -121,7 +123,7 @@ class MarkdownAssembler:
                     item_confidence = item.confidence
                     item_evidence_id = item.evidence_id
                     item_source_ref = item.source_ref
-                    item_email_subject = getattr(item, "email_subject", None)
+                    item_source_subject = getattr(item, "source_subject", None)
                     item_weak_evidence = getattr(item, "weak_evidence", False)
 
                 lines.append(f"### {i}. {item_title}")
@@ -146,9 +148,9 @@ class MarkdownAssembler:
 
                 # Add evidence reference (required format) with email subject
                 source_type = item_source_ref.get("type", "unknown")
-                if item_email_subject:
+                if item_source_subject:
                     lines.append(
-                        f'**{self._s["source_label"]}:** {source_type}, {self._s["subject_word"]} "{item_email_subject}", evidence {item_evidence_id}'
+                        f'**{self._s["source_label"]}:** {source_type}, {self._s["subject_word"]} "{item_source_subject}", evidence {item_evidence_id}'
                     )
                 else:
                     lines.append(

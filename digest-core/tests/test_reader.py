@@ -41,8 +41,8 @@ def _item(**overrides) -> Item:
         evidence_id="ev-1",
         confidence=0.86,
         source_ref={"type": "email", "msg_id": "msg-1"},
-        email_subject="RE: Project status",
-        email_from="Ivan Petrov <ivan.petrov@corp.ru>",
+        source_subject="RE: Project status",
+        source_from="Ivan Petrov <ivan.petrov@corp.ru>",
         evidence_spans=[{"msg_id": "msg-1", "quote": "подготовь обновление статуса"}],
     )
     payload.update(overrides)
@@ -68,7 +68,7 @@ def _write_digest(out_dir: Path, digest: Digest) -> Path:
 
 
 class TestEnrichment:
-    """run.py populates email_subject/email_from from the normalized messages."""
+    """run.py populates source_subject/source_from from the normalized messages."""
 
     def test_replay_run_writes_enriched_artifact(self, monkeypatch, tmp_path):
         assert _run_replay(monkeypatch, tmp_path, None)
@@ -78,8 +78,10 @@ class TestEnrichment:
         items = [item for section in artifact["sections"] for item in section["items"]]
         assert items
         for item in items:
-            assert item["email_subject"] == "Статус проекта"
-            assert item["email_from"] == "Manager <manager@corp.com>"
+            # The artifact now emits the NEW source_* keys (not the old email_* ones).
+            assert item["source_subject"] == "Статус проекта"
+            assert item["source_from"] == "Manager <manager@corp.com>"
+            assert "email_subject" not in item and "email_from" not in item
 
     def test_existing_values_kept_and_system_items_skipped(self):
         from digest_core.ingest.ews import NormalizedMessage
@@ -100,7 +102,7 @@ class TestEnrichment:
             attachment_types=[],
             from_name="Anna",
         )
-        keep = _item(email_subject="Already set", email_from=None)
+        keep = _item(source_subject="Already set", source_from=None)
         system = Item(
             title="banner",
             evidence_id="system",
@@ -109,13 +111,40 @@ class TestEnrichment:
         )
         digest = _digest(items=[keep, system])
         runner._enrich_items_from_messages(digest, [message])
-        assert keep.email_subject == "Already set"  # never overwritten
-        assert keep.email_from == "Anna <a@corp.ru>"
-        assert system.email_subject is None  # system items carry no source
+        assert keep.source_subject == "Already set"  # never overwritten
+        assert keep.source_from == "Anna <a@corp.ru>"
+        assert system.source_subject is None  # system items carry no source
 
     def test_msg_id_falls_back_to_spans(self):
         item = _item(source_ref={"type": "email"})
         assert runner._item_msg_id(item) == "msg-1"
+
+
+class TestSourceFieldRename:
+    """source_subject/source_from rename (§9 #5) keeps OLD artifacts readable."""
+
+    def test_old_keys_deserialize_into_new_fields(self):
+        # A pre-rename artifact dict carries email_subject/email_from. The
+        # validation aliases must map them onto the new field names.
+        old = {
+            "title": "Approve the vendor contract",
+            "evidence_id": "ev-1",
+            "confidence": 0.9,
+            "source_ref": {"type": "email", "msg_id": "msg-1"},
+            "email_subject": "Vendor contract — sign-off needed",
+            "email_from": "Ivan Petrov <ivan.petrov@corp.ru>",
+        }
+        item = Item.model_validate(old)
+        assert item.source_subject == "Vendor contract — sign-off needed"
+        assert item.source_from == "Ivan Petrov <ivan.petrov@corp.ru>"
+
+    def test_fresh_item_emits_new_keys_only(self):
+        # A freshly constructed item serializes by the NEW field names; the old
+        # keys must be gone from the artifact.
+        dumped = _item().model_dump(exclude_none=True)
+        assert dumped["source_subject"] == "RE: Project status"
+        assert dumped["source_from"] == "Ivan Petrov <ivan.petrov@corp.ru>"
+        assert "email_subject" not in dumped and "email_from" not in dumped
 
 
 class TestPureHelpers:
@@ -134,12 +163,12 @@ class TestPureHelpers:
         payload = digest.model_dump(exclude_none=True)
         for section in payload["sections"]:
             for item in section["items"]:
-                item.pop("email_from", None)
-                item.pop("email_subject", None)
+                item.pop("source_from", None)
+                item.pop("source_subject", None)
         path = tmp_path / "digest-2026-06-12.json"
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         loaded = load_digest(path)
-        assert loaded.sections[0].items[0].email_from is None
+        assert loaded.sections[0].items[0].source_from is None
 
     def test_item_card_carries_topic_author_quote_and_trace(self):
         console = _console()

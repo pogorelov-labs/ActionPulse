@@ -11,7 +11,7 @@ Coverage:
 import pytest
 from datetime import datetime, timedelta, timezone
 from digest_core.select.ranker import DigestRanker, RankingFeatures
-from digest_core.llm.schemas import ActionItem, DeadlineMeeting, ExtractedActionItem
+from digest_core.llm.schemas import ActionItem, DeadlineMeeting, ExtractedActionItem, Item
 from digest_core.evidence.split import EvidenceChunk
 
 
@@ -238,22 +238,23 @@ class TestRankingFeatures:
         ]
 
         for subject, expected in test_subjects:
+            # Empty metadata so the tag must come from the live Item.source_subject
+            # field (renamed from email_subject), not the message-metadata fallback.
             chunk = EvidenceChunk(
                 evidence_id="ev1",
                 msg_id="msg1",
                 text="Content",
                 sender="sender@example.com",
                 timestamp=datetime.now(timezone.utc).isoformat(),
-                message_metadata={"subject": subject},
+                message_metadata={},
             )
 
-            item = ActionItem(
+            item = Item(
                 title="Action",
-                description="Do something",
                 evidence_id="ev1",
-                quote="Test",
-                confidence="High",
-                email_subject=subject,
+                confidence=0.9,
+                source_ref={"type": "email", "msg_id": "msg1"},
+                source_subject=subject,
             )
 
             features = ranker._extract_features(item, [chunk])

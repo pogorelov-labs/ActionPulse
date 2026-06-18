@@ -77,10 +77,10 @@ def item_card(item: Item, section_title: str) -> Panel:
     if item.due:
         row("Due", item.due)
     row("Confidence", f"{item.confidence:.2f} ({confidence_text(item.confidence, 'en')})")
-    if item.email_from:
-        row("From", item.email_from)
-    if item.email_subject:
-        row("Subject", item.email_subject)
+    if item.source_from:
+        row("From", item.source_from)
+    if item.source_subject:
+        row("Subject", item.source_subject)
     if getattr(item, "weak_evidence", None):
         row("Evidence", f"{WARN} weak — not offset-verified", style="ap.warn")
     if getattr(item, "seen_before", None):

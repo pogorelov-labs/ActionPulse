@@ -871,8 +871,8 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         }
         if spans:
             out["evidence_spans"] = spans
-        if item.get("email_subject") is not None:
-            out["email_subject"] = item["email_subject"]
+        if item.get("source_subject") is not None:
+            out["source_subject"] = item["source_subject"]
         raw_citations = item.get("citations")
         if isinstance(raw_citations, list) and raw_citations:
             parsed: List[Citation] = []
