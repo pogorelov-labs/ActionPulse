@@ -41,9 +41,11 @@ from digest_core.ingest.mattermost import (
     MattermostReadClient,
     MattermostSourceAdapter,
     _AdaptiveChannelFetcher,
+    _channel_is_allowlisted,
     _ChannelResult,
     _is_system_or_bot,
     _mention_regex,
+    _normalize_allowlist,
     _parse_retry_after,
 )
 from digest_core.ingest.source_adapter import SourceAdapter
@@ -1285,3 +1287,346 @@ def test_aimd_malformed_channel_counted_not_fetched():
     assert calls == ["chan-0"]  # only the well-formed channel was fetched
     assert outcome.done == 2  # but BOTH count toward the denominator
     assert outcome.channels_scanned == 1
+
+
+# ---------------------------------------------------------------------------
+# 9. Allowlisted channels — general-post ingest on top of mentions (§2.3)
+#
+# All offline + payload-free. The channels phase is OFF by default (empty
+# allowlist), so the headline test is the EQUIVALENCE guard: with no allowlist
+# the ingested set is identical to the mentions-only behavior. The rest cover
+# general-post ingest, id/name/display matching, and the per-channel cap.
+# ---------------------------------------------------------------------------
+
+
+def _allowlist_channel_http() -> "_FakeHttp":
+    """Two active channels, each carrying ONE @owner mention + general posts.
+
+    ``chan-allow`` (display_name "Release Train", name "release-train") and
+    ``chan-other`` (display_name "Watercooler", name "watercooler"). Each channel
+    has, in its window: one @owner mention, one general post mentioning someone
+    else, one plain general post. System/bot/tombstone posts are NOT added here
+    (their filtering is covered by the existing suite); this fixture isolates the
+    mention-vs-general distinction.
+    """
+    me = {"id": _OWNER_ID, "username": _OWNER_USERNAME, "email": "me@corp"}
+    teams = [{"id": "team-1"}]
+
+    def _chan(cid: str, display: str, name: str, last: int) -> dict:
+        return {"id": cid, "display_name": display, "name": name, "last_post_at": last}
+
+    chans = [
+        _chan("chan-allow", "Release Train", "release-train", _MID_DAY_MS + 2000),
+        _chan("chan-other", "Watercooler", "watercooler", _MID_DAY_MS + 1000),
+    ]
+
+    def _posts(cid: str) -> dict:
+        # newest-first order: mention, then two general posts.
+        mention = {
+            "id": f"p-{cid}-mention",
+            "root_id": "",
+            "user_id": "author-1",
+            "channel_id": cid,
+            "create_at": _MID_DAY_MS + 300,
+            "delete_at": 0,
+            "type": "",
+            "message": f"{_OWNER_HANDLE} please review {cid}",
+        }
+        general_other = {
+            "id": f"p-{cid}-gen-other",
+            "root_id": "",
+            "user_id": "author-2",
+            "channel_id": cid,
+            "create_at": _MID_DAY_MS + 200,
+            "delete_at": 0,
+            "type": "",
+            "message": "@someone.else can you take the on-call rotation tonight?",
+        }
+        general_plain = {
+            "id": f"p-{cid}-gen-plain",
+            "root_id": "",
+            "user_id": "author-2",
+            "channel_id": cid,
+            "create_at": _MID_DAY_MS + 100,
+            "delete_at": 0,
+            "type": "",
+            "message": "Deploy window confirmed for 15:00, rollback plan attached.",
+        }
+        order = [mention["id"], general_other["id"], general_plain["id"]]
+        return {
+            "order": order,
+            "posts": {
+                mention["id"]: mention,
+                general_other["id"]: general_other,
+                general_plain["id"]: general_plain,
+            },
+        }
+
+    routes_get = {
+        "/api/v4/users/me": me,
+        "/api/v4/users/me/teams": teams,
+        "/api/v4/users/me/teams/team-1/channels": chans,
+        "/api/v4/channels/chan-allow/posts": _posts("chan-allow"),
+        "/api/v4/channels/chan-other/posts": _posts("chan-other"),
+    }
+    routes_post = {
+        "/api/v4/users/ids": [
+            {"id": "author-1", "username": "alice.author", "email": "alice@corp"},
+            {"id": "author-2", "username": "bob.author", "email": "bob@corp"},
+        ],
+    }
+    return _FakeHttp(routes_get, routes_post)
+
+
+def _make_allowlist_adapter(http: "_FakeHttp", **cfg_overrides) -> MattermostSourceAdapter:
+    client = MattermostReadClient(
+        "https://mm.corp", "fake-pat-not-a-real-token", http_client=http, per_page=200
+    )
+    return MattermostSourceAdapter(
+        MattermostSourceConfig(base_url="https://mm.corp", **cfg_overrides),
+        _utc_time_config(),
+        client=client,
+    )
+
+
+# -- 9a. Normalization + matching (pure unit) -------------------------------
+
+
+def test_normalize_allowlist_trims_lowercases_drops_blanks():
+    """Entries are trimmed + lowercased once; blank/empty entries are dropped."""
+    norm = _normalize_allowlist(["  Release-Train ", "WATERCOOLER", "", "   "])
+    assert norm == frozenset({"release-train", "watercooler"})
+
+
+@pytest.mark.parametrize(
+    "channel,allowlist,expected",
+    [
+        # id exact (case-insensitive)
+        ({"id": "Chan-Allow"}, frozenset({"chan-allow"}), True),
+        # name match
+        ({"id": "x", "name": "release-train"}, frozenset({"release-train"}), True),
+        # display_name match (case-insensitive, the operator typed lowercase)
+        ({"id": "x", "display_name": "Release Train"}, frozenset({"release train"}), True),
+        # no match
+        ({"id": "x", "name": "watercooler"}, frozenset({"release-train"}), False),
+        # empty allowlist never matches (channels phase OFF)
+        ({"id": "chan-allow", "name": "release-train"}, frozenset(), False),
+    ],
+)
+def test_channel_is_allowlisted_matching(channel, allowlist, expected):
+    assert _channel_is_allowlisted(channel, allowlist) is expected
+
+
+# -- 9b. Empty allowlist = behavior-preserving (the regression guard) --------
+
+
+def test_empty_allowlist_ingests_exactly_mentions():
+    """REGRESSION GUARD: with an empty allowlist the ingested SET is identical to
+    today's mentions-only behavior — exactly the @owner posts, no general posts."""
+    http = _allowlist_channel_http()
+    adapter = _make_allowlist_adapter(http)  # channel_allowlist defaults to []
+    messages = adapter.fetch(_DIGEST_DATE)
+
+    kept = {m.msg_id for m in messages}
+    # Exactly the two mentions (one per channel); NO general post ingested.
+    assert kept == {"mm:p-chan-allow-mention", "mm:p-chan-other-mention"}
+    # And each is addressed-to-me (the mention semantics are unchanged).
+    assert all(m.to_recipients and m.to_recipients[0] == _OWNER_HANDLE for m in messages)
+
+
+# -- 9c. Allowlisted channel ingests general posts (as context) --------------
+
+
+def test_allowlisted_channel_ingests_general_posts_as_context():
+    """An allowlisted channel ingests ALL its in-window posts: the @mention is
+    addressed-to-me (owner in to_recipients), the general posts are CONTEXT
+    (to_recipients empty). A non-allowlisted channel still yields ONLY its
+    mention."""
+    http = _allowlist_channel_http()
+    adapter = _make_allowlist_adapter(http, channel_allowlist=["release-train"])
+    messages = adapter.fetch(_DIGEST_DATE)
+    by_id = {m.msg_id: m for m in messages}
+
+    # chan-allow: all three posts ingested (mention + two general).
+    assert "mm:p-chan-allow-mention" in by_id
+    assert "mm:p-chan-allow-gen-other" in by_id
+    assert "mm:p-chan-allow-gen-plain" in by_id
+    # chan-other (NOT allowlisted): only its mention.
+    assert "mm:p-chan-other-mention" in by_id
+    assert "mm:p-chan-other-gen-other" not in by_id
+    assert "mm:p-chan-other-gen-plain" not in by_id
+
+    # The mention is addressed-to-me (owner identity in to_recipients).
+    assert by_id["mm:p-chan-allow-mention"].to_recipients[0] == _OWNER_HANDLE
+    # The general posts are context: to_recipients EMPTY (FYI, not "My actions").
+    assert by_id["mm:p-chan-allow-gen-other"].to_recipients == []
+    assert by_id["mm:p-chan-allow-gen-plain"].to_recipients == []
+    # Field map is otherwise identical for a general post (mm: id, channel subject).
+    gen = by_id["mm:p-chan-allow-gen-plain"]
+    assert gen.source == "mm"
+    assert gen.subject == "Release Train"  # channel display_name
+    assert gen.from_name == "@bob.author"
+
+
+def test_allowlist_matches_by_id_and_display_name_case_insensitive():
+    """The allowlist matches by id, name, or display_name (case-insensitive).
+
+    Allowlist ``chan-allow`` (the id) + ``WATERCOOLER`` (the name, upper-cased) →
+    BOTH channels are allowlisted, so both ingest their general posts."""
+    http = _allowlist_channel_http()
+    adapter = _make_allowlist_adapter(http, channel_allowlist=["chan-allow", "WATERCOOLER"])
+    kept = {m.msg_id for m in adapter.fetch(_DIGEST_DATE)}
+    # Both channels fully ingested (mentions + general posts).
+    assert kept == {
+        "mm:p-chan-allow-mention",
+        "mm:p-chan-allow-gen-other",
+        "mm:p-chan-allow-gen-plain",
+        "mm:p-chan-other-mention",
+        "mm:p-chan-other-gen-other",
+        "mm:p-chan-other-gen-plain",
+    }
+
+
+def test_allowlist_matches_by_display_name():
+    """A display_name allowlist entry (with a space, case-insensitive) matches."""
+    http = _allowlist_channel_http()
+    adapter = _make_allowlist_adapter(http, channel_allowlist=["release train"])
+    kept = {m.msg_id for m in adapter.fetch(_DIGEST_DATE)}
+    assert "mm:p-chan-allow-gen-plain" in kept  # general post ingested → matched
+    assert "mm:p-chan-other-gen-plain" not in kept  # other channel untouched
+
+
+# -- 9d. Per-channel cap on general posts (mentions exempt) ------------------
+
+
+def _capped_channel_http(n_general: int) -> "_FakeHttp":
+    """One allowlisted channel with ``n_general`` general posts AND one @mention
+    placed LAST in order (oldest), so a too-tight cap would exclude it unless
+    mentions are exempt from the cap."""
+    me = {"id": _OWNER_ID, "username": _OWNER_USERNAME, "email": "me@corp"}
+    teams = [{"id": "team-1"}]
+    chan = {
+        "id": "chan-busy",
+        "display_name": "busy",
+        "name": "busy",
+        "last_post_at": _MID_DAY_MS + 10_000,
+    }
+
+    posts: dict = {}
+    order: list[str] = []
+    # General posts newest-first (highest create_at first).
+    for i in range(n_general):
+        pid = f"p-gen-{i}"
+        posts[pid] = {
+            "id": pid,
+            "root_id": "",
+            "user_id": "author-2",
+            "channel_id": "chan-busy",
+            "create_at": _MID_DAY_MS + 5000 - i,  # strictly decreasing, in-window
+            "delete_at": 0,
+            "type": "",
+            "message": f"status update number {i}",
+        }
+        order.append(pid)
+    # The @mention is the OLDEST in-window post (last in order) — past the cap.
+    mention_id = "p-mention-late"
+    posts[mention_id] = {
+        "id": mention_id,
+        "root_id": "",
+        "user_id": "author-1",
+        "channel_id": "chan-busy",
+        "create_at": _MID_DAY_MS + 1,  # still in-window, but oldest
+        "delete_at": 0,
+        "type": "",
+        "message": f"{_OWNER_HANDLE} ping at the end of the page",
+    }
+    order.append(mention_id)
+
+    routes_get = {
+        "/api/v4/users/me": me,
+        "/api/v4/users/me/teams": teams,
+        "/api/v4/users/me/teams/team-1/channels": [chan],
+        "/api/v4/channels/chan-busy/posts": {"order": order, "posts": posts},
+    }
+    routes_post = {
+        "/api/v4/users/ids": [
+            {"id": "author-1", "username": "alice.author", "email": "alice@corp"},
+            {"id": "author-2", "username": "bob.author", "email": "bob@corp"},
+        ],
+    }
+    return _FakeHttp(routes_get, routes_post)
+
+
+def _capture_cap_logs(adapter):
+    """Run ``adapter.fetch`` with structlog pinned to stdlib routing and capture
+    the cap log line(s).
+
+    The cap log is asserted via stdlib ``logging`` (structlog → ``LoggerFactory``)
+    so the capture is deterministic regardless of test-suite ordering — some other
+    test configures structlog globally, so pinning it here makes this test
+    self-contained. Returns the concatenated rendered log text (payload-free).
+    """
+    import logging
+
+    from digest_core.observability.logs import _configure_structlog
+
+    _configure_structlog()  # pin structlog → stdlib JSON renderer (idempotent)
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture()
+    handler.setLevel(logging.INFO)
+    root = logging.getLogger()
+    prev_level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    try:
+        messages = adapter.fetch(_DIGEST_DATE)
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(prev_level)
+    rendered = "\n".join(r.getMessage() for r in records)
+    return messages, rendered
+
+
+def test_allowlisted_channel_caps_general_posts_but_keeps_mentions():
+    """An allowlisted channel with > max_posts_per_channel general posts caps the
+    GENERAL posts at the limit (newest kept), but the @mention beyond the cap is
+    STILL kept, and the cap is logged once (payload-free)."""
+    http = _capped_channel_http(n_general=10)
+    adapter = _make_allowlist_adapter(
+        http, channel_allowlist=["chan-busy"], max_posts_per_channel=3
+    )
+    messages, log_text = _capture_cap_logs(adapter)
+    kept = {m.msg_id for m in messages}
+
+    # Exactly 3 general posts (the newest: gen-0, gen-1, gen-2) survive the cap.
+    general_kept = {mid for mid in kept if mid.startswith("mm:p-gen-")}
+    assert general_kept == {"mm:p-gen-0", "mm:p-gen-1", "mm:p-gen-2"}
+    # The @mention is kept DESPITE being past the cap (mentions are exempt).
+    assert "mm:p-mention-late" in kept
+    # Total = 3 general + 1 mention.
+    assert len(kept) == 4
+
+    # The cap was logged, payload-free: counts + truncated channel id, no text.
+    assert "general posts capped" in log_text
+    assert '"dropped": 7' in log_text and '"kept": 3' in log_text
+    assert '"channel_id": "chan-bus"' in log_text  # truncated id (8 chars)
+    # No message text leaks into the log.
+    assert "status update number" not in log_text
+
+
+def test_cap_not_applied_when_under_limit():
+    """Under the cap, every general post is kept and NO cap log is emitted."""
+    http = _capped_channel_http(n_general=2)
+    adapter = _make_allowlist_adapter(
+        http, channel_allowlist=["chan-busy"], max_posts_per_channel=5
+    )
+    messages, log_text = _capture_cap_logs(adapter)
+    kept = {m.msg_id for m in messages}
+    assert {"mm:p-gen-0", "mm:p-gen-1", "mm:p-mention-late"} <= kept
+    assert "general posts capped" not in log_text
