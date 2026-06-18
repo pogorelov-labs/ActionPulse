@@ -84,11 +84,15 @@ deliver:
     # channel (idempotent by channel_name) and posts there; "self_dm" posts to your
     # [me,me] self-DM. Both make the audience provable (auto-satisfy the D4 guard).
     delivery_target: private_channel
-    channel_name: "actionpulse-digest"          # team-unique slug (idempotency key)
+    # channel_name is a BASE slug — the real channel name is "<channel_name>-<your
+    # user_id>" because a slug is unique PER TEAM (a fixed slug would collide once a
+    # second person on the team runs ActionPulse). The suffix is invisible; users
+    # see channel_display_name, which need not be unique.
+    channel_name: "actionpulse-digest"
     channel_display_name: "ActionPulse Digest"
     team: ""                                     # id/name/display_name; "" = first team
-    # If create_private_channel is denied (the corp build may restrict it), fall
-    # back to self-DM delivery instead of failing.
+    # If creating the private channel is refused (403 perm denial, or the slug is
+    # already taken), fall back to self-DM delivery instead of failing.
     fallback_to_self_dm: true
     verify_ssl: true
 

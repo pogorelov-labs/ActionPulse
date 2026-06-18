@@ -494,13 +494,26 @@ class MattermostApiDeliverer(_MattermostFormatter):
 
     # -- target resolution -------------------------------------------------
 
+    def _channel_slug(self, me_id: str) -> str:
+        """Per-user channel slug: ``<channel_name>-<user_id>``.
+
+        A Mattermost channel ``name`` (slug) is unique per *team*, so a fixed
+        slug would collide the moment a second person on the same team runs
+        ActionPulse — the first create wins and everyone else's create 400s. The
+        per-user suffix keeps each owner's channel distinct on a shared team
+        while the (non-unique) ``display_name`` stays friendly. ``user_id`` is a
+        26-char id of slug-safe chars, so the result is always a valid name.
+        """
+        return f"{self.config.channel_name}-{me_id}"
+
     def _resolve_target(self, me_id: str) -> _ResolvedTarget:
         """Resolve (creating if needed) the api-mode delivery destination."""
         if self.config.delivery_target == "self_dm":
             return self._self_dm_target(me_id)
 
         team_id = self._resolve_team_id()
-        existing = self._find_channel_by_name(team_id)
+        slug = self._channel_slug(me_id)
+        existing = self._find_channel_by_name(team_id, slug)
         if existing is not None:
             cid = existing["id"]
             stats = self._get(f"/channels/{cid}/stats")
@@ -512,7 +525,7 @@ class MattermostApiDeliverer(_MattermostFormatter):
                 team_id=existing.get("team_id", team_id),
                 fallback=False,
             )
-        return self._create_private_channel(team_id, me_id)
+        return self._create_private_channel(team_id, me_id, slug)
 
     def _self_dm_target(self, me_id: str, *, fallback: bool = False) -> _ResolvedTarget:
         """Open (idempotently) the owner's self-DM and return it as the target."""
@@ -540,28 +553,53 @@ class MattermostApiDeliverer(_MattermostFormatter):
             f"Mattermost api delivery: configured team {want!r} not found for this PAT"
         )
 
-    def _find_channel_by_name(self, team_id: str) -> Optional[dict]:
-        """GET the private channel by its slug; None on 404 (not created yet)."""
-        resp = self._get_raw(f"/teams/{team_id}/channels/name/{self.config.channel_name}")
+    def _find_channel_by_name(self, team_id: str, slug: str) -> Optional[dict]:
+        """GET the private channel by its (per-user) slug; None on 404 (not created yet)."""
+        resp = self._get_raw(f"/teams/{team_id}/channels/name/{slug}")
         if getattr(resp, "status_code", None) == 404:
             return None
         resp.raise_for_status()
         return resp.json()
 
-    def _create_private_channel(self, team_id: str, me_id: str) -> _ResolvedTarget:
-        """Create the owner-only private channel; fall back to self-DM on a 403 denial."""
+    @staticmethod
+    def _is_name_conflict(resp: Any) -> bool:
+        """True if a create failed because the channel name is already taken on the team.
+
+        Mattermost returns this as a 400/409 carrying an ``id`` like
+        ``store.sql_channel.save_channel.exists.app_error``. Per-user slugs make
+        this unlikely, but if two runs race (or a stale archived channel still
+        holds the slug) we degrade to the self-DM rather than skip delivery.
+        """
+        if getattr(resp, "status_code", None) not in (400, 409):
+            return False
+        try:
+            body = resp.json() or {}
+        except Exception:  # noqa: BLE001 - error body is best-effort
+            return False
+        blob = f"{body.get('id', '')} {body.get('message', '')}".lower()
+        return "exist" in blob
+
+    def _create_private_channel(self, team_id: str, me_id: str, slug: str) -> _ResolvedTarget:
+        """Create the owner-only private channel; fall back to self-DM if creation is refused.
+
+        Fallback covers both a 403 permission denial (the corp build may restrict
+        ``create_private_channel``) and a name-conflict (a slug already taken) so
+        delivery still lands somewhere private instead of degrading to a warning.
+        """
         body = {
             "team_id": team_id,
-            "name": self.config.channel_name,
+            "name": slug,
             "display_name": self.config.channel_display_name,
             "type": "P",
             "purpose": "ActionPulse daily digest — private, owner-only.",
         }
         resp = self._post_raw("/channels", body)
-        if getattr(resp, "status_code", None) == 403 and self.config.fallback_to_self_dm:
+        denied = getattr(resp, "status_code", None) == 403
+        if self.config.fallback_to_self_dm and (denied or self._is_name_conflict(resp)):
             logger.warning(
-                "mattermost_private_channel_create_denied",
-                hint="create_private_channel denied; falling back to self-DM delivery",
+                "mattermost_private_channel_create_refused",
+                reason="permission_denied" if denied else "name_conflict",
+                hint="private-channel create refused; falling back to self-DM delivery",
             )
             return self._self_dm_target(me_id, fallback=True)
         resp.raise_for_status()

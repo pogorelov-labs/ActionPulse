@@ -64,11 +64,13 @@ def _make_http(
     *,
     name_status: int = 200,
     create_status: int = 201,
+    create_error_id: str = "",
     stats_member_count: int = 1,
     teams=None,
+    me_id: str = "me1",
 ):
     """A router covering the api-delivery call surface; tweak via kwargs per test."""
-    me = {"id": "me1", "username": "owner"}
+    me = {"id": me_id, "username": "owner"}
     teams = (
         teams if teams is not None else [{"id": "team1", "name": "corp", "display_name": "Corp"}]
     )
@@ -87,7 +89,9 @@ def _make_http(
         if method == "POST" and url.endswith("/channels/direct"):
             return _Resp(201, {"id": "dmX", "type": "D"})
         if method == "POST" and url.endswith("/channels"):
-            return _Resp(create_status, {} if create_status >= 400 else chan)
+            if create_status >= 400:
+                return _Resp(create_status, {"id": create_error_id} if create_error_id else {})
+            return _Resp(create_status, chan)
         if method == "POST" and url.endswith("/posts"):
             post_n["n"] += 1
             return _Resp(201, {"id": f"post{post_n['n']}"})
@@ -178,7 +182,8 @@ def test_delivers_to_existing_private_channel(monkeypatch):
     assert "target_fallback" not in receipt
     # Idempotent: an existing channel is reused, never re-created.
     assert not any(u.endswith("/channels") for _, u in http.calls)
-    assert any("/channels/name/actionpulse-digest" in u for u in _urls(http))
+    # Per-user slug: lookup is by <channel_name>-<user_id>, never the bare slug.
+    assert any("/channels/name/actionpulse-digest-me1" in u for u in _urls(http))
     assert any(u.endswith("/posts") for _, u in http.calls)
 
 
@@ -194,7 +199,7 @@ def test_creates_private_channel_when_missing(monkeypatch):
     create = [b for (m, u, b) in http.bodies if m == "POST" and u.endswith("/channels")]
     assert len(create) == 1
     body = create[0]
-    assert body["name"] == "actionpulse-digest"
+    assert body["name"] == "actionpulse-digest-me1"  # per-user slug, not the bare base
     assert body["display_name"] == "ActionPulse Digest"
     assert body["type"] == "P"
     assert body["team_id"] == "team1"
@@ -232,6 +237,52 @@ def test_warns_when_channel_not_owner_only(monkeypatch):
 
     assert receipt["audience_owner_only"] is False
     assert receipt["status"] == "sent"  # still delivers; the guard warns, never blocks
+
+
+def test_channel_slug_is_per_user(monkeypatch):
+    # Two users on the SAME team must address DISTINCT channel slugs — a channel
+    # name is unique per team, so a shared slug would collide at scale.
+    slugs = []
+    for uid in ("alice", "bob"):
+        http = _make_http(name_status=404, create_status=201, me_id=uid)
+        MattermostApiDeliverer(_cfg(monkeypatch), http_client=http).deliver_digest(_digest())
+        created = [
+            b["name"] for (m, u, b) in http.bodies if m == "POST" and u.endswith("/channels")
+        ]
+        slugs.append(created[0])
+    assert slugs == ["actionpulse-digest-alice", "actionpulse-digest-bob"]
+    assert slugs[0] != slugs[1]
+
+
+def test_name_conflict_falls_back_to_self_dm(monkeypatch):
+    # A slug already taken on the team (400 "...exists...") must degrade to the
+    # self-DM, not skip delivery — even though per-user slugs make this rare.
+    http = _make_http(
+        name_status=404,
+        create_status=400,
+        create_error_id="store.sql_channel.save_channel.exists.app_error",
+    )
+    deliverer = MattermostApiDeliverer(_cfg(monkeypatch), http_client=http)
+
+    receipt = deliverer.deliver_digest(_digest())
+
+    assert receipt["target"] == "self_dm"
+    assert receipt["target_fallback"] == "self_dm"
+    assert receipt["status"] == "sent"
+    assert any(u.endswith("/channels/direct") for _, u in http.calls)
+
+
+def test_unrelated_create_400_still_raises(monkeypatch):
+    # A non-conflict 400 (genuine bad request) must NOT be masked as a fallback.
+    http = _make_http(
+        name_status=404,
+        create_status=400,
+        create_error_id="api.channel.create_channel.invalid_character.app_error",
+    )
+    deliverer = MattermostApiDeliverer(_cfg(monkeypatch), http_client=http)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        deliverer.deliver_digest(_digest())
 
 
 # --------------------------------------------------------------------------- #
