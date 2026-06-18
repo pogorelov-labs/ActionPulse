@@ -67,8 +67,8 @@ class JSONAssembler:
                             "evidence_id": item.evidence_id,
                             "confidence": item.confidence,
                             "source_ref": item.source_ref,
-                            "email_subject": item.email_subject,
-                            "email_from": item.email_from,
+                            "source_subject": item.source_subject,
+                            "source_from": item.source_from,
                         }
                         for item in section.items
                     ],
@@ -119,8 +119,10 @@ class JSONAssembler:
                     evidence_id=item_dict["evidence_id"],
                     confidence=item_dict["confidence"],
                     source_ref=item_dict["source_ref"],
-                    email_subject=item_dict.get("email_subject"),
-                    email_from=item_dict.get("email_from"),
+                    # Read NEW keys, falling back to OLD ones for pre-rename artifacts.
+                    source_subject=item_dict.get("source_subject")
+                    or item_dict.get("email_subject"),
+                    source_from=item_dict.get("source_from") or item_dict.get("email_from"),
                 )
                 items.append(item)
 
@@ -244,7 +246,7 @@ class JSONAssembler:
                 "confidence",
                 "source_ref",
             ],
-            "item_optional_fields": ["due", "email_subject", "email_from"],
+            "item_optional_fields": ["due", "source_subject", "source_from"],
             "date_format": "YYYY-MM-DD",
             "confidence_range": [0, 1],
         }

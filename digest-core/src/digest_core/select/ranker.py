@@ -255,11 +255,11 @@ class DigestRanker:
             features.has_attachments = has_attachments
 
         # Feature 8: project tags
-        email_subject = getattr(item, "email_subject", "") or chunk.message_metadata.get(
+        source_subject = getattr(item, "source_subject", "") or chunk.message_metadata.get(
             "subject", ""
         )
-        if email_subject:
-            if self.project_tag_pattern.search(email_subject):
+        if source_subject:
+            if self.project_tag_pattern.search(source_subject):
                 features.has_project_tag = True
 
         return features

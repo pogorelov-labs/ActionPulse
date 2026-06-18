@@ -195,11 +195,19 @@ Dependency-ordered. Lead with the validated, low-risk delivery rail; layer inges
 
 These are the genuine owner calls (not effort questions):
 
-1. **Which sources to ingest, and in what order** — channels+mentions only (cleanest privacy posture, email-equivalent basis) vs eventually DMs; and whether the channel default is allowlist-empty (recommended) vs a starter set.
-2. **Bot vs personal PAT** — delivery should move to a bot (enables `post_id` capture, least privilege); does the owner accept a break-glass personal PAT (config-only scoping) for *ingestion*, or wait for a server-scoped bot?
-3. **Consent basis for DMs** — ship a real consent primitive now, or launch owner's-own-posts-only and treat counterparty ingestion as acknowledged per-DM opt-in? Does the bank require counterparty awareness, or is owner consent sufficient under employer-device policy?
+> **RESOLVED 2026-06-18 (owner).** Source scope and field naming are decided:
+> - **Ingest all three sources** — mentions + channels + DMs (not channels+mentions-only).
+> - **DMs gated** — behind per-DM opt-in, a one-time consent acknowledgement, and quote caps (counterparty ingestion treated as acknowledged per-DM opt-in under employer-device policy).
+> - **Field rename** — the live `Item.email_subject`/`email_from` generalize to **`source_subject`/`source_from`** (this PR); old artifacts stay readable via pydantic validation aliases.
+> - **Ingestion auth** — via the **personal PAT** (config-scoped break-glass), not a server-scoped bot.
+>
+> **Re-sequenced roadmap:** rename now (this PR) → mentions adapter → channels adapter → DMs + consent. The three source adapters are corp-validation-gated.
+
+1. **Which sources to ingest, and in what order** — *resolved:* all three (mentions + channels + DMs), in that order, DMs gated. Channel default stays allowlist-empty (recommended).
+2. **Bot vs personal PAT** — delivery should move to a bot (enables `post_id` capture, least privilege); *resolved for ingestion:* break-glass personal PAT (config-only scoping).
+3. **Consent basis for DMs** — *resolved:* per-DM opt-in + one-time consent acknowledgement + quote caps; counterparty ingestion acknowledged per-DM under employer-device policy.
 4. **Cadence** — daily-only vs add Track B intraday nudges; if Track B, rule-based (recommended v1) vs one-classify-call, and the poll cadence/work-hours window.
-5. **Mixed-digest UX** — interleave by urgency (recommended) vs a dedicated Chat section; per-item glyph (recommended) vs a verbose source line; do `email_subject`/`email_from` generalize to `source_subject`/`source_from` (affects artifact byte-compatibility)?
+5. **Mixed-digest UX** — interleave by urgency (recommended) vs a dedicated Chat section; per-item glyph (recommended) vs a verbose source line. *Field-naming resolved:* `email_subject`/`email_from` → `source_subject`/`source_from` (this PR; back-compat aliases keep old artifacts readable).
 6. **Build order** — does MM-as-source ship before or after MM-as-richer-delivery? They are independent (api-delivery P0 vs ingest P1), but `@`-escaping is required either way once chat content enters items.
 
 ---

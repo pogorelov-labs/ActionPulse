@@ -62,8 +62,9 @@ from digest_core.observability.metrics import MetricsCollector
 from digest_core.select.context import ContextSelector
 from digest_core.threads.build import ThreadBuilder
 
-# 1.2.0: items carry email_subject/email_from (U4 reader enrichment) — the
-# bump forces one idempotency rebuild so existing artifacts gain the fields.
+# 1.2.0: items carry source_subject/source_from (U4 reader enrichment; renamed
+# from email_subject/email_from 2026-06-18) — the bump forces one idempotency
+# rebuild so existing artifacts gain the fields.
 PIPELINE_VERSION = "1.2.0"
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = PACKAGE_ROOT / "prompts"
@@ -1809,7 +1810,7 @@ def _item_msg_id(item: Any) -> str:
 
 
 def _enrich_items_from_messages(digest: Digest, messages: Sequence[NormalizedMessage]) -> None:
-    """Populate ``email_subject``/``email_from`` from the message behind each
+    """Populate ``source_subject``/``source_from`` from the message behind each
     item's msg_id (U4): the reader shows topics and authors without joining an
     ingest snapshot. P2-aligned (msg_id is the evidence anchor already);
     subjects/senders are report-class data — on disk and screen, never in logs.
@@ -1825,12 +1826,12 @@ def _enrich_items_from_messages(digest: Digest, messages: Sequence[NormalizedMes
             message = by_id.get(_item_msg_id(item))
             if message is None:
                 continue
-            if not item.email_subject and message.subject:
-                item.email_subject = message.subject
-            if not item.email_from:
+            if not item.source_subject and message.subject:
+                item.source_subject = message.subject
+            if not item.source_from:
                 sender = _sender_display(message)
                 if sender:
-                    item.email_from = sender
+                    item.source_from = sender
 
 
 def _quarantine_weak_items(digest: Digest, language: str = DEFAULT_LANGUAGE) -> int:

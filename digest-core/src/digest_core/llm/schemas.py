@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any
 
 
@@ -37,18 +37,31 @@ class EvidenceSpan(BaseModel):
 
 # Legacy v1 models
 class Item(BaseModel):
+    # populate_by_name lets code construct/serialize by the new field names while
+    # validation_alias (below) still accepts the OLD email_subject/email_from keys
+    # from artifacts written before the 2026-06-18 source_* rename (§9 #5).
+    model_config = ConfigDict(populate_by_name=True)
+
     title: str
     due: Optional[str] = None
     evidence_id: str
     confidence: float
     source_ref: Dict[str, Any]
-    email_subject: Optional[str] = Field(default=None)
+    # Source-agnostic topic slot (email subject, Mattermost channel name, …).
+    # Renamed from email_subject (2026-06-18); the AliasChoices keeps OLD artifacts
+    # deserializing while model_dump emits the NEW key.
+    source_subject: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("source_subject", "email_subject")
+    )
     # Reader enrichment (U4): populated at assemble time from the normalized
     # message behind source_ref.msg_id — the artifact stays self-contained
     # (no ingest snapshot needed to show who asked). exclude_none keeps older
-    # artifacts byte-compatible.
-    email_from: Optional[str] = Field(
-        default=None, description='Sender display, e.g. "Ivan Petrov <ivan.petrov@corp.ru>"'
+    # artifacts byte-compatible. Renamed from email_from (2026-06-18) with a
+    # back-compat alias for the old key.
+    source_from: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("source_from", "email_from"),
+        description='Sender display, e.g. "Ivan Petrov <ivan.petrov@corp.ru>"',
     )
     evidence_spans: List[EvidenceSpan] = Field(
         default_factory=list, description="Verbatim source-language spans supporting the item"
