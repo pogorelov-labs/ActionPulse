@@ -271,3 +271,16 @@ A read-only probe of the live server was attempted from a dev box. Result — th
 - **Token validity is still unverified** — the request never reached Mattermost's auth layer, so the `403` says nothing about the token itself. (Secondary: the provided Access Token used a `pat_`-prefixed form, unusual vs Mattermost's classic 26-char unprefixed token — confirm the real secret on the inside.)
 - **Search backend is `opensearch`** (from the public `ping`), i.e. an **enterprise** search backend — so the §2 "Team-edition DB-search makes `@handle` search unreliable" caveat likely **does not apply here**; mention search via `/posts/search` should be reliable. (Edition still worth confirming with an authenticated `config/client` read from inside.)
 - **How to actually run the test:** `scripts/mm_pat_selftest.sh` (read-only + self-DM only, env-driven `MM_BASE`/`MM_PAT`) — run it **from inside the corp network**; it answers open questions 1, 3, 4, and 6 directly and non-destructively.
+
+### Inside-corp self-test (2026-06-17) — PASSED ✅
+
+`scripts/mm_pat_selftest.sh` was run from inside the corp network. Every phase passed with real data (payload-free results only):
+
+- **Auth (Q1):** `GET /users/me` → `200`, `roles=system_user` (a **normal user, not admin**). The PAT is valid and `EnableUserAccessTokens` is effectively on. **A plain `system_user` is sufficient for the entire P0 path** — no admin/bot needed for self-delivery.
+- **Read scope:** read the owner's channels — `{D: 749, P: 107, O: 93, G: 49}`. (749 DMs underscores the third-party-content weight of any future DM-read.)
+- **Unread non-mutation (Q3) — CONFIRMED LIVE:** on a real self-DM, `last_viewed_at` was identical before and after `GET /channels/{id}/posts` (a real epoch-ms timestamp, unchanged). **Reading does not clear unread** on this build, exactly as the source-level analysis predicted.
+- **Reaction read-back (EP-15):** `POST /reactions` (thumbsup) then `GET /posts/{id}/reactions` → `['thumbsup']`. The calibration data path works.
+- **Self-DM delivery (Q4):** `POST /channels/direct [me,me]` + `POST /posts` succeeded, returning a real `post_id`. `create_direct_channel` and posting are **not** admin-suppressed here.
+- **Edit/delete + cleanup (Q6):** both test posts `DELETE`d → `200` (created and removed cleanly; `/users/ids`-style author resolution untested but `/channels/direct` confirmed as the write it is).
+
+**Net:** the P0 path — read (without disturbing unread) · self-DM delivery · capture `post_id` · write+read reactions · delete — is de-risked end-to-end on the real server for a `system_user` PAT. Open question 2 (exact edition) and the `@`-escape *rendering* (code-span vs live mention) are the only items left to eyeball; everything else is confirmed.
