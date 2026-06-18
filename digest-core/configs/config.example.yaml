@@ -70,6 +70,27 @@ deliver:
     # points at a PRIVATE DM/channel (the setup wizard asks). While false, every
     # run emits one privacy-unconfirmed warning before delivery — it never blocks.
     acknowledged_private: false
+    # --- Transport ---------------------------------------------------------
+    # "webhook" (default, externally reachable, write-only) or "api" (authenticated
+    # v4 REST as the owner's PAT). "api" posts to a provably-private, owner-only
+    # target and captures post_ids for the EP-15 reaction loop; it is corp-network
+    # only (the edge proxy 403s external Bearer), so it runs inside corp like
+    # EWS/LLM. Webhook stays the default. Reuses the ingest PAT identity:
+    # MM_BASE_URL + MM_PAT (secret; ENV only, never YAML).
+    auth_mode: webhook
+    base_url_env: "MM_BASE_URL"
+    token_env: "MM_PAT"
+    # api target: "private_channel" finds-or-creates a dedicated owner-only private
+    # channel (idempotent by channel_name) and posts there; "self_dm" posts to your
+    # [me,me] self-DM. Both make the audience provable (auto-satisfy the D4 guard).
+    delivery_target: private_channel
+    channel_name: "actionpulse-digest"          # team-unique slug (idempotency key)
+    channel_display_name: "ActionPulse Digest"
+    team: ""                                     # id/name/display_name; "" = first team
+    # If create_private_channel is denied (the corp build may restrict it), fall
+    # back to self-DM delivery instead of failing.
+    fallback_to_self_dm: true
+    verify_ssl: true
 
 # Retention: time-prune on-disk artifacts at the end of a real run. The digest
 # pair carries verbatim subjects/senders/quotes (PDn); trace meta is payload-

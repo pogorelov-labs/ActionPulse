@@ -124,8 +124,13 @@ make test    # All tests use mocks, run anywhere
 EWS_PASSWORD=...          # Exchange NTLM password
 LLM_TOKEN=...             # LLM Gateway bearer token
 
-# Required for MM delivery
+# Required for MM delivery (auth_mode: webhook — the default)
 MM_WEBHOOK_URL=...        # Mattermost incoming webhook URL
+
+# Required for MM delivery in auth_mode: api (corp-only; posts as the owner PAT
+# to a provably-private owner-only target). Same identity as the MM source adapter.
+MM_BASE_URL=...           # Mattermost base URL (also used by the MM source adapter)
+MM_PAT=...                # Mattermost personal access token (secret; ENV only)
 
 # Optional
 DIGEST_REPORT_LANGUAGE=ru # Report language override (default en)
