@@ -12,5 +12,13 @@ extra is not installed.
 
 from digest_core.store._driver import HAS_SQLCIPHER, INSTALL_HINT
 from digest_core.store.db import MessageStore, StoreError
+from digest_core.store.search import EmbeddingBackend, SearchHit
 
-__all__ = ["MessageStore", "StoreError", "HAS_SQLCIPHER", "INSTALL_HINT"]
+__all__ = [
+    "MessageStore",
+    "StoreError",
+    "SearchHit",
+    "EmbeddingBackend",
+    "HAS_SQLCIPHER",
+    "INSTALL_HINT",
+]

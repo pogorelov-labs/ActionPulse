@@ -18,8 +18,10 @@ import structlog
 
 from digest_core.store import ingest as _ingest
 from digest_core.store import retention as _retention
+from digest_core.store import search as _search
 from digest_core.store._driver import HAS_SQLCIPHER, INSTALL_HINT, connect, key_pragma
 from digest_core.store.schema import apply_schema, migrate
+from digest_core.store.search import SearchHit
 
 logger = structlog.get_logger(__name__)
 
@@ -101,6 +103,50 @@ class MessageStore:
     def sweep_ttl(self, ttl_days: Optional[int] = None, *, now: Optional[datetime] = None) -> int:
         days = self.config.ttl_days if ttl_days is None else ttl_days
         return _retention.sweep_ttl(self.conn, days, now=now)
+
+    def embed_backlog(self, backend: Any, *, batch_size: int = 128) -> Dict[str, int]:
+        """Fill the embedding backlog (chunks without a vector) via ``backend``."""
+        return _ingest.embed_backlog(
+            self.conn,
+            backend,
+            model=self.config.embedding_model,
+            dtype=self.config.vector_dtype,
+            batch_size=batch_size,
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        mode: Optional[str] = None,
+        backend: Any = None,
+        source: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "list[SearchHit]":
+        """Search the store. ``mode`` defaults to ``config.search_default_mode``.
+
+        ``semantic``/``hybrid`` require an embedding ``backend`` (the gateway
+        EmbeddingsClient); ``keyword`` works offline with no backend.
+        """
+        mode = mode or self.config.search_default_mode
+        limit = limit or self.config.search_limit
+        model = self.config.embedding_model
+        if mode == "keyword":
+            return _search.keyword(self.conn, query, limit=limit, source=source, since=since)
+        if mode == "semantic":
+            if backend is None:
+                raise ValueError("semantic search requires an embedding backend")
+            return _search.semantic(
+                self.conn, backend, query, limit=limit, model=model, source=source, since=since
+            )
+        if mode == "hybrid":
+            if backend is None:
+                raise ValueError("hybrid search requires an embedding backend")
+            return _search.hybrid(
+                self.conn, backend, query, limit=limit, model=model, source=source, since=since
+            )
+        raise ValueError(f"unknown search mode {mode!r} (keyword | semantic | hybrid)")
 
     def stats(self) -> Dict[str, Any]:
         return _ingest.stats(self.conn)

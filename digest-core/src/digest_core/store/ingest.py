@@ -5,15 +5,17 @@ unchanged re-read (the overlap-window re-reads from the per-source watermark lan
 here as no-ops). ``first_seen_at`` is write-once; ``last_seen_at`` advances on
 every sighting; content columns + ``ingested_at`` advance only on a real change.
 
-Chunk + embedding population lives in the search PR; this module persists the
-messages and lets the FTS index stay in sync via the schema triggers.
+On a content change a message's chunks are recreated (cascading away its stale
+embeddings); the FTS index stays in sync via the schema triggers. ``embed_backlog``
+fills vectors for chunks that don't have one yet.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
+from digest_core.store.chunking import chunk_id, chunk_text
 from digest_core.store.models import message_to_row
 from digest_core.store.schema import CURRENT_SCHEMA_VERSION
 
@@ -52,12 +54,40 @@ WHERE id = :id
 _TOUCH_SQL = "UPDATE messages SET last_seen_at = :now WHERE id = :id"
 
 
+_INSERT_CHUNK_SQL = (
+    "INSERT INTO chunks (chunk_id, message_id, chunk_index, text, token_count, "
+    "char_start, char_end) VALUES (?, ?, ?, ?, ?, ?, ?)"
+)
+
+
 def _now_iso(now: Optional[datetime]) -> str:
     if now is None:
         now = datetime.now(timezone.utc)
     elif now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     return now.astimezone(timezone.utc).isoformat()
+
+
+def _replace_chunks(conn, urn: str, body_normalized: str) -> None:
+    """Recreate a message's chunks (delete cascades its old embeddings).
+
+    Called only when the message is new or its content changed, so an unchanged
+    re-ingest never re-chunks or invalidates existing embeddings.
+    """
+    conn.execute("DELETE FROM chunks WHERE message_id = ?", (urn,))
+    for idx, ch in enumerate(chunk_text(body_normalized or "")):
+        conn.execute(
+            _INSERT_CHUNK_SQL,
+            (
+                chunk_id(urn, idx, ch.text),
+                urn,
+                idx,
+                ch.text,
+                ch.token_count,
+                ch.char_start,
+                ch.char_end,
+            ),
+        )
 
 
 def upsert_messages(
@@ -87,9 +117,11 @@ def upsert_messages(
             ).fetchone()
             if existing is None:
                 conn.execute(_INSERT_SQL, params)
+                _replace_chunks(conn, row["id"], row["body_normalized"])
                 inserted += 1
             elif existing[0] != row["content_hash"]:
                 conn.execute(_UPDATE_SQL, params)
+                _replace_chunks(conn, row["id"], row["body_normalized"])
                 updated += 1
             else:
                 conn.execute(_TOUCH_SQL, {"id": row["id"], "now": now_iso})
@@ -104,6 +136,57 @@ def upsert_messages(
         "unchanged": unchanged,
         "total": inserted + updated + unchanged,
     }
+
+
+_INSERT_EMB_SQL = (
+    "INSERT INTO embeddings (chunk_id, model, dim, vector, embedded_at) "
+    "VALUES (?, ?, ?, ?, ?) "
+    "ON CONFLICT(chunk_id) DO UPDATE SET "
+    "model=excluded.model, dim=excluded.dim, vector=excluded.vector, embedded_at=excluded.embedded_at"
+)
+
+
+def embed_backlog(
+    conn,
+    backend: Any,
+    *,
+    model: str = "bge-m3",
+    dtype: str = "float32",
+    batch_size: int = 128,
+    now: Optional[datetime] = None,
+) -> Dict[str, int]:
+    """Embed chunks that have no vector yet, in batched ``backend.embed`` calls.
+
+    ``backend`` is any object with ``embed(texts) -> list[list[float]]`` (the
+    gateway ``EmbeddingsClient`` satisfies it as-is). Vectors are stored as
+    little-endian ``float32``/``float16`` BLOBs. Returns ``{embedded, pending}``.
+    """
+    import numpy as np
+
+    np_dtype = np.float16 if dtype == "float16" else np.float32
+    now_iso = _now_iso(now)
+    rows: List[Any] = conn.execute(
+        "SELECT c.chunk_id, c.text FROM chunks c "
+        "LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id "
+        "WHERE e.chunk_id IS NULL"
+    ).fetchall()
+    embedded = 0
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        vectors = backend.embed([text for _cid, text in batch])
+        conn.execute("BEGIN")
+        try:
+            for (cid, _text), vec in zip(batch, vectors):
+                arr = np.asarray(vec, dtype=np_dtype)
+                conn.execute(
+                    _INSERT_EMB_SQL, (cid, model, int(arr.shape[0]), arr.tobytes(), now_iso)
+                )
+                embedded += 1
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return {"embedded": embedded, "pending": 0}
 
 
 def stats(conn) -> Dict[str, Any]:
