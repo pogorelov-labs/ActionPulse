@@ -338,11 +338,42 @@ class MattermostSourceConfig(BaseModel):
         description="Posts-per-page for GET /channels/{id}/posts (server-enforced cap is 200).",
     )
     timeout_s: int = Field(
-        default=15,
+        default=30,
         description=(
-            "Per-request HTTP timeout in seconds. Deliberately tight (15s) so a"
-            " single hung channel ``get_posts`` is abandoned fast and that channel"
-            " skipped, rather than stalling the whole sequential scan. Configurable."
+            "Per-request HTTP timeout in seconds. With the adaptive-concurrency"
+            " fetcher channels are paged in parallel, so a longer per-request"
+            " timeout no longer costs serial wall-clock — it RECOVERS slow channels"
+            " (the live dry-run was skipping 9 on a 15s timeout) instead of dropping"
+            " their mentions. A genuinely hung channel is still retried then skipped."
+        ),
+    )
+    min_concurrency: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "AIMD floor: the adaptive fetcher starts here and never decreases the"
+            " in-flight limit below it. Conservative warm-up so a cold gateway is"
+            " probed gently before additive-increase ramps up."
+        ),
+    )
+    max_concurrency: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "AIMD ceiling: the hard cap on simultaneous channel fetches (thread"
+            " pool size). The owner chose an aggressive cap (16) — additive-increase"
+            " converges UP toward this while requests succeed, multiplicative-"
+            " decrease backs off on HTTP 429. Bounds load on the bank's gateway."
+        ),
+    )
+    max_retries_per_channel: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "How many times a single channel's fetch is retried before it is"
+            " skipped+counted. Covers BOTH rate-limit requeues (429, after honoring"
+            " Retry-After) and transient timeouts/network errors. 0 disables retry"
+            " (one attempt only)."
         ),
     )
     verify_ssl: bool = Field(
