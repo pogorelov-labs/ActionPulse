@@ -114,6 +114,16 @@ class MessageStore:
             batch_size=batch_size,
         )
 
+    def reembed(
+        self, backend: Any, *, force: bool = False, batch_size: int = 128
+    ) -> Dict[str, int]:
+        """Fill the embedding backlog. ``force=True`` first drops ALL existing vectors
+        so a model/``vector_dtype`` change re-embeds (otherwise embed_backlog finds no
+        work — every chunk still has its stale vector — and semantic search goes empty)."""
+        if force:
+            self.conn.execute("DELETE FROM embeddings")
+        return self.embed_backlog(backend, batch_size=batch_size)
+
     def search(
         self,
         query: str,
@@ -132,19 +142,34 @@ class MessageStore:
         mode = mode or self.config.search_default_mode
         limit = limit or self.config.search_limit
         model = self.config.embedding_model
+        max_rows = self.config.bruteforce_max_rows
         if mode == "keyword":
             return _search.keyword(self.conn, query, limit=limit, source=source, since=since)
         if mode == "semantic":
             if backend is None:
                 raise ValueError("semantic search requires an embedding backend")
             return _search.semantic(
-                self.conn, backend, query, limit=limit, model=model, source=source, since=since
+                self.conn,
+                backend,
+                query,
+                limit=limit,
+                model=model,
+                source=source,
+                since=since,
+                max_rows=max_rows,
             )
         if mode == "hybrid":
             if backend is None:
                 raise ValueError("hybrid search requires an embedding backend")
             return _search.hybrid(
-                self.conn, backend, query, limit=limit, model=model, source=source, since=since
+                self.conn,
+                backend,
+                query,
+                limit=limit,
+                model=model,
+                source=source,
+                since=since,
+                max_rows=max_rows,
             )
         raise ValueError(f"unknown search mode {mode!r} (keyword | semantic | hybrid)")
 

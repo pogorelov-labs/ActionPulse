@@ -13,10 +13,10 @@ fills vectors for chunks that don't have one yet.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from digest_core.store.chunking import chunk_id, chunk_text
-from digest_core.store.models import is_dm, message_to_row
+from digest_core.store.models import message_to_row, redact_mm_body_at_rest
 from digest_core.store.schema import CURRENT_SCHEMA_VERSION
 
 _COLUMNS = (
@@ -113,20 +113,20 @@ def upsert_messages(
                 raw_body=raw.get(getattr(msg, "msg_id", "")),
             )
             params = {**row, "now": now_iso}
-            # DM bodies are redacted at rest (guardrail #9) → no real content to
-            # chunk/embed/search; persist the row but skip chunk creation.
-            dm = is_dm(row["source"], row.get("mm_channel_type"))
+            # Redacted mm bodies (DMs + unknown types, guardrail #9) have no real
+            # content to chunk/embed/search; persist the row but skip chunk creation.
+            redacted = redact_mm_body_at_rest(row["source"], row.get("mm_channel_type"))
             existing = conn.execute(
                 "SELECT content_hash FROM messages WHERE id = :id", {"id": row["id"]}
             ).fetchone()
             if existing is None:
                 conn.execute(_INSERT_SQL, params)
-                if not dm:
+                if not redacted:
                     _replace_chunks(conn, row["id"], row["body_normalized"])
                 inserted += 1
             elif existing[0] != row["content_hash"]:
                 conn.execute(_UPDATE_SQL, params)
-                if not dm:
+                if not redacted:
                     _replace_chunks(conn, row["id"], row["body_normalized"])
                 updated += 1
             else:
@@ -152,6 +152,21 @@ _INSERT_EMB_SQL = (
 )
 
 
+class StoreEmbedError(RuntimeError):
+    """The embedding backend violated its contract (count/dim mismatch, empty)."""
+
+
+_BACKLOG_SQL = (
+    "SELECT c.chunk_id, c.text FROM chunks c "
+    "LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id "
+    "WHERE e.chunk_id IS NULL LIMIT ?"
+)
+_PENDING_SQL = (
+    "SELECT count(*) FROM chunks c "
+    "LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id WHERE e.chunk_id IS NULL"
+)
+
+
 def embed_backlog(
     conn,
     backend: Any,
@@ -163,36 +178,51 @@ def embed_backlog(
 ) -> Dict[str, int]:
     """Embed chunks that have no vector yet, in batched ``backend.embed`` calls.
 
-    ``backend`` is any object with ``embed(texts) -> list[list[float]]`` (the
-    gateway ``EmbeddingsClient`` satisfies it as-is). Vectors are stored as
-    little-endian ``float32``/``float16`` BLOBs. Returns ``{embedded, pending}``.
+    Streams the backlog one batch at a time (re-querying the shrinking
+    not-yet-embedded set, so peak memory is one batch — not the whole corpus).
+    The gateway contract is DEFENDED: a count mismatch, an empty vector, or a dim
+    that disagrees with the model's existing vectors raises ``StoreEmbedError``
+    rather than silently truncating (zip) or storing a dim that would later brick
+    search. Returns ``{embedded, pending}`` with a real remaining count.
     """
     import numpy as np
 
     np_dtype = np.float16 if dtype == "float16" else np.float32
     now_iso = _now_iso(now)
-    rows: List[Any] = conn.execute(
-        "SELECT c.chunk_id, c.text FROM chunks c "
-        "LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id "
-        "WHERE e.chunk_id IS NULL"
-    ).fetchall()
+    row = conn.execute("SELECT dim FROM embeddings WHERE model = ? LIMIT 1", (model,)).fetchone()
+    expected_dim = int(row[0]) if row else None
     embedded = 0
-    for start in range(0, len(rows), batch_size):
-        batch = rows[start : start + batch_size]
+    while True:
+        batch = conn.execute(_BACKLOG_SQL, (batch_size,)).fetchall()
+        if not batch:
+            break
         vectors = backend.embed([text for _cid, text in batch])
+        if len(vectors) != len(batch):
+            raise StoreEmbedError(
+                f"embed() returned {len(vectors)} vectors for {len(batch)} inputs"
+            )
         conn.execute("BEGIN")
         try:
             for (cid, _text), vec in zip(batch, vectors):
                 arr = np.asarray(vec, dtype=np_dtype)
-                conn.execute(
-                    _INSERT_EMB_SQL, (cid, model, int(arr.shape[0]), arr.tobytes(), now_iso)
-                )
+                dim = int(arr.shape[0])
+                if dim == 0:
+                    raise StoreEmbedError(f"empty embedding for chunk {cid}")
+                if expected_dim is None:
+                    expected_dim = dim
+                elif dim != expected_dim:
+                    raise StoreEmbedError(
+                        f"embedding dim {dim} != expected {expected_dim} for model {model!r}; "
+                        "run `store reembed --force` after changing the model or vector_dtype"
+                    )
+                conn.execute(_INSERT_EMB_SQL, (cid, model, dim, arr.tobytes(), now_iso))
                 embedded += 1
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
-    return {"embedded": embedded, "pending": 0}
+    pending = conn.execute(_PENDING_SQL).fetchone()[0]
+    return {"embedded": embedded, "pending": pending}
 
 
 def stats(conn) -> Dict[str, Any]:

@@ -426,9 +426,13 @@ def search(
                     f"{FAIL} {eff_mode} search needs the embeddings gateway: {exc}", err=True
                 )
                 raise typer.Exit(1)
-        hits = store.search(
-            query, mode=eff_mode, backend=backend, source=source, since=since, limit=limit
-        )
+        try:
+            hits = store.search(
+                query, mode=eff_mode, backend=backend, source=source, since=since, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 - clean CLI error, never a traceback
+            typer.echo(f"{FAIL} search failed: {exc}", err=True)
+            raise typer.Exit(1)
     finally:
         store.close()
 
@@ -540,8 +544,17 @@ def store_purge(
 
 
 @store_app.command("reembed")
-def store_reembed():
-    """Fill the embedding backlog (chunks without a vector). Needs the corp network."""
+def store_reembed(
+    force: bool = typer.Option(
+        False, "--force", help="Drop existing vectors first (use after changing the model/dtype)"
+    ),
+):
+    """Fill the embedding backlog (chunks without a vector). Needs the corp network.
+
+    After changing store.embedding_model or vector_dtype, pass --force: every chunk
+    still has its stale vector, so a plain reembed finds no work and semantic search
+    would return empty.
+    """
     store = _open_store_or_exit()
     try:
         try:
@@ -549,10 +562,14 @@ def store_reembed():
         except Exception as exc:  # noqa: BLE001
             typer.echo(f"{FAIL} embeddings gateway unavailable: {exc}", err=True)
             raise typer.Exit(1)
-        result = store.embed_backlog(backend)
+        try:
+            result = store.reembed(backend, force=force)
+        except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
+            typer.echo(f"{FAIL} reembed failed: {exc}", err=True)
+            raise typer.Exit(1)
     finally:
         store.close()
-    typer.echo(f"{OK} Embedded {result['embedded']} chunk(s).")
+    typer.echo(f"{OK} Embedded {result['embedded']} chunk(s); {result['pending']} still pending.")
 
 
 @store_app.command("vacuum")

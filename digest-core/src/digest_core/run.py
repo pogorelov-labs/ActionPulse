@@ -1317,6 +1317,17 @@ def _run_pipeline(
         _emit(ctx, "on_run_end", ctx.run_meta.get("status") or "unknown")
 
 
+def _store_archiving(ctx: RunContext) -> bool:
+    """True when the message store is enabled — the run is also building an archive.
+
+    Such a run must NOT take the pre-ingest freshness skip: the store has to capture
+    every fetched message, so we always fetch+persist (the post-ingest content skip
+    still spares the LLM call once the store is populated).
+    """
+    store = getattr(ctx.config, "store", None)
+    return store is not None and bool(store.enabled)
+
+
 def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestResult:
     # Thread the source selector onto the context so _stage_ingest can build the
     # adapter list from it (P1a). Empty/None falls back to the EWS default, so
@@ -1326,8 +1337,16 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
     config_sha = _config_sha256(ctx.config)
     idem_sidecar = _read_idem_sidecar(ctx.json_path)
 
-    if not ctx.force and _idem_pre_ingest_skip(
-        ctx.json_path, ctx.md_path, idem_sidecar, config_sha
+    # The message store is an ARCHIVE: it must capture every fetched message, so the
+    # pre-ingest freshness skip (which avoids re-fetching when artifacts are <48h
+    # old) would silently leave the store empty on same-day re-runs. Suppress it when
+    # the store is enabled — we still want the fetch+persist. The POST-ingest content
+    # skip below remains in force, so the scarce LLM call is still spared once the
+    # store has been populated.
+    if (
+        not ctx.force
+        and not _store_archiving(ctx)
+        and _idem_pre_ingest_skip(ctx.json_path, ctx.md_path, idem_sidecar, config_sha)
     ):
         artifact_age_hours = _artifact_age_hours(ctx.json_path)
         logger.info(
@@ -1700,6 +1719,10 @@ def _normalize_messages(
                 body_norm=cleaned_body,
                 received_at=msg.received_at,
                 source=getattr(msg, "source", "email"),
+                # Carry the MM channel type through NORMALIZE — it drives the store's
+                # DM-at-rest redaction (guardrail #9). Dropping it here let DM bodies
+                # reach the store unredacted (the field defaulted to None downstream).
+                mm_channel_type=getattr(msg, "mm_channel_type", None),
             )
         )
         if sink is not None:
