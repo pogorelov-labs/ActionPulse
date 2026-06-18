@@ -2,9 +2,13 @@
 
 import yaml
 
+from digest_core.config import MattermostSourceConfig
 from digest_core.setup_autodetect import DetectedEnv
+from digest_core import setup_wizard as wiz
 from digest_core.setup_wizard import (
     _auto_detect_ca_path,
+    _dm_step,
+    _dm_summary_value,
     _resolve_ews_login,
     _derive_from_email,
     _mask_secret,
@@ -285,6 +289,144 @@ class TestWriteConfigYaml:
         with open(user_config) as f:
             config = yaml.safe_load(f)
         assert config["ews"]["verify_ca"] == "/etc/ssl/my-ca.pem"
+
+    def _write_with_dm(self, tmp_path, monkeypatch, **dm):
+        example = tmp_path / "config.example.yaml"
+        with open(example, "w") as f:
+            yaml.dump({"ews": {}, "llm": {}, "mm_source": {"enabled": True}}, f)
+        user_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("digest_core.setup_wizard.CONFIG_EXAMPLE", example)
+        monkeypatch.setattr("digest_core.setup_wizard.CONFIG_USER", user_config)
+        derived = _derive_from_email("user@corp.ru")
+        _write_config_yaml(
+            user_upn="user@corp.ru",
+            ews_endpoint="https://ews.corp.ru",
+            llm_endpoint="https://llm.corp.ru",
+            derived=derived,
+            verify_ca=None,
+            **dm,
+        )
+        with open(user_config) as f:
+            return yaml.safe_load(f)
+
+    def test_dm_defaults_off(self, tmp_path, monkeypatch):
+        config = self._write_with_dm(tmp_path, monkeypatch)
+        assert config["mm_source"]["dm_scope"] == "off"
+        assert config["mm_source"]["dm_allowlist"] == []
+        assert config["mm_source"]["dm_consent_acknowledged"] is False
+        assert config["mm_source"]["dm_consent_acknowledged_at"] is None
+        # The pre-existing mm_source key survives the merge.
+        assert config["mm_source"]["enabled"] is True
+        # And the written block loads through the model validator.
+        MattermostSourceConfig(**config["mm_source"])
+
+    def test_dm_selected_with_consent(self, tmp_path, monkeypatch):
+        config = self._write_with_dm(
+            tmp_path,
+            monkeypatch,
+            dm_scope="selected",
+            dm_allowlist=["@ann", "bob@corp.ru"],
+            dm_consent_acknowledged=True,
+            dm_consent_acknowledged_at="2026-06-18T12:00:00+00:00",
+        )
+        block = config["mm_source"]
+        assert block["dm_scope"] == "selected"
+        assert block["dm_allowlist"] == ["@ann", "bob@corp.ru"]
+        assert block["dm_consent_acknowledged"] is True
+        model = MattermostSourceConfig(**block)
+        assert model.dm_scope == "selected"
+
+
+class TestDmSummaryValue:
+    """The summary-table DM row text."""
+
+    def test_off(self):
+        assert _dm_summary_value("off", []) == "Off"
+
+    def test_own_posts(self):
+        assert _dm_summary_value("own_posts_only", []) == "My posts only"
+
+    def test_selected_with_partners(self):
+        assert "3 partners" in _dm_summary_value("selected", ["a", "b", "c"])
+
+    def test_selected_one_partner_singular(self):
+        assert "1 partner)" in _dm_summary_value("selected", ["a"])
+
+    def test_selected_empty_flags_off(self):
+        text = _dm_summary_value("selected", [])
+        assert "effectively OFF" in text
+
+    def test_all(self):
+        assert _dm_summary_value("all", []) == "All DMs"
+
+
+class TestDmStep:
+    """Wizard DM sub-section flow (thin glue over the tested helpers)."""
+
+    def _patch_tty(self, monkeypatch, scope):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        monkeypatch.setattr(wiz, "choose", lambda *a, **k: scope)
+
+    def test_off_no_consent(self, monkeypatch):
+        self._patch_tty(monkeypatch, "off")
+        result = _dm_step({})
+        assert result.scope == "off"
+        assert result.consent_acknowledged is False
+        assert result.consent_acknowledged_at is None
+
+    def test_own_posts_no_consent(self, monkeypatch):
+        self._patch_tty(monkeypatch, "own_posts_only")
+        result = _dm_step({"mm_source": {"dm_scope": "selected"}})
+        assert result.scope == "own_posts_only"
+        assert result.consent_acknowledged is False
+
+    def test_selected_consent_declined_falls_back_off(self, monkeypatch):
+        self._patch_tty(monkeypatch, "selected")
+        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: False)
+        result = _dm_step({})
+        assert result.scope == "off"
+        assert result.consent_acknowledged is False
+
+    def test_selected_consent_accepted_sets_timestamp(self, monkeypatch):
+        self._patch_tty(monkeypatch, "selected")
+        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
+        monkeypatch.setattr(wiz, "_ask_dm_partners", lambda con, cur: ["@ann"])
+        result = _dm_step({})
+        assert result.scope == "selected"
+        assert result.allowlist == ["@ann"]
+        assert result.consent_acknowledged is True
+        assert result.consent_acknowledged_at is not None
+
+    def test_selected_empty_list_keeps_selected(self, monkeypatch):
+        self._patch_tty(monkeypatch, "selected")
+        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
+        monkeypatch.setattr(wiz, "_ask_dm_partners", lambda con, cur: [])
+        result = _dm_step({})
+        assert result.scope == "selected"
+        assert result.allowlist == []
+        assert result.consent_acknowledged is True
+
+    def test_all_consent_declined_falls_back_off(self, monkeypatch):
+        self._patch_tty(monkeypatch, "all")
+        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: False)
+        result = _dm_step({})
+        assert result.scope == "off"
+
+    def test_all_confirm_declined_falls_back_off(self, monkeypatch):
+        self._patch_tty(monkeypatch, "all")
+        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
+        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: False))
+        result = _dm_step({})
+        assert result.scope == "off"
+
+    def test_all_both_yes_sets_all(self, monkeypatch):
+        self._patch_tty(monkeypatch, "all")
+        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
+        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: True))
+        result = _dm_step({})
+        assert result.scope == "all"
+        assert result.consent_acknowledged is True
+        assert result.consent_acknowledged_at is not None
 
 
 class TestReadExistingEnv:

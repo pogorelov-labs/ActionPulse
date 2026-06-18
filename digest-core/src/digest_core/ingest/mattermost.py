@@ -47,6 +47,7 @@ import concurrent.futures
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Deque, Dict, List, Optional, Protocol
 
@@ -237,6 +238,20 @@ class MattermostReadClient:
             params={"page": page, "per_page": pp},
         )
 
+    def get_channel_members(self, channel_id: str) -> List[dict]:
+        """GET /channels/{id}/members — the channel's member rows (read-only).
+
+        Used to resolve a GROUP-DM's (type 'G') members for the DM allowlist
+        match: a group-DM channel has no human-readable name and its ``name`` is
+        an opaque hash (NOT the ``id1__id2`` form a 1:1 'D' channel uses), so the
+        non-owner members must be listed. Each row carries a ``user_id``; the
+        username/email needed for matching are resolved separately via the batch
+        ``/users/ids`` read. This is metadata (membership), allowed BEFORE any
+        content (posts) GET — only the posts GET is privacy-gated.
+        """
+        members = self._get(f"/channels/{channel_id}/members")
+        return list(members or [])
+
     def get_users_by_ids(self, ids: List[str]) -> List[dict]:
         """POST /users/ids — a NON-mutating batch read of user objects.
 
@@ -295,6 +310,82 @@ def _channel_is_allowlisted(channel: dict, allowlist: frozenset[str]) -> bool:
     return False
 
 
+#: Channel-type → channel_kind mapping for the keep-meta audit carrier.
+#: 'O'/'P' = open/private "op" channels; 'D' = 1:1 direct DM; 'G' = group DM.
+_DM_CHANNEL_TYPES = frozenset({"D", "G"})
+
+
+def _channel_kind(channel: dict) -> str:
+    """Classify a channel into the keep-meta ``channel_kind`` ∈ {'op','dm','gm'}.
+
+    'D' (1:1 direct) → 'dm'; 'G' (group DM) → 'gm'; everything else (open 'O',
+    private 'P', or an absent/unknown ``type``) → 'op'. The channel's raw ``type``
+    ('D'/'G'/'O'/'P') is what lands on ``NormalizedMessage.mm_channel_type``; this
+    coarser kind is used by the keep-meta carrier (audit + future redaction).
+    """
+    ctype = channel.get("type")
+    if ctype == "D":
+        return "dm"
+    if ctype == "G":
+        return "gm"
+    return "op"
+
+
+def _is_dm_channel(channel: dict) -> bool:
+    """True iff the channel is a DM channel (type 'D' or 'G')."""
+    return channel.get("type") in _DM_CHANNEL_TYPES
+
+
+def _normalize_dm_allowlist(entries: List[str]) -> frozenset[str]:
+    """Normalized DM allowlist set (case-insensitive, trimmed, blanks dropped).
+
+    Mirrors ``_normalize_allowlist`` (the channel-allowlist helper) but is a
+    SEPARATE function because the DM allowlist matches a COUNTERPARTY's identity
+    (user_id / @username / bare username / email), NOT a channel id/name/display.
+    Both an ``@username`` and a bare ``username`` entry are accepted; the matcher
+    derives both token forms from a resolved user, so an operator may write either.
+    Returns an IMMUTABLE frozenset — worker/coordinator threads may READ it freely.
+    """
+    return frozenset(e.strip().lower() for e in entries if e and e.strip())
+
+
+def _user_identity_tokens(user: dict) -> frozenset[str]:
+    """Normalized identity tokens for a resolved user → {user_id, username,
+    '@'+username, email} (lowercased, trimmed, blanks dropped).
+
+    Any one of these matching the DM allowlist means the user matches. An operator
+    may put a user_id, an ``@username``, a bare ``username``, or an email in the
+    allowlist and it resolves against the same user.
+    """
+    tokens: set[str] = set()
+    uid = (user.get("id") or "").strip().lower()
+    if uid:
+        tokens.add(uid)
+    username = (user.get("username") or "").strip().lower()
+    if username:
+        tokens.add(username)
+        tokens.add(f"@{username}")
+    email = (user.get("email") or "").strip().lower()
+    if email:
+        tokens.add(email)
+    return frozenset(tokens)
+
+
+def _dm_counterparty_ids_from_name(channel: dict, owner_id: str) -> List[str]:
+    """Counterparty user ids for a 1:1 DM ('D'), derived from the channel ``name``.
+
+    A 'D' channel's ``name`` is ``"<userid1>__<userid2>"`` (two ids joined by
+    ``'__'``); the counterparty is the id != owner_id — derivable from metadata
+    with NO API call. A self-DM (``id1 == id2 == owner``) yields no counterparty.
+    Returns the non-owner id(s) (normally exactly one).
+    """
+    name = channel.get("name") or ""
+    if "__" not in name:
+        return []
+    parts = [p for p in name.split("__") if p]
+    return [p for p in parts if p != owner_id]
+
+
 def _is_system_or_bot(post: dict) -> bool:
     """True for system posts (``type`` startswith "system_") and bot posts."""
     ptype = post.get("type") or ""
@@ -331,18 +422,45 @@ def _short_channel(name: str) -> str:
     return name[: _CHANNEL_LABEL_MAX - 1] + "…"
 
 
+@dataclass(frozen=True)
+class _KeepMeta:
+    """Per-kept-post policy metadata, computed by the worker, read-only thereafter.
+
+    Generalizes the old ``is_mention`` flag in the kept-tuple so OP-channel and DM
+    keep-logic share one carrier:
+
+      * ``addressed_to_me`` — owner identity goes into ``to_recipients`` iff True
+        (the real addressed-to-me signal: a mention OR a counterparty DM post).
+      * ``is_counterparty`` — the post was authored by someone OTHER than the owner
+        in a DM (``user_id != owner_id``); drives the verbatim quote cap. Always
+        False for op-channel posts and for the owner's OWN DM posts (never capped).
+      * ``channel_kind`` ∈ {'op','dm','gm'} — audit + future-redaction hint.
+
+    For an OP channel the worker reproduces today's semantics EXACTLY:
+    ``_KeepMeta(addressed_to_me=is_mention, is_counterparty=False,
+    channel_kind='op')`` — so the #136 equivalence guard still passes.
+    """
+
+    addressed_to_me: bool
+    is_counterparty: bool
+    channel_kind: str
+
+
 class _ChannelResult:
     """The kept posts + author ids from one channel's successful fetch.
 
-    Each kept entry is ``(post, channel, is_mention)``: ``is_mention`` carries the
-    addressed-to-me signal downstream (a mention is addressed to the owner; a
-    general allowlisted-channel post is context). This is set by the worker and is
-    read-only thereafter.
+    Each kept entry is ``(post, channel, keep_meta)``: the ``_KeepMeta`` carries
+    the addressed-to-me / counterparty / channel-kind signals downstream (an
+    op-channel mention is addressed to the owner; a general allowlisted-channel
+    post is context; a counterparty DM post is addressed-to-me AND quote-capped).
+    This is set by the worker and is read-only thereafter.
     """
 
     __slots__ = ("kept_posts", "author_ids")
 
-    def __init__(self, kept_posts: List[tuple[dict, dict, bool]], author_ids: set[str]) -> None:
+    def __init__(
+        self, kept_posts: List[tuple[dict, dict, "_KeepMeta"]], author_ids: set[str]
+    ) -> None:
         self.kept_posts = kept_posts
         self.author_ids = author_ids
 
@@ -363,7 +481,7 @@ class _FetchOutcome:
     )
 
     def __init__(self) -> None:
-        self.kept_posts: List[tuple[dict, dict, bool]] = []
+        self.kept_posts: List[tuple[dict, dict, "_KeepMeta"]] = []
         self.author_ids: set[str] = set()
         self.channels_scanned = 0
         self.channels_skipped = 0
@@ -705,25 +823,29 @@ class MattermostSourceAdapter:
     # -- the SourceAdapter contract ----------------------------------------
 
     def fetch(self, digest_date: str) -> List[NormalizedMessage]:
-        """Fetch the owner's @-mentions in the digest window.
+        """Fetch the owner's @-mentions (op channels) + DMs (per ``dm_scope``).
 
-        Flow (design §2.1 / §2.3):
+        Flow (design §2.1 / §2.2 / §2.3 / §6):
           a. Resolve the owner once (GET /users/me → id + username).
           b. List the owner's channels across teams; PRE-GATE on
              ``Channel.last_post_at`` within the window (skip dead channels) and
              cap at ``max_channels`` ordered most-recent-first.
-          c. Per active channel, page GET /channels/{id}/posts over the window:
-             iterate the newest-first ``order`` array, EARLY-STOP when
-             ``create_at < start_ms``; paginate by page-length < per_page ⇒ done.
-             Skip ``delete_at>0`` tombstones and system/bot posts.
-          d. Keep a post iff it @-mentions the owner (client-side word-boundary
-             parse) OR its channel is allowlisted (channels phase, design §2.3).
-             For an allowlisted channel, general (non-mention) posts are capped at
-             ``max_posts_per_channel`` (newest kept); mentions are never capped.
-          e. Map each kept post → ``NormalizedMessage(source="mm")``; resolve
-             author usernames via the batch ``/users/ids`` read. A mention is
-             addressed-to-me (owner in ``to_recipients``); a general post is
-             context (``to_recipients=[]``).
+          c. PARTITION the active channels by ``type``: 'O'/'P' = OP channels;
+             'D'/'G' = DM channels. Compute the DM fetch set from ``dm_scope``:
+             ``off`` → none (D/G channels are NEVER paged — this closes the
+             pre-existing leak where an @owner mention inside a group-DM was
+             ingested by the mention slice); ``own_posts_only``/``all`` → every
+             active D/G; ``selected`` → only D/G channels whose NON-owner member(s)
+             match ``dm_allowlist`` (resolved from channel metadata BEFORE any
+             posts GET — allowlist-before-GET).
+          d. Page the combined fetch set (OP + DM) via the adaptive fetcher.
+             OP channels keep @mentions (+ allowlisted general posts); DM channels
+             apply the per-post owner/counterparty keep-logic for the scope.
+          e. Map each kept post → ``NormalizedMessage(source="mm")`` with
+             ``mm_channel_type`` set to the channel's raw ``type``; resolve author
+             usernames via the batch ``/users/ids`` read. addressed-to-me posts
+             carry the owner in ``to_recipients``; counterparty DM text is
+             quote-capped to ``dm_max_quote_chars``.
         """
         start_ms, end_ms = self._window_ms(digest_date)
 
@@ -744,14 +866,41 @@ class MattermostSourceAdapter:
         # Empty allowlist ⇒ the channels phase is OFF and the adapter is
         # byte-for-byte the mentions-only slice (regression-guarded by tests).
         allowlist = _normalize_allowlist(self._config.channel_allowlist)
+        dm_scope = self._config.dm_scope
+        # DM owner/counterparty classification (is_counterparty = user_id != owner_id)
+        # is only sound with a real owner id. If the server returned a blank id
+        # (it shouldn't — get_me always carries one), fail CLOSED: disable DM
+        # ingestion entirely so we never misclassify every post as a counterparty
+        # (which would over-cap, or under own_posts_only drop everything). Mentions
+        # and channels are unaffected (they key on the username, not the id).
+        if dm_scope != "off" and not owner_id:
+            logger.warning(
+                "Mattermost owner has no id; DM ingestion disabled for this run "
+                "(cannot classify owner vs counterparty)",
+                dm_scope=dm_scope,
+            )
+            dm_scope = "off"
 
         channels = self._client.get_my_channels()
         active = self._active_channels(channels, start_ms, end_ms)
-        total_active = len(active)
+        # PARTITION by channel type: OP channels (mentions/allowlist slice) vs DM
+        # channels (D/G, governed by dm_scope). Under dm_scope='off' the D/G
+        # channels are dropped HERE — never paged — so a group-DM @owner mention
+        # yields zero messages (the leak the mentions slice had is closed).
+        op_channels = [ch for ch in active if not _is_dm_channel(ch)]
+        dm_channels_active = [ch for ch in active if _is_dm_channel(ch)]
+        dm_to_fetch = self._select_dm_channels(dm_channels_active, dm_scope, owner_id)
+        # The combined fetch set: OP channels (always) + the resolved DM subset.
+        fetch_set = op_channels + dm_to_fetch
+        total_active = len(fetch_set)
         logger.info(
             "Mattermost channels pre-gated",
             total=len(channels),
             active=total_active,
+            op_channels=len(op_channels),
+            dm_channels_active=len(dm_channels_active),
+            dm_channels_fetched=len(dm_to_fetch),
+            dm_scope=dm_scope,
         )
         # Starting event: the scan denominator (``total_active``) is now known, so
         # the live footer can render a real percentage (0/N) before the first
@@ -774,19 +923,23 @@ class MattermostSourceAdapter:
         # emitted from the COORDINATOR thread only (worker threads never touch the
         # sink), so there is no sink race.
         fetcher = _AdaptiveChannelFetcher(
-            channels=active,
+            channels=fetch_set,
             total_active=total_active,
-            # Channel-allowlist membership is computed in the COORDINATOR (here,
-            # from the immutable allowlist set + the channel object) and passed as
-            # a plain bool arg — so the worker never reads shared adapter state to
-            # decide it. (Reading the immutable ``allowlist`` from the closure is
-            # equally thread-safe; passing the resolved bool keeps the worker pure.)
+            # Per-channel policy is computed in the COORDINATOR (here, from the
+            # immutable config + the channel object) and passed as plain args, so
+            # the worker never reads shared adapter state. For an OP channel:
+            # dm_mode=None + the resolved allowlist bool (the unchanged #136 path).
+            # For a DM channel: dm_mode=dm_scope + owner_id (the channel already
+            # passed the scope/member gate in _select_dm_channels, so the worker
+            # just applies the per-post owner/counterparty rule).
             fetch_channel=lambda channel: self._fetch_channel(
                 channel,
                 start_ms,
                 end_ms,
                 mention_re,
                 channel_is_allowlisted=_channel_is_allowlisted(channel, allowlist),
+                dm_mode=(dm_scope if _is_dm_channel(channel) else None),
+                owner_id=owner_id,
             ),
             sink=self._sink,
             min_concurrency=self._config.min_concurrency,
@@ -803,7 +956,8 @@ class MattermostSourceAdapter:
         authors = self._resolve_authors(list(author_ids))
 
         messages: List[NormalizedMessage] = []
-        for post, channel, is_mention in kept_posts:
+        dm_messages = 0
+        for post, channel, keep_meta in kept_posts:
             messages.append(
                 self._to_normalized_message(
                     post,
@@ -812,9 +966,11 @@ class MattermostSourceAdapter:
                     owner_id=owner_id,
                     owner_handle=owner_handle,
                     owner_email=owner_email,
-                    is_mention=is_mention,
+                    keep_meta=keep_meta,
                 )
             )
+            if keep_meta.channel_kind in ("dm", "gm"):
+                dm_messages += 1
 
         # Record the outcome so a degrade is never invisible (mirrors EWSIngest).
         # The AIMD fields (rate_limit_hits / retries / max_concurrency_reached)
@@ -830,6 +986,11 @@ class MattermostSourceAdapter:
             "rate_limit_hits": result.rate_limit_hits,
             "retries": result.retries,
             "max_concurrency_reached": result.max_concurrency_reached,
+            # DM counts (payload-free): how many D/G channels were in the fetch set
+            # and how many DM-sourced messages survived, plus the active scope.
+            "dm_scope": dm_scope,
+            "dm_channels_scanned": len(dm_to_fetch),
+            "dm_messages": dm_messages,
         }
         # Final progress emit carries the summary so the live footer shows skips.
         emit(
@@ -869,24 +1030,39 @@ class MattermostSourceAdapter:
         mention_re: "re.Pattern[str]",
         *,
         channel_is_allowlisted: bool = False,
+        dm_mode: Optional[str] = None,
+        owner_id: str = "",
     ) -> "_ChannelResult":
         """Fetch + parse ONE channel's in-window posts (worker body).
 
         Pages the window with ``_iter_window_posts`` (unchanged; system/bot/
-        tombstone posts already filtered there). Keep-logic per in-window post:
+        tombstone posts already filtered there). Two disjoint keep-logics, selected
+        by ``dm_mode``:
 
+        **OP channel (``dm_mode is None``)** — UNCHANGED from #136:
           * ``is_mention = bool(mention_re.search(message))``;
-          * keep the post iff ``channel_is_allowlisted OR is_mention`` — so a
-            NON-allowlisted channel keeps only mentions (unchanged behavior) and
-            an allowlisted channel keeps every post;
-          * **cap**: for an allowlisted channel, keep at most
-            ``max_posts_per_channel`` GENERAL (non-mention) posts. Posts arrive
-            newest-first, so the cap keeps the most-recent general posts; mentions
-            are ALWAYS kept (high-signal) even past the cap.
+          * keep iff ``channel_is_allowlisted OR is_mention``;
+          * for an allowlisted channel, cap GENERAL (non-mention) posts at
+            ``max_posts_per_channel`` (newest kept); mentions are never capped;
+          * keep-meta = ``_KeepMeta(addressed_to_me=is_mention,
+            is_counterparty=False, channel_kind='op')`` (byte-identical semantics).
 
-        Each kept entry is ``(post, channel, is_mention)`` so the addressed-to-me
-        signal is carried downstream. ``channel_is_allowlisted`` is computed by the
-        coordinator from the IMMUTABLE config + channel object and passed in, so the
+        **DM channel (``dm_mode`` set)** — D/G keep-logic (design §2.2/§6):
+          * ``own_posts_only`` → keep ONLY the owner's own posts
+            (``user_id == owner_id``); counterparty posts dropped entirely.
+            addressed_to_me=False, is_counterparty=False (never capped).
+          * ``selected``/``all`` → keep ALL in-window posts. A counterparty post
+            (``user_id != owner_id``) is addressed_to_me=True + is_counterparty=True
+            (quote-capped downstream); the owner's own post is addressed_to_me=False
+            + is_counterparty=False (uncapped). Mentions are irrelevant in a DM (a
+            DM IS addressed to the owner), so ``mention_re`` is not consulted.
+          * Membership matching for ``selected`` was already resolved in the
+            COORDINATOR (allowlist-before-GET): a DM channel only reaches this
+            worker if it passed the gate, so the worker keeps all posts here.
+            ``channel_is_allowlisted`` is ignored for DMs.
+
+        ``dm_mode``/``owner_id``/``channel_is_allowlisted`` are computed by the
+        coordinator from IMMUTABLE config + the channel object and passed in, so the
         worker never reads or mutates shared adapter state (thread-safety).
 
         Returns a ``_ChannelResult`` on success; **raises** on any fetch error
@@ -895,7 +1071,11 @@ class MattermostSourceAdapter:
         retry vs. skip vs. back-off. The worker NEVER touches shared state or the
         progress sink.
         """
-        kept: List[tuple[dict, dict, bool]] = []
+        if dm_mode is not None:
+            return self._fetch_dm_channel(channel, start_ms, end_ms, dm_mode, owner_id)
+
+        kind = _channel_kind(channel)  # 'op' for the mentions/allowlist path
+        kept: List[tuple[dict, dict, _KeepMeta]] = []
         author_ids: set[str] = set()
         max_general = self._config.max_posts_per_channel
         general_kept = 0
@@ -915,7 +1095,12 @@ class MattermostSourceAdapter:
                     general_dropped += 1
                     continue
                 general_kept += 1
-            kept.append((post, channel, is_mention))
+            # Reproduce today's semantics exactly: addressed_to_me=is_mention, an
+            # op-channel post is never a DM counterparty (never quote-capped).
+            keep_meta = _KeepMeta(
+                addressed_to_me=is_mention, is_counterparty=False, channel_kind=kind
+            )
+            kept.append((post, channel, keep_meta))
             uid = post.get("user_id")
             if uid:
                 author_ids.add(uid)
@@ -929,6 +1114,148 @@ class MattermostSourceAdapter:
                 cap=max_general,
             )
         return _ChannelResult(kept_posts=kept, author_ids=author_ids)
+
+    def _fetch_dm_channel(
+        self,
+        channel: dict,
+        start_ms: int,
+        end_ms: int,
+        dm_mode: str,
+        owner_id: str,
+    ) -> "_ChannelResult":
+        """Fetch + parse ONE D/G (DM) channel's in-window posts (worker body).
+
+        Pure/thread-safe like ``_fetch_channel``: reads only immutable args, raises
+        on fetch error, never touches shared state or the sink. The channel has
+        ALREADY passed the scope/member gate in the coordinator (allowlist-before-
+        GET), so this worker applies only the per-post owner-vs-counterparty rule:
+
+          * ``own_posts_only`` → keep iff the owner authored the post; drop every
+            counterparty post BEFORE it becomes a message (no third-party text
+            reaches the LLM). addressed_to_me=False, is_counterparty=False.
+          * ``selected``/``all`` → keep every in-window post; classify counterparty
+            (``user_id != owner_id``) → addressed_to_me=True + is_counterparty=True
+            (quote-capped downstream); owner's own → addressed_to_me=False +
+            is_counterparty=False (uncapped).
+
+        No per-DM post cap is applied (a DM thread is bounded and high-signal; the
+        op-channel ``max_posts_per_channel`` cap is deliberately NOT reused here).
+        """
+        kind = _channel_kind(channel)  # 'dm' (type 'D') or 'gm' (type 'G')
+        kept: List[tuple[dict, dict, _KeepMeta]] = []
+        author_ids: set[str] = set()
+        for post in self._iter_window_posts(channel["id"], start_ms, end_ms):
+            is_counterparty = (post.get("user_id") or "") != owner_id
+            if dm_mode == "own_posts_only":
+                if is_counterparty:
+                    # Counterparty text never reaches the message list (no consent
+                    # needed under this scope) — dropped before normalize/LLM.
+                    continue
+                keep_meta = _KeepMeta(
+                    addressed_to_me=False, is_counterparty=False, channel_kind=kind
+                )
+            else:
+                # 'selected' / 'all': keep all posts. A DM TO the owner IS
+                # addressed to the owner (§2.2) → counterparty posts are
+                # addressed_to_me; the owner's own posts are their own statements.
+                keep_meta = _KeepMeta(
+                    addressed_to_me=is_counterparty,
+                    is_counterparty=is_counterparty,
+                    channel_kind=kind,
+                )
+            kept.append((post, channel, keep_meta))
+            uid = post.get("user_id")
+            if uid:
+                author_ids.add(uid)
+        return _ChannelResult(kept_posts=kept, author_ids=author_ids)
+
+    # -- DM channel selection (coordinator; allowlist-before-GET) ----------
+
+    def _select_dm_channels(
+        self, dm_channels: List[dict], dm_scope: str, owner_id: str
+    ) -> List[dict]:
+        """Resolve which active D/G channels to PAGE, per ``dm_scope`` (§2.2/§6).
+
+        Runs on the coordinator (single-threaded, before the parallel fetch). This
+        is the privacy gate: it must NOT issue any posts GET — only metadata reads
+        (channel-name split for 'D', ``get_channel_members`` for 'G', and the
+        ``get_users_by_ids`` batch read for matching) are allowed before content.
+
+          * ``off`` → ``[]`` (D/G never paged — closes the group-DM mention leak).
+          * ``own_posts_only`` / ``all`` → every active D/G (no member filter).
+          * ``selected`` → only D/G channels whose NON-owner member(s) match the
+            ``dm_allowlist`` (a group-DM is kept iff ANY non-owner member matches).
+            Non-matching DM channels are NEVER paged for posts (allowlist-before-
+            GET). An empty allowlist under 'selected' yields ``[]`` (effective OFF).
+
+        Returns the subset of ``dm_channels`` to hand to the fetcher.
+        """
+        if dm_scope == "off" or not dm_channels:
+            return []
+        if dm_scope in ("own_posts_only", "all"):
+            return list(dm_channels)
+
+        # 'selected': member-match each DM's non-owner member(s) vs dm_allowlist.
+        allowset = _normalize_dm_allowlist(self._config.dm_allowlist)
+        if not allowset:
+            # Empty allowlist under 'selected' = effective OFF (graceful, no error).
+            logger.info("Mattermost dm_scope=selected with empty dm_allowlist; no DMs fetched")
+            return []
+
+        # 1) Resolve each DM channel's candidate non-owner member ids from
+        #    METADATA only (no posts GET): 'D' from the channel-name split, 'G'
+        #    from GET /channels/{id}/members. Collect all ids for one batch
+        #    /users/ids read (the only way to obtain username/email for matching).
+        channel_member_ids: Dict[str, List[str]] = {}
+        all_member_ids: set[str] = set()
+        for ch in dm_channels:
+            cid = ch.get("id")
+            if not cid:
+                continue
+            if ch.get("type") == "D":
+                member_ids = _dm_counterparty_ids_from_name(ch, owner_id)
+            else:  # 'G' group-DM: list members via the metadata read
+                try:
+                    members = self._client.get_channel_members(cid)
+                except Exception as exc:  # noqa: BLE001 - degrade: skip this DM, never crash
+                    logger.warning(
+                        "Mattermost group-DM member resolution failed; skipping channel",
+                        channel_id=str(cid)[:8],  # truncated — payload-free
+                        error_type=type(exc).__name__,
+                    )
+                    continue
+                member_ids = [
+                    (m.get("user_id") or "")
+                    for m in members
+                    if (m.get("user_id") or "") and m.get("user_id") != owner_id
+                ]
+            channel_member_ids[cid] = member_ids
+            all_member_ids.update(member_ids)
+
+        # 2) Batch-resolve member ids → user objects (username/email for matching).
+        users = self._resolve_authors(list(all_member_ids))
+
+        # 3) Keep a DM iff ANY of its non-owner members matches the allowlist by
+        #    a fast token-set intersection (user_id / username / @username / email).
+        selected: List[dict] = []
+        for ch in dm_channels:
+            cid = ch.get("id")
+            if not cid or cid not in channel_member_ids:
+                continue
+            matched = False
+            for mid in channel_member_ids[cid]:
+                user = users.get(mid) or {"id": mid}
+                if _user_identity_tokens(user) & allowset:
+                    matched = True
+                    break
+            if matched:
+                selected.append(ch)
+        logger.info(
+            "Mattermost DM allowlist resolved",
+            dm_active=len(dm_channels),
+            dm_selected=len(selected),
+        )
+        return selected
 
     # -- helpers -----------------------------------------------------------
 
@@ -1024,22 +1351,27 @@ class MattermostSourceAdapter:
         owner_id: str,
         owner_handle: str,
         owner_email: str,
-        is_mention: bool,
+        keep_meta: "_KeepMeta",
     ) -> NormalizedMessage:
-        """Map a kept post → ``NormalizedMessage(source="mm")`` (design §2.1/§2.3).
+        """Map a kept post → ``NormalizedMessage(source="mm")`` (design §2.1/§2.2/§2.3).
 
         addressed-to-me is wired through the SAME mechanism the email path uses:
         the owner's identity is placed in ``to_recipients`` so the splitter's
         ``addressed_to_me`` derivation (alias-in-recipients) and the ranker's
-        ``user_in_to`` fire honestly — a post that @-mentions the owner genuinely
-        IS addressed to the owner. (We do not invent a flag the pipeline never
+        ``user_in_to`` fire honestly. (We do not invent a flag the pipeline never
         reads; we do not touch the LLM evidence header.)
 
-        addressed-to-me fires ONLY for a mention (``is_mention=True``). A general
-        allowlisted-channel post that does NOT mention the owner is CONTEXT, not
-        addressed-to-me → ``to_recipients=[]`` (so it lands as FYI/context
-        downstream, not "My actions"). Everything else in the mapping is identical
-        for both kinds of post.
+        ``keep_meta`` drives the three source-aware decisions:
+          * ``addressed_to_me`` → owner identity in ``to_recipients`` (an op-channel
+            @mention OR a counterparty DM post); else CONTEXT (``to_recipients=[]``).
+          * ``is_counterparty`` → the verbatim text_body is QUOTE-CAPPED to
+            ``dm_max_quote_chars`` (counterparty DM text only; the owner's own posts
+            and ALL op-channel posts are NEVER capped). 0 → "".
+          * ``channel_kind`` is informational; the channel's raw ``type`` lands on
+            ``mm_channel_type`` for the audit/redaction carrier.
+
+        DMs have no subject (``subject=""`` — the markdown renderer tolerates it);
+        op channels keep the channel display name as the subject (unchanged).
         """
         post_id = post.get("id") or ""
         root_id = post.get("root_id") or ""
@@ -1052,29 +1384,40 @@ class MattermostSourceAdapter:
         author_from = f"@{author_username}" if author_username else (post.get("user_id") or "")
         author_email = (author.get("email") or "").strip()  # best-effort, may be ""
 
-        channel_name = channel.get("display_name") or channel.get("name") or channel.get("id") or ""
+        is_dm = keep_meta.channel_kind in ("dm", "gm")
+        # DMs have no subject (§2.2); op channels use the channel display name.
+        if is_dm:
+            subject = ""
+        else:
+            subject = channel.get("display_name") or channel.get("name") or channel.get("id") or ""
 
-        # Owner identity in to_recipients (the real addressed-to-me signal) ONLY
-        # for a mention. Both the @handle and a resolved email (if available) are
-        # included so the splitter alias match fires regardless of whether the
-        # operator configured ews.user_aliases with the handle or the email. A
-        # general allowlisted-channel post is CONTEXT (not addressed-to-me), so
-        # its to_recipients stays empty and it lands as FYI/context downstream.
+        # Owner identity in to_recipients (the real addressed-to-me signal). Both
+        # the @handle and a resolved email/id (if available) are included so the
+        # splitter alias match fires regardless of whether the operator configured
+        # ews.user_aliases with the handle or the email. A CONTEXT post (general
+        # allowlisted-channel post, or the owner's OWN DM statement) keeps
+        # to_recipients empty so it lands as FYI/context downstream.
         to_recipients: List[str] = []
-        if is_mention:
+        if keep_meta.addressed_to_me:
             to_recipients.append(owner_handle)
             if owner_email:
                 to_recipients.append(owner_email)
             if owner_id:
                 to_recipients.append(owner_id)
 
+        # Quote cap for COUNTERPARTY DM text only (third-party PII boundary, §6).
+        # The owner's own posts and all op-channel posts are never capped.
+        text_body = post.get("message") or ""
+        if keep_meta.is_counterparty:
+            text_body = text_body[: self._config.dm_max_quote_chars]
+
         return NormalizedMessage(
             msg_id=f"mm:{post_id}",
             conversation_id=conversation_id,
             datetime_received=dt,
             sender_email=author_email,
-            subject=channel_name,
-            text_body=post.get("message") or "",
+            subject=subject,
+            text_body=text_body,
             to_recipients=to_recipients,
             cc_recipients=[],
             importance="Normal",
@@ -1084,4 +1427,5 @@ class MattermostSourceAdapter:
             from_email=author_email,
             from_name=author_from,
             source="mm",
+            mm_channel_type=channel.get("type"),
         )

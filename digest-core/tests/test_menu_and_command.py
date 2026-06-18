@@ -1,16 +1,22 @@
 """Interactive menu + env autoload + bare `actionpulse` invocation."""
 
 import os
+from datetime import datetime, timedelta, timezone
 
+import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
 import digest_core.cli as cli_mod
 from digest_core.cli import app
+from digest_core.config import MattermostSourceConfig
 from digest_core.ui import menu as menu_mod
 from digest_core.ui.menu import (
     RunChoice,
+    _dm_consent_status,
+    _mm_dm_menu,
     _mask,
+    _read_dm_state,
     choose_run_options,
     load_env_file,
     load_last_run,
@@ -343,3 +349,130 @@ class TestMenuRunWiring:
         assert captured["from_date"] == "today"
         assert captured["window"] == "calendar_day"
         assert captured["force"] is False
+
+
+class TestReadDmState:
+    """Defensive reads of the mm_source.dm_* keys from config.yaml."""
+
+    def test_missing_file_is_off(self, tmp_path):
+        assert _read_dm_state(tmp_path / "nope.yaml") == ("off", [], False, None)
+
+    def test_garbage_file_is_off(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("not: [valid: yaml: here")
+        assert _read_dm_state(cfg) == ("off", [], False, None)
+
+    def test_reads_selected_block(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            yaml.dump(
+                {
+                    "mm_source": {
+                        "dm_scope": "selected",
+                        "dm_allowlist": [" @ann ", "", "@bob"],
+                        "dm_consent_acknowledged": True,
+                        "dm_consent_acknowledged_at": "2026-06-18T00:00:00+00:00",
+                    }
+                }
+            )
+        )
+        scope, allowlist, ack, ack_at = _read_dm_state(cfg)
+        assert scope == "selected"
+        assert allowlist == ["@ann", "@bob"]  # normalized
+        assert ack is True
+        assert ack_at == "2026-06-18T00:00:00+00:00"
+
+    def test_unknown_scope_falls_back_off(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.dump({"mm_source": {"dm_scope": "everything"}}))
+        assert _read_dm_state(cfg)[0] == "off"
+
+
+class TestDmConsentStatus:
+    """Header consent string renders defensively (never crashes)."""
+
+    NOW = datetime(2026, 6, 18, tzinfo=timezone.utc)
+
+    def test_off_shows_dash(self):
+        assert _dm_consent_status("off", False, None) == "consent —"
+
+    def test_own_posts_shows_dash(self):
+        assert _dm_consent_status("own_posts_only", False, None) == "consent —"
+
+    def test_selected_fresh_shows_date(self):
+        fresh = (self.NOW - timedelta(days=10)).isoformat()
+        out = _dm_consent_status("selected", True, fresh)
+        assert "consent ✓" in out
+        assert "2026-06" in out
+        assert "stale" not in out
+
+    def test_selected_none_timestamp_unknown(self):
+        out = _dm_consent_status("selected", True, None)
+        assert "(unknown)" in out
+
+    def test_selected_garbage_timestamp_does_not_crash(self):
+        out = _dm_consent_status("selected", True, 12345)  # non-str
+        assert "consent ✓" in out
+        assert "(unknown)" in out
+
+    def test_selected_stale_flagged(self):
+        stale = (self.NOW - timedelta(days=400)).isoformat()
+        out = _dm_consent_status("selected", True, stale)
+        assert "stale" in out
+
+    def test_selected_not_acknowledged(self):
+        out = _dm_consent_status("selected", False, None)
+        assert "required" in out
+
+
+class TestMmDmMenuScope:
+    """The settings screen wiring over the tested helpers (thin glue)."""
+
+    def _config(self):
+        from digest_core.ui import THEME
+
+        return Console(record=True, width=100, force_terminal=False, theme=THEME)
+
+    def test_change_to_own_posts_persists_immediately(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.dump({"mm_source": {"dm_scope": "off"}, "llm": {"x": 1}}))
+        monkeypatch.setattr(menu_mod, "CONFIG_USER_PATH", cfg)
+        # First menu action: change scope; ladder picks own_posts_only; then Back.
+        actions = iter(["scope", "own_posts_only", "back"])
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(actions))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        _mm_dm_menu(self._config())
+        doc = yaml.safe_load(cfg.read_text())
+        assert doc["mm_source"]["dm_scope"] == "own_posts_only"
+        assert doc["llm"] == {"x": 1}  # other section preserved
+        MattermostSourceConfig(**doc["mm_source"])  # loadable
+
+    def test_change_to_selected_consent_declined_keeps_off(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.dump({"mm_source": {"dm_scope": "off"}}))
+        monkeypatch.setattr(menu_mod, "CONFIG_USER_PATH", cfg)
+        actions = iter(["scope", "selected", "back"])
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(actions))
+        # Consent panel declined.
+        monkeypatch.setattr(menu_mod, "_dm_consent_panel", lambda console: False)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        _mm_dm_menu(self._config())
+        doc = yaml.safe_load(cfg.read_text())
+        # Still off — never wrote an unloadable selected-without-consent.
+        assert doc["mm_source"]["dm_scope"] == "off"
+
+    def test_change_to_selected_consent_accepted_writes_loadable(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.dump({"mm_source": {"dm_scope": "off"}}))
+        monkeypatch.setattr(menu_mod, "CONFIG_USER_PATH", cfg)
+        actions = iter(["scope", "selected", "back"])
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(actions))
+        monkeypatch.setattr(menu_mod, "_dm_consent_panel", lambda console: True)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        _mm_dm_menu(self._config())
+        doc = yaml.safe_load(cfg.read_text())
+        block = doc["mm_source"]
+        assert block["dm_scope"] == "selected"
+        assert block["dm_consent_acknowledged"] is True
+        assert block["dm_consent_acknowledged_at"] is not None
+        MattermostSourceConfig(**block)  # loadable

@@ -30,6 +30,12 @@ from rich.table import Table
 from rich.text import Text
 
 from digest_core.config import PROJECT_ROOT
+from digest_core.dm_consent import (
+    DM_SCOPE_LABELS,
+    DM_SCOPES,
+    normalize_partners,
+    now_iso,
+)
 from digest_core.paths import data_home
 from digest_core.ui import SPINNER, choose, get_console, gradient_text
 from digest_core.setup_autodetect import (
@@ -174,6 +180,10 @@ def _write_config_yaml(
     verify_ca: Optional[str],
     report_language: str = "en",
     acknowledged_private: bool = False,
+    dm_scope: str = "off",
+    dm_allowlist: Optional[list[str]] = None,
+    dm_consent_acknowledged: bool = False,
+    dm_consent_acknowledged_at: Optional[str] = None,
 ) -> Path:
     """Generate configs/config.yaml from example with user values applied."""
     if not CONFIG_EXAMPLE.exists():
@@ -210,6 +220,18 @@ def _write_config_yaml(
     mattermost["acknowledged_private"] = bool(acknowledged_private)
     deliver["mattermost"] = mattermost
     config["deliver"] = deliver
+
+    # DM-scope privacy ladder (LVL4). The example block carries the defaults
+    # (off / empty / no consent); thread the wizard's choices over them. Consent
+    # fields are only ever True alongside a timestamp — and a consent scope
+    # ('selected'/'all') is never written without that ack (the wizard falls
+    # back to 'off' on decline), so the result stays loadable by Config().
+    mm_source = config.get("mm_source", {}) or {}
+    mm_source["dm_scope"] = dm_scope
+    mm_source["dm_allowlist"] = list(dm_allowlist or [])
+    mm_source["dm_consent_acknowledged"] = bool(dm_consent_acknowledged)
+    mm_source["dm_consent_acknowledged_at"] = dm_consent_acknowledged_at
+    config["mm_source"] = mm_source
 
     CONFIG_USER.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_USER, "w", encoding="utf-8") as f:
@@ -585,11 +607,34 @@ def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
     return verify_ca
 
 
+def _dm_scope_label(scope: str) -> str:
+    """Short human label for a DM scope (summary/header rendering)."""
+    return {
+        "off": "Off",
+        "own_posts_only": "My posts only",
+        "selected": "Selected partners",
+        "all": "All DMs",
+    }.get(scope, scope)
+
+
+def _dm_summary_value(scope: str, allowlist: list[str]) -> str:
+    """Summary-row text for the DM scope (+ partner count under 'selected')."""
+    label = _dm_scope_label(scope)
+    if scope == "selected":
+        n = len(allowlist)
+        if n == 0:
+            return f"{label} [ap.warn](0 partners → effectively OFF)[/]"
+        return f"{label} ({n} partner{'s' if n != 1 else ''})"
+    return label
+
+
 def _summary_table(
     env_values: dict[str, str],
     verify_ca: Optional[str],
     report_language: str = "en",
     ews_login: Optional[str] = None,
+    dm_scope: str = "off",
+    dm_allowlist: Optional[list[str]] = None,
 ) -> Table:
     table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
     table.add_column(style="dim", min_width=18)
@@ -602,9 +647,151 @@ def _summary_table(
     table.add_row("LLM endpoint", env_values["LLM_ENDPOINT"])
     table.add_row("LLM token", _mask_secret(env_values["LLM_TOKEN"]))
     table.add_row("MM webhook", env_values["MM_WEBHOOK_URL"])
+    table.add_row("MM DMs (ingest)", _dm_summary_value(dm_scope, dm_allowlist or []))
     table.add_row("Report language", report_language)
     table.add_row("CA certificate", verify_ca or "[dim]— (system trust store)[/]")
     return table
+
+
+@dataclass
+class DMResult:
+    """Resolved DM-ingest choices the wizard threads into the config write."""
+
+    scope: str = "off"
+    allowlist: list[str] | None = None
+    consent_acknowledged: bool = False
+    consent_acknowledged_at: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.allowlist is None:
+            self.allowlist = []
+
+
+def _dm_consent_panel(con) -> bool:
+    """Render the DM consent panel and return the owner's acknowledgement.
+
+    Shared by every consent-firing path (wizard + menu). The Confirm defaults
+    to False — consent is opt-IN, never the resting state.
+    """
+    body = Text.assemble(
+        ("⚠ This sends colleagues' DM text to the LLM.\n\n", "ap.warn"),
+        ("• Counterparty (their) messages are third-party PII.\n", ""),
+        ("• Their text is quote-capped to ~280 chars; your own posts are not.\n", ""),
+        ("• You are responsible for this under your employer-device policy.\n", ""),
+        ("• Your consent is logged locally with a UTC timestamp.\n", ""),
+    )
+    con.print()
+    con.print(
+        Panel(
+            body,
+            title="[bold]DM consent[/]",
+            box=box.ROUNDED,
+            border_style="ap.warn",
+            expand=False,
+        )
+    )
+    return Confirm.ask("[ap.accent.bold]I understand and consent[/]", default=False)
+
+
+def _ask_dm_partners(con, current: list[str]) -> list[str]:
+    """Free-text comma-separated partner allowlist (mirrors user_aliases).
+
+    Seeds the prompt with the current list; normalizes (strip, drop blanks).
+    """
+    current_str = ", ".join(current)
+    if current:
+        con.print(f"  [ap.dim]Current: {current_str}[/]")
+    con.print(
+        "  [ap.dim]@username, email, or user_id — comma-separated."
+        " ⚠ typos silently match nobody — confirm after the first corp run.[/]"
+    )
+    raw = Prompt.ask(
+        "[ap.accent.bold]  DM partners[/]",
+        default=current_str,
+        console=con,
+    )
+    return normalize_partners(raw)
+
+
+def _dm_step(existing_cfg: dict) -> DMResult:
+    """Direct-messages (ingest) sub-section of the Mattermost step.
+
+    Picks the DM scope on the privacy ladder, defaulting to the CURRENT value
+    so a re-run keeps it on Enter (never silently widens). Consent scopes
+    ('selected'/'all') gate behind the consent panel (+ an extra ALL confirm);
+    a declined consent falls the scope back to 'off'.
+    """
+    mm_source = existing_cfg.get("mm_source", {}) or {}
+    current_scope = mm_source.get("dm_scope", "off")
+    if current_scope not in DM_SCOPES:
+        current_scope = "off"
+    current_allowlist = normalize_partners(mm_source.get("dm_allowlist", []) or [])
+
+    console.print()
+    console.print("[bold]Direct messages (ingest)[/]")
+    console.print("[dim]DMs carry colleagues' messages (third-party PII). Default is OFF.[/]")
+
+    default_index = DM_SCOPES.index(current_scope)
+    if sys.stdin.isatty():
+        scope = choose(
+            "DM ingest scope",
+            list(DM_SCOPE_LABELS),
+            default_index=default_index,
+            console=console,
+        )
+    else:
+        # Piped/scripted runs keep the line protocol stable (mirrors lang step).
+        scope = Prompt.ask(
+            "[ap.accent.bold]DM ingest scope[/]",
+            choices=list(DM_SCOPES),
+            default=current_scope,
+            console=console,
+        )
+
+    # off / own_posts_only — no third-party text, clear consent on the way down.
+    if scope in ("off", "own_posts_only"):
+        console.print(f"  [ap.ok]✓[/] DM scope: [bold]{_dm_scope_label(scope)}[/]")
+        return DMResult(scope=scope, allowlist=[])
+
+    # selected — consent panel, then collect the partner allowlist.
+    if scope == "selected":
+        if not _dm_consent_panel(console):
+            console.print("  [ap.warn]⚠[/] Consent declined — DMs stay OFF.")
+            return DMResult(scope="off", allowlist=[])
+        ack_at = now_iso()
+        partners = _ask_dm_partners(console, current_allowlist)
+        if not partners:
+            console.print(
+                "  [ap.warn]⚠[/] Empty list → DMs effectively OFF (scope kept 'selected')."
+            )
+        else:
+            console.print(
+                f"  [ap.ok]✓[/] DM scope: [bold]Selected[/] ({len(partners)} partner"
+                f"{'s' if len(partners) != 1 else ''})"
+            )
+        return DMResult(
+            scope="selected",
+            allowlist=partners,
+            consent_acknowledged=True,
+            consent_acknowledged_at=ack_at,
+        )
+
+    # all — consent panel + an explicit, default-No "ingest everything" confirm.
+    if not _dm_consent_panel(console):
+        console.print("  [ap.warn]⚠[/] Consent declined — DMs stay OFF.")
+        return DMResult(scope="off", allowlist=[])
+    if not Confirm.ask(
+        "[ap.accent.bold]Ingest ALL DMs? This reads every conversation.[/]", default=False
+    ):
+        console.print("  [ap.warn]⚠[/] Not confirmed — DMs stay OFF.")
+        return DMResult(scope="off", allowlist=[])
+    console.print("  [ap.ok]✓[/] DM scope: [bold]All DMs[/] [ap.warn](every conversation)[/]")
+    return DMResult(
+        scope="all",
+        allowlist=[],
+        consent_acknowledged=True,
+        consent_acknowledged_at=now_iso(),
+    )
 
 
 def _print_detection(det: DetectedEnv) -> None:
@@ -815,6 +1002,10 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             " may be visible to the channel audience."
         )
 
+    # Direct messages (ingest) — privacy ladder, consent-gated (part of the
+    # Mattermost step; TOTAL_STEPS stays 7).
+    dm = _dm_step(existing_cfg)
+
     # ── 7. Report language ──
     _step(7, "Report language", "Digest output language; everything else stays English.")
     default_lang = existing_cfg.get("report", {}).get("language") or "en"
@@ -855,7 +1046,14 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     console.print()
     console.print(
         Panel(
-            _summary_table(env_values, verify_ca, report_language, derived["user_login"]),
+            _summary_table(
+                env_values,
+                verify_ca,
+                report_language,
+                derived["user_login"],
+                dm_scope=dm.scope,
+                dm_allowlist=dm.allowlist,
+            ),
             title="[bold]Review the values[/]",
             box=box.ROUNDED,
             border_style="ap.accent",
@@ -883,6 +1081,10 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             verify_ca=verify_ca,
             report_language=report_language,
             acknowledged_private=acknowledged_private,
+            dm_scope=dm.scope,
+            dm_allowlist=dm.allowlist,
+            dm_consent_acknowledged=dm.consent_acknowledged,
+            dm_consent_acknowledged_at=dm.consent_acknowledged_at,
         )
     console.print(f"  [ap.ok]✓[/] {env_path}  [dim](chmod 600)[/]")
     console.print(f"  [ap.ok]✓[/] {config_path}")

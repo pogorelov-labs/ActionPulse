@@ -25,11 +25,24 @@ from typing import Callable, Optional
 from rich.console import Console
 
 from digest_core import paths
+from digest_core.config import PROJECT_ROOT
+from digest_core.dm_consent import (
+    DM_SCOPE_LABELS,
+    DM_SCOPES,
+    dm_consent_is_stale,
+    dm_consent_required,
+    normalize_partners,
+    now_iso,
+    update_mm_source_dm,
+)
 from digest_core.ui.console import get_console
 from digest_core.ui.select import choose
 from digest_core.ui.theme import gradient_text
 
 ENV_PATH = Path.home() / ".config" / "actionpulse" / "env"
+# Same config.yaml the setup wizard writes (configs/config.yaml). The DM-scope
+# screen does an in-place read-modify-write on the mm_source.dm_* keys.
+CONFIG_USER_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 # U5: run state lives in the data home; the pre-U5 location stays readable so
 # an upgrade does not forget the user's "Repeat last run" params.
 LAST_RUN_PATH = paths.state_dir(create=False) / "last_run.json"
@@ -260,6 +273,268 @@ def _maintenance(console: Console) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Mattermost DMs (ingest) — scope · partners (first in-menu config editor)
+# ---------------------------------------------------------------------------
+
+_DM_SCOPE_LABEL = {
+    "off": "Off",
+    "own_posts_only": "My posts only",
+    "selected": "Selected",
+    "all": "All DMs",
+}
+
+
+def _read_dm_state(path: Path = CONFIG_USER_PATH) -> tuple[str, list[str], bool, Optional[str]]:
+    """Read (scope, allowlist, acknowledged, acknowledged_at) from config.yaml.
+
+    Defensive: a missing/empty/garbage file or an unknown scope reads as the
+    HARD-OFF default. Never raises (the menu must stay alive).
+    """
+    import yaml
+
+    scope, allowlist, ack, ack_at = "off", [], False, None
+    if path.exists():
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            mm = doc.get("mm_source", {}) or {}
+            raw_scope = mm.get("dm_scope", "off")
+            scope = raw_scope if raw_scope in DM_SCOPES else "off"
+            allowlist = normalize_partners(mm.get("dm_allowlist", []) or [])
+            ack = bool(mm.get("dm_consent_acknowledged", False))
+            ack_at = mm.get("dm_consent_acknowledged_at")
+            if ack_at is not None and not isinstance(ack_at, str):
+                ack_at = str(ack_at)
+        except Exception:  # noqa: BLE001 — a broken config must not crash the menu
+            return "off", [], False, None
+    return scope, allowlist, ack, ack_at
+
+
+def _dm_consent_status(scope: str, ack: bool, ack_at: Optional[str]) -> str:
+    """Header consent string; renders defensively (never crashes on a bad date).
+
+    'off'/'own_posts_only' need no consent → '—'. A consent scope shows the ack
+    date when parseable, '(unknown)' when missing/garbage, and flags staleness.
+    """
+    if scope not in ("selected", "all"):
+        return "consent —"
+    if not ack:
+        return "[ap.warn]consent ✗ (required)[/]"
+    date_str = "(unknown)"
+    if isinstance(ack_at, str) and ack_at.strip():
+        # Show just the calendar day; tolerate any ISO-ish prefix.
+        date_str = ack_at.strip()[:10]
+    stale = dm_consent_is_stale(ack_at, datetime.now(timezone.utc))
+    flag = " [ap.warn](stale — re-affirm)[/]" if stale else ""
+    return f"consent ✓ {date_str}{flag}"
+
+
+def _dm_header(
+    console: Console, scope: str, allowlist: list[str], ack: bool, ack_at: Optional[str]
+):
+    label = _DM_SCOPE_LABEL.get(scope, scope)
+    if scope == "selected":
+        label = f"{label} ({len(allowlist)} partner{'s' if len(allowlist) != 1 else ''})"
+    console.print()
+    console.print(
+        f"  [ap.dim]Scope:[/] [ap.em]{label}[/]  [ap.dim]·[/]  "
+        f"{_dm_consent_status(scope, ack, ack_at)}"
+    )
+
+
+def _dm_consent_panel(console: Console) -> bool:
+    """Consent panel + default-No acknowledgement (shared shape with the wizard)."""
+    from rich import box
+    from rich.panel import Panel
+    from rich.prompt import Confirm
+    from rich.text import Text
+
+    body = Text.assemble(
+        ("⚠ This sends colleagues' DM text to the LLM.\n\n", "ap.warn"),
+        ("• Counterparty (their) messages are third-party PII.\n", ""),
+        ("• Their text is quote-capped to ~280 chars; your own posts are not.\n", ""),
+        ("• You are responsible for this under your employer-device policy.\n", ""),
+        ("• Your consent is logged locally with a UTC timestamp.\n", ""),
+    )
+    console.print()
+    console.print(
+        Panel(
+            body,
+            title="[bold]DM consent[/]",
+            box=box.ROUNDED,
+            border_style="ap.warn",
+            expand=False,
+        )
+    )
+    return Confirm.ask("[ap.accent.bold]I understand and consent[/]", default=False)
+
+
+def _dm_change_scope(
+    console: Console, current_scope: str, allowlist: list[str], ack: bool, ack_at: Optional[str]
+) -> None:
+    """Run the ladder picker and persist a (loadable) scope change.
+
+    off/own_posts_only save immediately (consent cleared on a downgrade to a
+    no-PII scope). selected/all gate on dm_consent_required(...): when consent
+    is required we run the panel (+ the default-No ALL confirm for 'all'); on
+    decline we revert to the prior scope (never persisting a consent scope
+    without its ack — that would be unloadable).
+    """
+    from rich.prompt import Confirm, Prompt
+
+    if sys.stdin.isatty():
+        new_scope = choose(
+            "DM ingest scope",
+            list(DM_SCOPE_LABELS),
+            default_index=DM_SCOPES.index(current_scope),
+            console=console,
+            cancel_value=current_scope,
+        )
+    else:
+        new_scope = Prompt.ask(
+            "[ap.accent.bold]DM ingest scope[/]",
+            choices=list(DM_SCOPES),
+            default=current_scope,
+            console=console,
+        )
+
+    # No-PII scopes: persist immediately, clearing consent on the way down.
+    if new_scope in ("off", "own_posts_only"):
+        update_mm_source_dm(
+            CONFIG_USER_PATH,
+            dm_scope=new_scope,
+            dm_consent_acknowledged=False,
+            dm_consent_acknowledged_at=None,
+        )
+        console.print(f"  [ap.ok]✓[/] DM scope: [bold]{_DM_SCOPE_LABEL[new_scope]}[/]")
+        return
+
+    # Consent scopes: decide whether the boundary change must re-consent.
+    needs = dm_consent_required(current_scope, new_scope, ack, ack_at, datetime.now(timezone.utc))
+    new_ack, new_ack_at = ack, ack_at
+    if needs:
+        if not _dm_consent_panel(console):
+            console.print(f"  [ap.warn]⚠[/] Consent declined — kept [bold]{current_scope}[/].")
+            return
+        new_ack, new_ack_at = True, now_iso()
+
+    if new_scope == "all":
+        # Independent, default-No gate every time 'all' is (re-)selected.
+        if not Confirm.ask(
+            "[ap.accent.bold]Ingest ALL DMs? This reads every conversation.[/]", default=False
+        ):
+            console.print(f"  [ap.warn]⚠[/] Not confirmed — kept [bold]{current_scope}[/].")
+            return
+
+    update_mm_source_dm(
+        CONFIG_USER_PATH,
+        dm_scope=new_scope,
+        dm_consent_acknowledged=bool(new_ack),
+        dm_consent_acknowledged_at=new_ack_at,
+    )
+    if new_scope == "selected" and not allowlist:
+        console.print(
+            "  [ap.ok]✓[/] DM scope: [bold]Selected[/] "
+            "[ap.warn](0 partners → effectively OFF; add partners next)[/]"
+        )
+    else:
+        console.print(f"  [ap.ok]✓[/] DM scope: [bold]{_DM_SCOPE_LABEL[new_scope]}[/]")
+
+
+def _dm_edit_partners(console: Console, allowlist: list[str]) -> None:
+    """Add/remove sub-loop for the 'selected' allowlist. Never fires consent."""
+    from rich.prompt import Prompt
+
+    partners = list(allowlist)
+    while True:
+        current = ", ".join(partners) if partners else "[ap.dim](empty → effectively OFF)[/]"
+        console.print()
+        console.print(f"  [ap.dim]Partners:[/] {current}")
+        action = choose(
+            "Edit DM partners",
+            [
+                ("add", "Add a partner (@username · email · user_id)"),
+                ("remove", "Remove a partner"),
+                ("back", "Back"),
+            ],
+            default_index=2,
+            console=console,
+            cancel_value="back",
+        )
+        if action == "back":
+            return
+        if action == "add":
+            raw = Prompt.ask("[ap.accent.bold]  Partner identity[/]", default="", console=console)
+            added = normalize_partners(raw)
+            partners.extend(added)
+            update_mm_source_dm(CONFIG_USER_PATH, dm_allowlist=partners)
+            if added:
+                console.print(f"  [ap.ok]✓[/] Added {len(added)} — {len(partners)} total")
+        else:  # remove
+            if not partners:
+                console.print("  [ap.dim]Nothing to remove.[/]")
+                continue
+            options = [(p, p) for p in partners] + [("__cancel__", "Cancel")]
+            picked = choose(
+                "Remove which partner?",
+                options,
+                default_index=len(options) - 1,
+                console=console,
+                cancel_value="__cancel__",
+            )
+            if picked == "__cancel__":
+                continue
+            partners = [p for p in partners if p != picked]
+            update_mm_source_dm(CONFIG_USER_PATH, dm_allowlist=partners)
+            console.print(f"  [ap.ok]✓[/] Removed [bold]{picked}[/] — {len(partners)} total")
+
+
+def _mm_dm_menu(console: Console) -> None:
+    """Mattermost DMs (ingest) screen: change scope · edit partners.
+
+    The easy on/off (and partner edits) without re-running the full wizard.
+    Writes the same configs/config.yaml the wizard writes, touching only the
+    mm_source.dm_* keys (read-modify-write). The write helper refuses to persist
+    a consent scope without its ack, so this screen can never leave an
+    unloadable config.
+    """
+    while True:
+        scope, allowlist, ack, ack_at = _read_dm_state()
+        _dm_header(console, scope, allowlist, ack, ack_at)
+
+        partner_label = (
+            f"Edit partners ({len(allowlist)})"
+            if scope == "selected"
+            else "Edit partners — (only under 'Selected')"
+        )
+        action = choose(
+            "Mattermost DMs",
+            [
+                ("scope", "Change scope (off · my posts · selected · all)"),
+                ("partners", partner_label),
+                ("back", "Back"),
+            ],
+            default_index=2,
+            console=console,
+            cancel_value="back",
+        )
+        if action == "back":
+            return
+        try:
+            if action == "scope":
+                _dm_change_scope(console, scope, allowlist, ack, ack_at)
+            elif action == "partners":
+                if scope != "selected":
+                    console.print(
+                        "  [ap.dim]Partners apply only under the 'Selected' scope —"
+                        " change scope to 'Selected' first.[/]"
+                    )
+                    continue
+                _dm_edit_partners(console, allowlist)
+        except Exception as exc:  # noqa: BLE001 — keep the screen alive on write errors
+            console.print(f"  [ap.err]✗[/] {exc}")
+
+
 def _banner(console: Console) -> None:
     title = gradient_text("⌁ ActionPulse")
     console.print()
@@ -296,6 +571,7 @@ def run_menu(
         ("read", "Read digest — topics · authors · quotes"),
         ("dry", "Dry run — ingest only, no LLM"),
         ("diagnose", "Diagnose — check environment & config"),
+        ("mm_dm", "Mattermost DMs — scope · partners"),
         ("maintenance", "Maintenance — disk usage · cleanup · logging"),
         ("settings", "Settings — run the setup wizard"),
         ("config", "Show current config (masked)"),
@@ -346,6 +622,9 @@ def run_menu(
                 on_run(True, None)
             elif choice == "diagnose":
                 on_diagnose()
+            elif choice == "mm_dm":
+                _mm_dm_menu(out)
+                continue  # the screen has its own loop; no Enter gate needed
             elif choice == "maintenance":
                 _maintenance(out)
                 continue  # the screen has its own loop; no Enter gate needed

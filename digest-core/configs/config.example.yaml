@@ -71,6 +71,35 @@ deliver:
     # run emits one privacy-unconfirmed warning before delivery — it never blocks.
     acknowledged_private: false
 
+# Mattermost INGEST (source adapter) — the READ side, distinct from deliver
+# above. Reads posts via the authenticated v4 REST API with a personal access
+# token (PAT in MM_PAT, ENV-only). Corp-network-only. OFF by default.
+# Env overrides use the MM_SOURCE_ prefix (e.g. MM_SOURCE_DM_SCOPE).
+mm_source:
+  enabled: false             # master switch for MM ingest (mentions/channels/DMs)
+  # base_url: "https://mm.corp"   # or set MM_BASE_URL; token is MM_PAT (ENV-only)
+  # @-mentions of the owner are ingested from EVERY channel when enabled.
+  # channel_allowlist: ingest these channels IN FULL (general posts as context),
+  # matched by id / name / display_name. Empty = mentions-only.
+  channel_allowlist: []
+  max_posts_per_channel: 200  # cap on general posts per allowlisted channel
+  # --- Direct messages (P3, privacy ladder — design §2.2/§6) ---------------
+  # DMs carry colleagues' messages (third-party PII). HARD-OFF by default.
+  #   off            — no DMs (default)
+  #   own_posts_only — only YOUR own DM messages; colleagues' text never read
+  #                    (no third-party PII → no consent needed)
+  #   selected       — full thread, but only with people in dm_allowlist
+  #   all            — every DM + group-DM (discouraged)
+  # 'selected'/'all' REQUIRE dm_consent_acknowledged=true (set by the wizard/menu,
+  # NOT by hand — a hand-set flag is a footgun, not informed consent). The config
+  # REFUSES to load 'selected'/'all' without it. Group-DMs (type 'G') follow this
+  # same scope; under 'selected' a group-DM is kept iff ANY member is allowlisted.
+  dm_scope: "off"
+  dm_allowlist: []           # counterparty @username / email / user_id (NOT channel name)
+  dm_max_quote_chars: 280    # verbatim cap on COUNTERPARTY text (your own posts uncapped)
+  dm_consent_acknowledged: false
+  # dm_consent_acknowledged_at: null   # ISO-8601 UTC, set with the ack
+
 # Retention: time-prune on-disk artifacts at the end of a real run. The digest
 # pair carries verbatim subjects/senders/quotes (PDn); trace meta is payload-
 # free but run-identifying. Default 7 days; keep_days < 1 is a no-op safety rail.
