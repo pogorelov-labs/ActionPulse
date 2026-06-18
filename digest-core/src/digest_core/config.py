@@ -1106,6 +1106,94 @@ class RetentionConfig(BaseModel):
         super().__init__(**kwargs)
 
 
+class StoreConfig(BaseModel):
+    """Persistent encrypted message store (opt-in; default OFF).
+
+    A SQLCipher-encrypted SQLite archive of fetched messages for ALL sources, with
+    FTS5 keyword + brute-force-cosine semantic hybrid search. Its 30-day TTL is a
+    SEPARATE retention domain from the plaintext ``var/out`` artifacts
+    (``retention.keep_days``, 7d) and the hash-only dedup ledger
+    (``memory.dedup_ttl_days``, 7d): the longer window is acceptable because the
+    store is encrypted at rest. The encryption key is ENV-only (never YAML),
+    mirroring ``EWS_PASSWORD`` / ``MM_PAT``.
+
+    Env overrides: ``DIGEST_STORE_ENABLED`` / ``DIGEST_STORE_TTL_DAYS`` /
+    ``DIGEST_STORE_EMBED_ON_INGEST`` (and any field via the generic ``STORE`` prefix).
+    """
+
+    enabled: bool = Field(
+        default=False, description="Persist fetched messages to the encrypted store."
+    )
+    db_path: Optional[str] = Field(
+        default=None, description="DB file path (default: <data home>/var/store/messages.db)."
+    )
+    key_env: str = Field(
+        default="DIGEST_STORE_KEY", description="ENV var holding the SQLCipher key (ENV only)."
+    )
+    ttl_days: int = Field(
+        default=30, ge=1, description="Retention window; rows older than now-ttl_days are swept."
+    )
+    embed_on_ingest: bool = Field(
+        default=False,
+        description=(
+            "Embed new chunks during the run (a fleet /v1/embeddings call). Default"
+            " OFF keeps --dry-run/--replay offline; fill the backlog with `store reembed`."
+        ),
+    )
+    embedding_model: str = Field(
+        default="bge-m3", description="Fleet embeddings model for semantic-search vectors."
+    )
+    embedding_backend: str = Field(
+        default="fleet",
+        description="Embedding source: 'fleet' (gateway). Reserved for future local backends.",
+    )
+    search_default_mode: str = Field(
+        default="hybrid", description="Default search ranking: keyword | semantic | hybrid."
+    )
+    search_limit: int = Field(default=20, ge=1, description="Default max search results.")
+    vector_dtype: str = Field(
+        default="float32",
+        description="Stored embedding dtype: float32 | float16 (halves RAM/disk).",
+    )
+    bruteforce_max_rows: int = Field(
+        default=100_000,
+        ge=1,
+        description="Soft cap above which brute-force cosine streams the matrix in blocks.",
+    )
+
+    def resolved_db_path(self) -> str:
+        """Effective DB path: explicit config wins, else ``<data home>/var/store``."""
+        if self.db_path:
+            return self.db_path
+        from digest_core.paths import data_home
+
+        return str(data_home() / "var" / "store" / "messages.db")
+
+    def get_key(self) -> str:
+        """The SQLCipher key from the ENV (never YAML). Raises if unset."""
+        key = os.getenv(self.key_env)
+        if not key:
+            raise ValueError(
+                f"Environment variable {self.key_env} not set (required when store.enabled). "
+                "Re-run `actionpulse setup` to generate it."
+            )
+        return key
+
+    def __init__(self, **kwargs):
+        # ENV overrides apply even without a YAML `store:` section (operator contract).
+        for name, env in (
+            ("enabled", "DIGEST_STORE_ENABLED"),
+            ("embed_on_ingest", "DIGEST_STORE_EMBED_ON_INGEST"),
+        ):
+            value = os.getenv(env)
+            if name not in kwargs and value is not None and value.strip() != "":
+                kwargs[name] = value.strip().lower() in ("1", "true", "yes", "on")
+        ttl = os.getenv("DIGEST_STORE_TTL_DAYS")
+        if "ttl_days" not in kwargs and ttl and ttl.strip().isdigit():
+            kwargs["ttl_days"] = int(ttl)
+        super().__init__(**kwargs)
+
+
 class ReportConfig(BaseModel):
     """Digest report rendering options (L1, TERMINAL_DESIGN_ROADMAP)."""
 
@@ -1131,6 +1219,7 @@ class Config(BaseSettings):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
+    store: StoreConfig = Field(default_factory=StoreConfig)
     selection_buckets: SelectionBucketsConfig = Field(default_factory=SelectionBucketsConfig)
     selection_weights: SelectionWeightsConfig = Field(default_factory=SelectionWeightsConfig)
     context_budget: ContextBudgetConfig = Field(default_factory=ContextBudgetConfig)
@@ -1263,6 +1352,8 @@ class Config(BaseSettings):
             self._merge_model(self.retention, yaml_config["retention"], env_prefix="RETENTION")
         if "report" in yaml_config:
             self._merge_model(self.report, yaml_config["report"], env_prefix="REPORT")
+        if "store" in yaml_config:
+            self._merge_model(self.store, yaml_config["store"], env_prefix="STORE")
         if "selection_buckets" in yaml_config:
             self._merge_model(
                 self.selection_buckets,
@@ -1386,6 +1477,18 @@ class Config(BaseSettings):
             if raw is None:
                 continue
             setattr(model, field_name, _coerce_env_value(field_info.annotation, raw))
+
+    def resolved_state_dir(self) -> "Path":
+        """The run's state directory (single source of truth for all sources).
+
+        Derived from the EWS sync-state path so the ``--state`` override (which
+        run.py routes through ``ews.sync_state_path``) is honored for every
+        source's watermark, the dedup ledger, and ``last_run.json``. Mirrors the
+        idiom already used for the dedup ledger in run.py.
+        """
+        from pathlib import Path
+
+        return Path(self.ews.resolved_sync_state_path()).expanduser().parent
 
     def get_ews_password(self) -> str:
         """Get EWS password from environment.

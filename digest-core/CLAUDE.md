@@ -62,6 +62,8 @@ Full contracts in `docs/ARCHITECTURE.md §4`.
 | `prompts/extract_actions.v1.txt` | RU extraction prompt (plain text, not Jinja2) |
 | `prompts/extract_actions.en.v1.txt` | EN extraction prompt |
 | `src/digest_core/deliver/mattermost.py` | Mattermost incoming webhook delivery |
+| `src/digest_core/ingest/watermark.py` | Shared per-source incremental high-water mark (EWS + MM) |
+| `src/digest_core/store/` | Opt-in encrypted message store: schema/db/ingest/search (see "Message Store") |
 | `src/digest_core/diagnostics.py` | Diagnostic bundle export (`export-diagnostics`) |
 | `configs/config.example.yaml` | Reference config |
 | `docs/ARCHITECTURE.md` | **Source of truth** — contracts & roadmap (§13 may lag vs code; verify in tests) |
@@ -138,6 +140,11 @@ DIGEST_CONFIG_PATH=...    # Custom config YAML path
 ACTIONPULSE_CA_CERT_NAME=...  # macOS setup helper: Keychain certificate alias for auto-export
 ACTIONPULSE_HOME=...       # Data home override (default: the checkout root; everything regenerable in <home>/var)
 # Output/state default to <data home>/var/{out,state} (U5); CLI flags --out and --state override
+
+# Encrypted message store (opt-in; default OFF — needs the `store` extra)
+DIGEST_STORE_KEY=...       # SQLCipher key (secret; ENV only). `actionpulse store init` generates it.
+DIGEST_STORE_ENABLED=1     # Turn the store on (also store.enabled in config.yaml)
+DIGEST_STORE_TTL_DAYS=30   # Store retention window (separate from DIGEST_RETENTION_KEEP_DAYS=7)
 ```
 
 ## Offline Development (outside corp network)
@@ -154,6 +161,35 @@ python -m digest_core.cli run --replay-ingest /tmp/ews-snapshot.json
 # Diagnostics: export and send via MM
 python -m digest_core.cli export-diagnostics --trace-id <id> --send-mm
 ```
+
+## Message Store (opt-in, encrypted)
+
+Persistent SQLCipher-encrypted SQLite archive of fetched messages for ALL sources
+(`digest_core/store/`), with FTS5 keyword + brute-force-cosine semantic + RRF
+hybrid search. Default OFF. Install the extra, enable, then it auto-populates after
+each run's NORMALIZE stage (non-fatal side-channel — a store error never fails the digest).
+
+```bash
+uv sync --extra store            # Linux: sqlcipher3-binary wheel; macOS: builds
+                                 # sqlcipher3 (needs `brew install sqlcipher openssl@3`)
+actionpulse store init           # generate DIGEST_STORE_KEY into ~/.config/actionpulse/env
+# set store.enabled: true (or DIGEST_STORE_ENABLED=1), then run a digest
+actionpulse store stats          # rows by source, chunks/embeddings, age, db size
+actionpulse store reembed        # fill the embedding backlog (corp network)
+actionpulse search "budget" --hybrid --since 2026-06-01 --json
+actionpulse store purge --ttl-days 30 --yes   # apply TTL now; `store drop` deletes the DB
+```
+
+- **Retention domains (three intentional numbers):** plaintext `var/out` artifacts
+  = 7d (`retention.keep_days`), hash-only dedup ledger = 7d (`memory.dedup_ttl_days`),
+  **encrypted store = 30d** (`store.ttl_days`). The store's longer window is OK
+  *because* it's encrypted at rest; artifacts are plaintext PD, so they stay short.
+- **DM bodies are never stored** (guardrail #9): mm `D`/`G` rows are kept but their
+  body is redacted (`[DM content redacted at rest]`) and not chunked/embedded/searchable.
+- **Key loss = data loss.** A lost/rotated `DIGEST_STORE_KEY` makes the DB unreadable;
+  `store drop` is the only recovery.
+- **Replay has no raw body** — `--replay-ingest` snapshots are already normalized, so
+  replayed rows store `body_raw == body_normalized`.
 
 ## Active Tech Debt
 

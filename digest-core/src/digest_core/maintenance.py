@@ -84,6 +84,12 @@ def collect_usage() -> List[UsageEntry]:
         UsageEntry("digests", "Digests", paths.out_dir(create=False), *(0, 0)),
         UsageEntry("logs", "Logs", paths.logs_dir(create=False), *(0, 0)),
         UsageEntry("state", "State (never auto-cleaned)", paths.state_dir(create=False), *(0, 0)),
+        UsageEntry(
+            "store",
+            "Message store (encrypted; never auto-cleaned)",
+            paths.store_dir(create=False),
+            *(0, 0),
+        ),
     ]
     for legacy in LEGACY_LOG_DIRS:
         if legacy.exists():

@@ -1,4 +1,4 @@
-.PHONY: setup test lint format run docker docker-run package bundle ci smoke diagnose env-check clean
+.PHONY: setup test test-store lint format run docker docker-run package bundle ci smoke diagnose env-check clean
 
 setup:
 	@echo "Installing dependencies with uv..."
@@ -14,6 +14,12 @@ setup:
 
 test:
 	PYTHONPATH=src uv run pytest tests/ -v
+
+# Run the suite WITH the opt-in encrypted-store extra so the driver-guarded store
+# tests actually execute (default `make test` skips them). macOS builds sqlcipher3
+# from source — needs `brew install sqlcipher openssl@3`.
+test-store:
+	PYTHONPATH=src uv run --extra store pytest tests/ -q
 
 lint:
 	uv run ruff check src/ tests/

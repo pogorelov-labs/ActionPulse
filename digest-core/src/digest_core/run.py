@@ -133,6 +133,10 @@ class RunContext:
     #: existing live path and tests that build a RunContext without specifying
     #: sources are unchanged. ``_stage_ingest`` builds the adapter list from this.
     sources: List[str] = field(default_factory=lambda: ["ews"])
+    #: Incremental load: True for a normal "today" run (per-source watermarks
+    #: narrow each source's fetch to "since last seen"); False for an explicit
+    #: back-dated run, so a back-fill fetches the full requested window.
+    incremental: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +256,10 @@ def _init_context(
     start_health_server(port=9109, llm_config=config.llm)
 
     digest_date = _resolve_digest_date(from_date, config.time.user_timezone)
+    # Incremental load only for the canonical daily "today" run; an explicit
+    # back-dated request (a date or "yesterday") fetches the full requested
+    # window so a back-fill is never truncated by a later run's watermark.
+    incremental = (from_date or "today").strip().lower() == "today"
     output_dir = Path(out).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / f"digest-{digest_date}.json"
@@ -327,6 +335,7 @@ def _init_context(
         rate_broker=rate_broker,
         log_file=log_file,
         run_meta=run_meta,
+        incremental=incremental,
     )
 
 
@@ -343,6 +352,8 @@ def _build_source_adapters(
     ingest: EWSIngest,
     config: Config | None = None,
     sink: ProgressSink | None = None,
+    *,
+    incremental: bool = True,
 ) -> tuple[List[SourceAdapter], List[SourceAdapter]]:
     """Build the live adapter list from ``--sources``, split by strictness.
 
@@ -373,7 +384,7 @@ def _build_source_adapters(
                 seen_ews = True
         elif key in _MM_SOURCE_NAMES:
             if not seen_mm:
-                lenient_adapters.append(_build_mm_adapter(config, sink))
+                lenient_adapters.append(_build_mm_adapter(config, sink, incremental=incremental))
                 seen_mm = True
         else:
             # An unrecognized source must fail loudly so a typo or a not-yet-built
@@ -385,7 +396,9 @@ def _build_source_adapters(
     return strict_adapters, lenient_adapters
 
 
-def _build_mm_adapter(config: Config | None, sink: ProgressSink | None = None) -> SourceAdapter:
+def _build_mm_adapter(
+    config: Config | None, sink: ProgressSink | None = None, *, incremental: bool = True
+) -> SourceAdapter:
     """Construct the Mattermost mentions adapter, or raise an actionable error.
 
     Selecting ``--sources mm`` is an explicit operator request; if the source is
@@ -415,9 +428,36 @@ def _build_mm_adapter(config: Config | None, sink: ProgressSink | None = None) -
             f"Mattermost source selected (--sources mm) but the PAT is not set: {exc}. "
             f"Export ${mm_cfg.token_env} (the personal access token; ENV only, never YAML)."
         ) from exc
+    # Per-source watermark lives under the run's state dir (honors --state),
+    # independent of the optional message store so incremental load works store-off.
+    state_dir = config.resolved_state_dir()
     if sink is not None:
-        return MattermostSourceAdapter(mm_cfg, config.time, sink=sink)
-    return MattermostSourceAdapter(mm_cfg, config.time)
+        return MattermostSourceAdapter(
+            mm_cfg, config.time, sink=sink, incremental=incremental, state_dir=state_dir
+        )
+    return MattermostSourceAdapter(
+        mm_cfg, config.time, incremental=incremental, state_dir=state_dir
+    )
+
+
+def _dedup_messages(messages: List[NormalizedMessage]) -> List[NormalizedMessage]:
+    """Drop duplicate ``(source, msg_id)`` messages, keeping first occurrence.
+
+    BR §0 requires "дедуп" for ALL sources. This is a cheap, pipeline-level safety
+    net that holds even when the optional message store is off: it collapses the
+    overlap-window re-reads introduced by the per-source watermark and a message
+    that appears in two EWS folders. Duplicate messages share an identical
+    ``msg_id`` within a source, so keeping the first is loss-free.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: List[NormalizedMessage] = []
+    for m in messages:
+        key = (getattr(m, "source", "email") or "email", m.msg_id or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(m)
+    return out
 
 
 def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
@@ -425,8 +465,9 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
 
     Replay mode returns already-normalized messages.
     Live mode fetches from EWS then normalizes.
-    Also handles --dump-ingest snapshot writing.
+    Also handles --dump-ingest snapshot writing and the opt-in store persist.
     """
+    raw_by_id: Dict[str, str] = {}
     if ctx.replay_ingest:
         replay_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "ingest")
@@ -441,7 +482,11 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         ingest_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "ingest")
         ingest = EWSIngest(
-            ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics, sink=ctx.sink
+            ctx.config.ews,
+            time_config=ctx.config.time,
+            metrics=ctx.metrics,
+            sink=ctx.sink,
+            incremental=ctx.incremental,
         )
         # Route the live fetch through the multi-source seam (PR12b), now driven by
         # ``--sources`` (P1a). The adapter list is built from ``ctx.sources``; an
@@ -455,7 +500,7 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         # only EWS selected (the default), this is exactly one
         # ``run_sources([EWSSourceAdapter], strict=True)`` call — behavior-preserving.
         strict_adapters, lenient_adapters = _build_source_adapters(
-            ctx.sources, ingest, ctx.config, ctx.sink
+            ctx.sources, ingest, ctx.config, ctx.sink, incremental=ctx.incremental
         )
         envelopes = []
         if strict_adapters:
@@ -463,9 +508,17 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         if lenient_adapters:
             envelopes += run_sources(lenient_adapters, ctx.digest_date, strict=False)
         messages = messages_from_envelopes(envelopes)
+        # Pipeline-level dedup by (source, msg_id) — the BR's "дедуп for ALL
+        # sources" at the message level. Holds even with the optional store off:
+        # it collapses overlap-window re-reads and a message present in two EWS
+        # folders, before counting/normalizing.
+        pre_dedup = len(messages)
+        messages = _dedup_messages(messages)
         ctx.metrics.record_emails_total(len(messages), "fetched")
         fetch_stats = dict(getattr(ingest, "last_fetch_stats", {}) or {})
         ingest_counts: Dict[str, Any] = {"messages": len(messages)}
+        if pre_dedup != len(messages):
+            ingest_counts["duplicates"] = pre_dedup - len(messages)
         if fetch_stats.get("retries"):
             ingest_counts["retries"] = fetch_stats["retries"]
         # A skipped channel in a lenient source (MM) is a real degrade — surface
@@ -496,6 +549,10 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
 
         normalize_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "normalize")
+        # Capture the raw (pre-normalize) bodies before NORMALIZE rebuilds each
+        # message and overwrites text_body — the store keeps body_raw alongside
+        # the cleaned body. (Replay has no separate raw body; raw_by_id stays {}.)
+        raw_by_id = {m.msg_id: m.text_body for m in messages}
         messages = _normalize_messages(messages, ctx.config, sink=ctx.sink)
         _finish_stage(ctx, "normalize", normalize_start, messages=len(messages))
 
@@ -503,7 +560,82 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         snapshot_path = Path(ctx.dump_ingest).expanduser()
         _dump_ingest_snapshot(snapshot_path, messages, ctx.digest_date)
 
+    # Opt-in archive: persist what was fetched (live OR replay) to the encrypted
+    # store. Runs after NORMALIZE so both raw and normalized bodies are available;
+    # a no-op when store.enabled is false. Non-fatal — a store failure never breaks
+    # the digest (degrade-not-drop), so it is safe even on dry-run.
+    _persist_to_store(ctx, messages, raw_by_id)
+
     return messages
+
+
+def _build_store_embeddings(ctx: RunContext):
+    """EmbeddingsClient for the store's opt-in embed-on-ingest.
+
+    Same fleet/record-replay discipline as the threading tier
+    (``_build_thread_embeddings``): under ``--replay-llm`` it runs only when the
+    fleet sidecar exists. Model comes from ``store.embedding_model``.
+    """
+    from digest_core.llm.fleet import EmbeddingsClient
+
+    replay = None
+    if ctx.replay_llm:
+        sidecar = Path(f"{ctx.replay_llm}.fleet.json")
+        if not sidecar.exists():
+            logger.warning(
+                "Store embed-on-ingest disabled for this replay run: no fleet sidecar",
+                sidecar=str(sidecar),
+                trace_id=ctx.trace_id,
+            )
+            return None
+        replay = str(sidecar)
+    return EmbeddingsClient(
+        ctx.config.llm,
+        model=ctx.config.store.embedding_model,
+        rate_broker=ctx.rate_broker,
+        record=f"{ctx.record_llm}.fleet.json" if ctx.record_llm else None,
+        replay=replay,
+        stage="embeddings",
+        sink=ctx.sink,
+    )
+
+
+def _persist_to_store(
+    ctx: RunContext, messages: List[NormalizedMessage], raw_by_id: Dict[str, str]
+) -> None:
+    """Persist fetched messages to the opt-in encrypted store (non-fatal side-channel).
+
+    No-op unless ``config.store.enabled``. Any failure (missing driver, bad key,
+    IO) logs a warning and returns — it must never break the digest. Embedding is
+    gated by ``store.embed_on_ingest`` (default off) so the default path stays
+    offline on --dry-run/--replay. The store is NOT a pipeline stage, so it emits
+    no stage events; its outcome lands in ``run_meta['store']``.
+    """
+    cfg = getattr(ctx.config, "store", None)
+    if cfg is None or not cfg.enabled:
+        return
+    try:
+        from digest_core.store import MessageStore
+
+        with MessageStore.open(cfg) as store:
+            stats = store.upsert_messages(
+                messages, raw_by_id=raw_by_id, pipeline_version=PIPELINE_VERSION
+            )
+            swept = store.sweep_ttl()
+            store_meta: Dict[str, Any] = {"enabled": True, **stats, "ttl_swept": swept}
+            if cfg.embed_on_ingest:
+                backend = _build_store_embeddings(ctx)
+                if backend is not None:
+                    store_meta["embedded"] = store.embed_backlog(backend).get("embedded", 0)
+        ctx.run_meta["store"] = store_meta
+        logger.info(
+            "message_store_persisted",
+            trace_id=ctx.trace_id,
+            **{k: v for k, v in store_meta.items() if k != "enabled"},
+        )
+    except Exception as exc:  # degrade-not-drop: a store failure never fails the run
+        logger.warning("message_store_persist_failed", error=str(exc), trace_id=ctx.trace_id)
+        ctx.run_meta["store"] = {"enabled": True, "error": str(exc)}
 
 
 def _stage_threads(ctx: RunContext, messages: List[NormalizedMessage]) -> list:

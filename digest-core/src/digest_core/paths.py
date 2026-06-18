@@ -67,6 +67,11 @@ def state_dir(create: bool = True) -> Path:
     return _var("state", create)
 
 
+def store_dir(create: bool = True) -> Path:
+    """Default directory for the opt-in encrypted message store DB."""
+    return _var("store", create)
+
+
 #: Display labels for describe() keys — shared by `actionpulse paths` and the
 #: menu config view so the two surfaces never drift.
 LABELS: Dict[str, str] = {
@@ -74,6 +79,7 @@ LABELS: Dict[str, str] = {
     "digests": "Digests",
     "logs": "Logs",
     "state": "State",
+    "store": "Message store",
     "config": "Config",
     "secrets_env": "Secrets env",
     "launcher": "Launcher",
@@ -91,6 +97,7 @@ def describe() -> Dict[str, str]:
         "digests": str(out_dir(create=False)),
         "logs": str(logs_dir(create=False)),
         "state": str(state_dir(create=False)),
+        "store": str(store_dir(create=False)),
         "config": str(PROJECT_ROOT / "configs" / "config.yaml"),
         "secrets_env": str(Path.home() / ".config" / "actionpulse" / "env"),
         "launcher": str(Path.home() / ".local" / "bin" / "actionpulse"),

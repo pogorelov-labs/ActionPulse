@@ -24,6 +24,7 @@ import tenacity
 import ssl
 
 from digest_core.config import EWSConfig, TimeConfig
+from digest_core.ingest.watermark import SourceWatermark
 from digest_core.progress import NullSink, ProgressSink, emit
 from digest_core.utils.tz import ensure_aware, to_utc
 
@@ -216,6 +217,7 @@ class EWSIngest:
         time_config: TimeConfig = None,
         metrics=None,
         sink: Optional[ProgressSink] = None,
+        incremental: bool = True,
     ):
         self.config = config
         self.time_config = time_config or TimeConfig()
@@ -224,9 +226,20 @@ class EWSIngest:
         self._sink = sink or NullSink()
         self._fetch_retries = 0
         self._fetch_pages = 0
+        # Incremental load: when True (a normal "today" run) the per-source
+        # watermark narrows the fetch window to "since last seen". An explicit
+        # back-dated run sets this False so the full requested window is fetched
+        # (a back-fill must not be truncated by a watermark from a later run).
+        self.incremental = incremental
         # Stage-health read-out for run_meta (pages/retries/skipped messages).
         self.last_fetch_stats: dict = {}
         self._setup_ssl_context()
+
+    def _watermark(self) -> SourceWatermark:
+        """The EWS high-water mark, bound to the historical ``ews.syncstate`` file
+        (path honors ``ews.sync_state_path`` / the ``--state`` override)."""
+        resolved = self.config.resolved_sync_state_path()
+        return SourceWatermark(state_dir=Path(resolved).parent, source="ews", filename=resolved)
 
     def _setup_ssl_context(self):
         """Setup SSL context based on configuration.
@@ -562,25 +575,17 @@ class EWSIngest:
         # Calculate time window
         start_date, end_date = self._get_time_window(digest_date, time_config)
 
-        # Check SyncState/Watermark for incremental processing
-        watermark = self._load_sync_state()
-        if watermark:
-            try:
-                start_date_parsed = datetime.fromisoformat(watermark)
-                # Ensure timezone aware and convert to UTC
-                start_date = ensure_aware(
-                    start_date_parsed, self.time_config.mailbox_tz, metrics=self.metrics
-                )
-                start_date = to_utc(start_date)
+        # Incremental window: when enabled, narrow the fetch to "since the last
+        # seen message" (minus the overlap re-read window). A malformed/absent
+        # watermark degrades to the full window inside SourceWatermark. An explicit
+        # back-dated run (incremental=False) always fetches the full window.
+        if self.incremental:
+            incremental_start = self._watermark().effective_start(start_date)
+            if incremental_start != start_date:
+                start_date = incremental_start
                 logger.info(
                     "Using watermark for incremental window",
                     start=start_date.isoformat(),
-                )
-            except Exception as e:
-                logger.warning(
-                    "Invalid watermark format, doing full fetch",
-                    watermark=watermark,
-                    error=str(e),
                 )
         # Fetch with retry over the computed window — one pass per configured
         # folder (PR12b remainder: EWSConfig.folders, default ["Inbox"]). A
@@ -625,42 +630,24 @@ class EWSIngest:
             "skipped": skipped,
         }
 
-        # Update SyncState with latest timestamp
-        self._update_sync_state(end_date)
+        # Advance the watermark to the latest message actually seen (NOT the
+        # window end) so a message arriving after the last fetched item is not
+        # skipped on the next run. No-op on a quiet window (observed_max is None).
+        if self.incremental:
+            observed_max = max((m.datetime_received for m in normalized_messages), default=None)
+            self._watermark().advance(observed_max)
 
         return normalized_messages
 
+    # Note: Real EWS SyncFolderItems can be added later; MVP uses a timestamp
+    # watermark, now via the shared ``ingest.watermark.SourceWatermark`` engine.
+    # These two methods remain as back-compat shims over that engine.
+
     def _load_sync_state(self) -> Optional[str]:
-        """Load SyncState/watermark (ISO timestamp) from file."""
-        sync_state_path = Path(self.config.resolved_sync_state_path())
-        if not sync_state_path.exists():
-            logger.info("No SyncState file found, will perform full fetch")
-            return None
-
-        try:
-            with open(sync_state_path, "r") as f:
-                sync_state = f.read().strip()
-            logger.info("SyncState loaded", path=str(sync_state_path))
-            return sync_state
-        except Exception as e:
-            logger.warning("Failed to load SyncState", path=str(sync_state_path), error=str(e))
-            return None
-
-    # Note: Real EWS SyncFolderItems can be added later; MVP uses timestamp watermark
+        """The stored watermark as an ISO-8601 string (or ``None`` if absent)."""
+        dt = self._watermark().load()
+        return dt.isoformat() if dt else None
 
     def _update_sync_state(self, last_processed: datetime) -> None:
-        """Update timestamp watermark for incremental processing."""
-        sync_state_path = Path(self.config.resolved_sync_state_path())
-        sync_state_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            with open(sync_state_path, "w") as f:
-                f.write(last_processed.isoformat())
-
-            logger.debug(
-                "SyncState updated",
-                path=str(sync_state_path),
-                timestamp=last_processed.isoformat(),
-            )
-        except Exception as e:
-            logger.warning("Failed to update SyncState", path=str(sync_state_path), error=str(e))
+        """Persist ``last_processed`` as the watermark."""
+        self._watermark().advance(last_processed)
