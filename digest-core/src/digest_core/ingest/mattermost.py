@@ -263,6 +263,38 @@ def _mention_regex(handle: str) -> "re.Pattern[str]":
     return re.compile(r"(?<![\w@])@" + re.escape(handle) + r"\b", re.IGNORECASE)
 
 
+def _normalize_allowlist(entries: List[str]) -> frozenset[str]:
+    """Precompute a normalized allowlist set (case-insensitive, trimmed).
+
+    Each configured entry is whitespace-trimmed and lowercased once so the
+    per-channel membership test is a cheap set lookup (computed ONCE per run, not
+    per post). Channel ``id`` values are mixed-case server-side, but lowercasing
+    both sides keeps the match symmetric — an operator may copy an id, a
+    ``name``, or a ``display_name`` into the allowlist and it still matches. An
+    empty/blank entry is dropped so a stray "" never matches every channel.
+    Returns a ``frozenset`` to signal the set is IMMUTABLE — worker threads may
+    READ it freely (thread-safe) but never mutate shared state.
+    """
+    return frozenset(e.strip().lower() for e in entries if e and e.strip())
+
+
+def _channel_is_allowlisted(channel: dict, allowlist: frozenset[str]) -> bool:
+    """True iff the channel matches the normalized allowlist by id/name/display.
+
+    Matches the channel's ``id`` (exact), ``name``, or ``display_name``
+    (case-insensitive, whitespace-trimmed — the same normalization the allowlist
+    set was built with). With an empty allowlist this is always False, so the
+    adapter keeps mentions-only behavior (the channels phase is OFF by default).
+    """
+    if not allowlist:
+        return False
+    for key in ("id", "name", "display_name"):
+        value = channel.get(key)
+        if isinstance(value, str) and value.strip().lower() in allowlist:
+            return True
+    return False
+
+
 def _is_system_or_bot(post: dict) -> bool:
     """True for system posts (``type`` startswith "system_") and bot posts."""
     ptype = post.get("type") or ""
@@ -300,11 +332,17 @@ def _short_channel(name: str) -> str:
 
 
 class _ChannelResult:
-    """The kept posts + author ids from one channel's successful fetch."""
+    """The kept posts + author ids from one channel's successful fetch.
+
+    Each kept entry is ``(post, channel, is_mention)``: ``is_mention`` carries the
+    addressed-to-me signal downstream (a mention is addressed to the owner; a
+    general allowlisted-channel post is context). This is set by the worker and is
+    read-only thereafter.
+    """
 
     __slots__ = ("kept_posts", "author_ids")
 
-    def __init__(self, kept_posts: List[tuple[dict, dict]], author_ids: set[str]) -> None:
+    def __init__(self, kept_posts: List[tuple[dict, dict, bool]], author_ids: set[str]) -> None:
         self.kept_posts = kept_posts
         self.author_ids = author_ids
 
@@ -325,7 +363,7 @@ class _FetchOutcome:
     )
 
     def __init__(self) -> None:
-        self.kept_posts: List[tuple[dict, dict]] = []
+        self.kept_posts: List[tuple[dict, dict, bool]] = []
         self.author_ids: set[str] = set()
         self.channels_scanned = 0
         self.channels_skipped = 0
@@ -678,10 +716,14 @@ class MattermostSourceAdapter:
              iterate the newest-first ``order`` array, EARLY-STOP when
              ``create_at < start_ms``; paginate by page-length < per_page ⇒ done.
              Skip ``delete_at>0`` tombstones and system/bot posts.
-          d. Keep a post iff ``post.message`` @-mentions the owner (client-side
-             word-boundary parse).
+          d. Keep a post iff it @-mentions the owner (client-side word-boundary
+             parse) OR its channel is allowlisted (channels phase, design §2.3).
+             For an allowlisted channel, general (non-mention) posts are capped at
+             ``max_posts_per_channel`` (newest kept); mentions are never capped.
           e. Map each kept post → ``NormalizedMessage(source="mm")``; resolve
-             author usernames via the batch ``/users/ids`` read.
+             author usernames via the batch ``/users/ids`` read. A mention is
+             addressed-to-me (owner in ``to_recipients``); a general post is
+             context (``to_recipients=[]``).
         """
         start_ms, end_ms = self._window_ms(digest_date)
 
@@ -694,6 +736,14 @@ class MattermostSourceAdapter:
         owner_handle = f"@{owner_username}"
         owner_email = (me.get("email") or "").strip()  # best-effort; may be blank
         mention_re = _mention_regex(owner_username)
+
+        # Precompute the normalized allowlist set ONCE (not per post / per
+        # channel). It is immutable (a frozenset), so worker threads may READ it
+        # freely without a lock — the only thread-safety requirement is "no shared
+        # mutation", which holds (the set is built here and never written again).
+        # Empty allowlist ⇒ the channels phase is OFF and the adapter is
+        # byte-for-byte the mentions-only slice (regression-guarded by tests).
+        allowlist = _normalize_allowlist(self._config.channel_allowlist)
 
         channels = self._client.get_my_channels()
         active = self._active_channels(channels, start_ms, end_ms)
@@ -726,8 +776,17 @@ class MattermostSourceAdapter:
         fetcher = _AdaptiveChannelFetcher(
             channels=active,
             total_active=total_active,
+            # Channel-allowlist membership is computed in the COORDINATOR (here,
+            # from the immutable allowlist set + the channel object) and passed as
+            # a plain bool arg — so the worker never reads shared adapter state to
+            # decide it. (Reading the immutable ``allowlist`` from the closure is
+            # equally thread-safe; passing the resolved bool keeps the worker pure.)
             fetch_channel=lambda channel: self._fetch_channel(
-                channel, start_ms, end_ms, mention_re
+                channel,
+                start_ms,
+                end_ms,
+                mention_re,
+                channel_is_allowlisted=_channel_is_allowlisted(channel, allowlist),
             ),
             sink=self._sink,
             min_concurrency=self._config.min_concurrency,
@@ -744,7 +803,7 @@ class MattermostSourceAdapter:
         authors = self._resolve_authors(list(author_ids))
 
         messages: List[NormalizedMessage] = []
-        for post, channel in kept_posts:
+        for post, channel, is_mention in kept_posts:
             messages.append(
                 self._to_normalized_message(
                     post,
@@ -753,6 +812,7 @@ class MattermostSourceAdapter:
                     owner_id=owner_id,
                     owner_handle=owner_handle,
                     owner_email=owner_email,
+                    is_mention=is_mention,
                 )
             )
 
@@ -807,28 +867,67 @@ class MattermostSourceAdapter:
         start_ms: int,
         end_ms: int,
         mention_re: "re.Pattern[str]",
+        *,
+        channel_is_allowlisted: bool = False,
     ) -> "_ChannelResult":
-        """Fetch + parse ONE channel's in-window @owner mentions (worker body).
+        """Fetch + parse ONE channel's in-window posts (worker body).
 
-        This is the exact per-channel work the old sequential loop did, lifted
-        into a function so it can run on a worker thread: page the window with
-        ``_iter_window_posts`` (unchanged), keep posts that @-mention the owner,
-        and collect their author ids. Returns a ``_ChannelResult`` on success;
-        **raises** on any fetch error (``MattermostRateLimited`` for a 429,
-        ``httpx.ReadTimeout``/other for a slow or broken channel) so the
-        coordinator — not the worker — decides retry vs. skip vs. back-off. The
-        worker NEVER touches shared state or the progress sink (thread-safety).
+        Pages the window with ``_iter_window_posts`` (unchanged; system/bot/
+        tombstone posts already filtered there). Keep-logic per in-window post:
+
+          * ``is_mention = bool(mention_re.search(message))``;
+          * keep the post iff ``channel_is_allowlisted OR is_mention`` — so a
+            NON-allowlisted channel keeps only mentions (unchanged behavior) and
+            an allowlisted channel keeps every post;
+          * **cap**: for an allowlisted channel, keep at most
+            ``max_posts_per_channel`` GENERAL (non-mention) posts. Posts arrive
+            newest-first, so the cap keeps the most-recent general posts; mentions
+            are ALWAYS kept (high-signal) even past the cap.
+
+        Each kept entry is ``(post, channel, is_mention)`` so the addressed-to-me
+        signal is carried downstream. ``channel_is_allowlisted`` is computed by the
+        coordinator from the IMMUTABLE config + channel object and passed in, so the
+        worker never reads or mutates shared adapter state (thread-safety).
+
+        Returns a ``_ChannelResult`` on success; **raises** on any fetch error
+        (``MattermostRateLimited`` for a 429, ``httpx.ReadTimeout``/other for a
+        slow or broken channel) so the coordinator — not the worker — decides
+        retry vs. skip vs. back-off. The worker NEVER touches shared state or the
+        progress sink.
         """
-        kept: List[tuple[dict, dict]] = []
+        kept: List[tuple[dict, dict, bool]] = []
         author_ids: set[str] = set()
+        max_general = self._config.max_posts_per_channel
+        general_kept = 0
+        general_dropped = 0
         for post in self._iter_window_posts(channel["id"], start_ms, end_ms):
             message = post.get("message") or ""
-            if not mention_re.search(message):
+            is_mention = bool(mention_re.search(message))
+            # Keep iff the channel is allowlisted (every post is context) OR the
+            # post mentions the owner (high-signal in any channel).
+            if not (channel_is_allowlisted or is_mention):
                 continue
-            kept.append((post, channel))
+            if not is_mention:
+                # General (context) post — subject to the per-channel cap. (Only
+                # reachable when channel_is_allowlisted, since a non-allowlisted
+                # general post was already dropped above.)
+                if general_kept >= max_general:
+                    general_dropped += 1
+                    continue
+                general_kept += 1
+            kept.append((post, channel, is_mention))
             uid = post.get("user_id")
             if uid:
                 author_ids.add(uid)
+        if general_dropped:
+            # Payload-free: truncated channel id + counts only (no message text).
+            logger.info(
+                "Mattermost allowlisted channel general posts capped",
+                channel_id=str(channel.get("id") or "")[:8],  # truncated
+                kept=general_kept,
+                dropped=general_dropped,
+                cap=max_general,
+            )
         return _ChannelResult(kept_posts=kept, author_ids=author_ids)
 
     # -- helpers -----------------------------------------------------------
@@ -925,8 +1024,9 @@ class MattermostSourceAdapter:
         owner_id: str,
         owner_handle: str,
         owner_email: str,
+        is_mention: bool,
     ) -> NormalizedMessage:
-        """Map a kept post → ``NormalizedMessage(source="mm")`` (design §2.1).
+        """Map a kept post → ``NormalizedMessage(source="mm")`` (design §2.1/§2.3).
 
         addressed-to-me is wired through the SAME mechanism the email path uses:
         the owner's identity is placed in ``to_recipients`` so the splitter's
@@ -934,6 +1034,12 @@ class MattermostSourceAdapter:
         ``user_in_to`` fire honestly — a post that @-mentions the owner genuinely
         IS addressed to the owner. (We do not invent a flag the pipeline never
         reads; we do not touch the LLM evidence header.)
+
+        addressed-to-me fires ONLY for a mention (``is_mention=True``). A general
+        allowlisted-channel post that does NOT mention the owner is CONTEXT, not
+        addressed-to-me → ``to_recipients=[]`` (so it lands as FYI/context
+        downstream, not "My actions"). Everything else in the mapping is identical
+        for both kinds of post.
         """
         post_id = post.get("id") or ""
         root_id = post.get("root_id") or ""
@@ -948,15 +1054,19 @@ class MattermostSourceAdapter:
 
         channel_name = channel.get("display_name") or channel.get("name") or channel.get("id") or ""
 
-        # Owner identity in to_recipients (the real addressed-to-me signal). Both
-        # the @handle and a resolved email (if available) are included so the
-        # splitter alias match fires regardless of whether the operator configured
-        # ews.user_aliases with the handle or the email.
-        to_recipients = [owner_handle]
-        if owner_email:
-            to_recipients.append(owner_email)
-        if owner_id:
-            to_recipients.append(owner_id)
+        # Owner identity in to_recipients (the real addressed-to-me signal) ONLY
+        # for a mention. Both the @handle and a resolved email (if available) are
+        # included so the splitter alias match fires regardless of whether the
+        # operator configured ews.user_aliases with the handle or the email. A
+        # general allowlisted-channel post is CONTEXT (not addressed-to-me), so
+        # its to_recipients stays empty and it lands as FYI/context downstream.
+        to_recipients: List[str] = []
+        if is_mention:
+            to_recipients.append(owner_handle)
+            if owner_email:
+                to_recipients.append(owner_email)
+            if owner_id:
+                to_recipients.append(owner_id)
 
         return NormalizedMessage(
             msg_id=f"mm:{post_id}",

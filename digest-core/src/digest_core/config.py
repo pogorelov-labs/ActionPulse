@@ -331,6 +331,30 @@ class MattermostSourceConfig(BaseModel):
             " owner who is a member of ~998 channels."
         ),
     )
+    channel_allowlist: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Channels to ingest IN FULL (every in-window post becomes context),"
+            " on top of the @-mention slice that is kept in EVERY channel. An"
+            " entry matches a channel by its ``id`` (exact), ``name``, or"
+            " ``display_name`` (case-insensitive, whitespace-trimmed). DEFAULT"
+            " EMPTY = OFF: with no allowlist the adapter behaves exactly as the"
+            " mentions-only slice (design §2.3 'channels' phase). General posts"
+            " from an allowlisted channel are CONTEXT (FYI), not addressed-to-me;"
+            " a @-mention is still addressed-to-me wherever it occurs."
+        ),
+    )
+    max_posts_per_channel: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Cap on GENERAL (non-mention) posts kept per ALLOWLISTED channel, so"
+            " one busy channel cannot flood the digest. Posts arrive newest-first,"
+            " so the cap keeps the most-recent general posts. @-mentions are ALWAYS"
+            " kept (high-signal) even past this cap. No effect on non-allowlisted"
+            " channels (they only ever keep mentions)."
+        ),
+    )
     per_page: int = Field(
         default=200,
         ge=1,
