@@ -33,7 +33,7 @@ from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
 from digest_core.ingest.envelope import messages_from_envelopes
-from digest_core.ingest.source_adapter import EWSSourceAdapter, run_sources
+from digest_core.ingest.source_adapter import EWSSourceAdapter, SourceAdapter, run_sources
 from digest_core.llm.fleet import RerankerClient
 from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
@@ -128,6 +128,10 @@ class RunContext:
     log_file: Any = None
     run_meta: Dict[str, Any] = field(default_factory=dict)
     sink: ProgressSink = field(default_factory=NullSink)
+    #: Source selector (``--sources``). Defaults to the single EWS source so the
+    #: existing live path and tests that build a RunContext without specifying
+    #: sources are unchanged. ``_stage_ingest`` builds the adapter list from this.
+    sources: List[str] = field(default_factory=lambda: ["ews"])
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +329,43 @@ def _init_context(
     )
 
 
+#: Source names that map to the EWS adapter. "email" is the source TYPE,
+#: "ews" is the adapter name — both select the same live EWS source.
+_EWS_SOURCE_NAMES = frozenset({"ews", "email"})
+
+
+def _build_source_adapters(
+    sources: Sequence[str], ingest: EWSIngest
+) -> tuple[List[SourceAdapter], List[SourceAdapter]]:
+    """Build the live adapter list from ``--sources``, split by strictness (P1a).
+
+    Returns ``(strict_adapters, lenient_adapters)``. EWS is strict (config errors
+    must crash); a future Mattermost adapter would be appended to the lenient list
+    so it degrades-not-drops. An unknown source name raises ``ValueError`` rather
+    than being silently ignored. With the default ``["ews"]`` this returns a single
+    strict ``EWSSourceAdapter`` and an empty lenient list — behavior-preserving.
+    """
+    strict_adapters: List[SourceAdapter] = []
+    lenient_adapters: List[SourceAdapter] = []
+    seen_ews = False
+    for name in sources or ["ews"]:
+        key = (name or "").strip().lower()
+        if key in _EWS_SOURCE_NAMES:
+            # One EWS source per run; "ews" and "email" are aliases for it.
+            if not seen_ews:
+                strict_adapters.append(EWSSourceAdapter(ingest))
+                seen_ews = True
+        else:
+            # P1a builds no real Mattermost adapter (that is P1b). An unrecognized
+            # source must fail loudly so a typo or a not-yet-built source is never
+            # silently dropped.
+            raise ValueError(
+                f"Unknown ingest source {name!r}. Known sources: "
+                f"{sorted(_EWS_SOURCE_NAMES)} (Mattermost ingest is P1b, not yet built)."
+            )
+    return strict_adapters, lenient_adapters
+
+
 def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
     """Stage 1+2: INGEST (+ NORMALIZE for live mode).
 
@@ -348,14 +389,23 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         ingest = EWSIngest(
             ctx.config.ews, time_config=ctx.config.time, metrics=ctx.metrics, sink=ctx.sink
         )
-        # Route the live fetch through the multi-source seam (PR12b). Today EWS
-        # is the sole adapter, so this is behavior-preserving: ``strict=True``
-        # keeps fetch exceptions propagating to the degradation policy, and the
-        # envelopes are unwrapped back to the same ordered ``List[Normalized
-        # Message]`` the pipeline consumed when ``fetch_messages`` was called
-        # directly. ``EWSConfig.folders`` is honored inside ``fetch_messages``,
-        # unchanged. The seam is the wiring for a future Mattermost source.
-        envelopes = run_sources([EWSSourceAdapter(ingest)], ctx.digest_date, strict=True)
+        # Route the live fetch through the multi-source seam (PR12b), now driven by
+        # ``--sources`` (P1a). The adapter list is built from ``ctx.sources``; an
+        # unknown source name is a hard error (never silently ignored). Strictness
+        # is PER ADAPTER, not global: EWS stays ``strict=True`` so its config errors
+        # still crash via the degradation policy (asserted in
+        # test_stage_ingest_seam.py), while a future MM adapter would run
+        # ``strict=False`` to degrade-not-drop. We therefore group adapters by their
+        # required-strictness and make one ``run_sources`` call per group — do NOT
+        # globally flip ``strict=False`` (that would swallow EWS config errors). With
+        # only EWS selected (the default), this is exactly one
+        # ``run_sources([EWSSourceAdapter], strict=True)`` call — behavior-preserving.
+        strict_adapters, lenient_adapters = _build_source_adapters(ctx.sources, ingest)
+        envelopes = []
+        if strict_adapters:
+            envelopes += run_sources(strict_adapters, ctx.digest_date, strict=True)
+        if lenient_adapters:
+            envelopes += run_sources(lenient_adapters, ctx.digest_date, strict=False)
         messages = messages_from_envelopes(envelopes)
         ctx.metrics.record_emails_total(len(messages), "fetched")
         fetch_stats = dict(getattr(ingest, "last_fetch_stats", {}) or {})
@@ -1062,6 +1112,11 @@ def _run_pipeline(
 
 
 def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestResult:
+    # Thread the source selector onto the context so _stage_ingest can build the
+    # adapter list from it (P1a). Empty/None falls back to the EWS default, so
+    # callers that don't pass sources keep the historical single-source behavior.
+    if sources:
+        ctx.sources = list(sources)
     config_sha = _config_sha256(ctx.config)
     idem_sidecar = _read_idem_sidecar(ctx.json_path)
 
@@ -1398,14 +1453,24 @@ def _normalize_messages(
 
     normalized_messages = []
     for index, msg in enumerate(messages):
-        text_body, _ = normalizer.html_to_text(msg.text_body)
-        text_body = normalizer.truncate_text(text_body, max_bytes=200000)
-        if config.email_cleaner.enabled:
-            cleaned_body, _ = quote_cleaner.clean_email_body(
-                text_body, lang="auto", policy="standard"
-            )
+        if getattr(msg, "source", "email") == "mm":
+            # Markdown-safe branch (P1a). Mattermost bodies are markdown, not HTML,
+            # and the email quote-cleaner deletes everything from the first ">"
+            # line (quotes.py _remove_quotes_with_spans), which would silently
+            # truncate a chat message that quotes a prior post. Skip both
+            # html_to_text and clean_email_body; apply only unicode-normalize +
+            # truncate. The email path below is left byte-identical.
+            cleaned_body = normalizer._normalize_unicode(msg.text_body)
+            cleaned_body = normalizer.truncate_text(cleaned_body, max_bytes=200000)
         else:
-            cleaned_body = text_body
+            text_body, _ = normalizer.html_to_text(msg.text_body)
+            text_body = normalizer.truncate_text(text_body, max_bytes=200000)
+            if config.email_cleaner.enabled:
+                cleaned_body, _ = quote_cleaner.clean_email_body(
+                    text_body, lang="auto", policy="standard"
+                )
+            else:
+                cleaned_body = text_body
 
         normalized_messages.append(
             NormalizedMessage(
@@ -1428,6 +1493,7 @@ def _normalize_messages(
                 message_id=msg.message_id,
                 body_norm=cleaned_body,
                 received_at=msg.received_at,
+                source=getattr(msg, "source", "email"),
             )
         )
         if sink is not None:

@@ -31,4 +31,12 @@ def envelopes_from_messages(source: str, messages: List[NormalizedMessage]) -> L
 
 
 def messages_from_envelopes(envelopes: List[Envelope]) -> List[NormalizedMessage]:
+    # NOTE (P1a, MM-source data model): we deliberately do NOT stamp
+    # ``envelope.source`` onto ``message.source`` here. ``Envelope.source`` is the
+    # adapter NAME ("ews", "mattermost", ...), whereas ``NormalizedMessage.source``
+    # is the source TYPE ("email" | "mm"). Stamping the adapter name would turn
+    # EWS items into ``source_ref {"type": "ews"}`` and break the byte-identical
+    # email path. Instead, each adapter sets the source TYPE on the message it
+    # builds: EWS relies on the "email" default, a Mattermost adapter sets
+    # ``source="mm"`` directly. See docs/research/MATTERMOST_INTEGRATION_DESIGN.md §4.
     return [envelope.message for envelope in envelopes]

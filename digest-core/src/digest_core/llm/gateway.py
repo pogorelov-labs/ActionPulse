@@ -843,6 +843,18 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             logger.warning("Invalid source_ref structure")
             return None
 
+        # Source is server-driven, not LLM-echoed (P1a, MM-source data model):
+        # overwrite the model's echoed ``type`` with the authoritative type from
+        # the cited chunk's ``source_ref``. The cited chunk is already in scope
+        # (validated by ``evidence_id`` just above), so this is a cheap, in-place
+        # correction that keeps email items at ``{"type": "email"}`` and ensures
+        # a chat citation renders ``Source: mm`` regardless of what the LLM copied.
+        cited_chunk = next((chunk for chunk in evidence if chunk.evidence_id == evidence_id), None)
+        if cited_chunk is not None:
+            authoritative_type = cited_chunk.source_ref.get("type")
+            if authoritative_type:
+                source_ref["type"] = authoritative_type
+
         # Validate verbatim evidence spans (R2): keep only quotes that are an exact
         # substring of the cited chunk body. require_evidence_spans stays False (R3).
         spans = self._validate_spans(item.get("evidence_spans"), evidence_id, evidence)

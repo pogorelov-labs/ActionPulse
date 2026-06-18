@@ -84,8 +84,23 @@ class ThreadBuilder:
         # Step 3: Group messages into threads
         thread_groups = self._group_messages_into_threads(unique_messages, msg_id_index)
 
-        # Step 4: Merge threads by semantic similarity (fallback)
-        thread_groups = self._merge_by_semantic_similarity(thread_groups)
+        # Step 4: Merge threads by semantic similarity (fallback).
+        #
+        # Source-aware branch (P1a). The semantic-merge step re-buckets EVERY
+        # thread group by normalized subject and merges on >=0.7 short-body
+        # similarity. A Mattermost message's "subject" is just a synthesized
+        # channel name, so two distinct MM roots in the same channel share an
+        # identical normalized subject and their terse bodies ("ok", "+1", "done")
+        # cross the similarity floor — wrongly fusing two separate conversations.
+        # MM threads natively via ``conversation_id`` (root_id) in Strategy 1, so
+        # we hold every ``source == "mm"`` group OUT of the subject-similarity merge
+        # and feed only the remaining (email) groups through. Email behavior is
+        # byte-identical: no email group is held out, so the merge step sees the
+        # exact same input it did before this branch.
+        native_groups, mergeable_groups = self._partition_native_threads(thread_groups)
+        merged = self._merge_by_semantic_similarity(mergeable_groups)
+        merged.update(native_groups)
+        thread_groups = merged
 
         # Step 4b (PR12a, behind ThreadingConfig.embedding_merge): cosine tier
         # over the heuristic-weak groups — may only merge, never lose messages.
@@ -267,6 +282,30 @@ class ThreadBuilder:
         )
 
         return thread_groups
+
+    def _partition_native_threads(
+        self, thread_groups: Dict[str, List[NormalizedMessage]]
+    ) -> tuple[Dict[str, List[NormalizedMessage]], Dict[str, List[NormalizedMessage]]]:
+        """Split thread groups into (natively-threaded, mergeable) (P1a).
+
+        A group is "native" — held out of the subject-similarity merge — if any of
+        its messages is ``source == "mm"``. MM messages thread by ``conversation_id``
+        (root_id) and carry a synthesized channel-name subject that would otherwise
+        wrongly merge distinct roots. Every email group is "mergeable" so the merge
+        step's input (and therefore the email path) is unchanged.
+
+        Returns:
+            (native_groups, mergeable_groups) — disjoint, union == thread_groups.
+        """
+        native_groups: Dict[str, List[NormalizedMessage]] = {}
+        mergeable_groups: Dict[str, List[NormalizedMessage]] = {}
+        for thread_id, messages in thread_groups.items():
+            is_native = any(getattr(msg, "source", "email") == "mm" for msg in messages)
+            if is_native:
+                native_groups[thread_id] = messages
+            else:
+                mergeable_groups[thread_id] = messages
+        return native_groups, mergeable_groups
 
     def _merge_by_semantic_similarity(
         self, thread_groups: Dict[str, List[NormalizedMessage]]
