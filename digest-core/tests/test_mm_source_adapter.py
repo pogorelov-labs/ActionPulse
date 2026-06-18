@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from digest_core import run as runner
@@ -576,6 +577,202 @@ def test_end_to_end_offline_normalize_and_threading():
     assert len(threads) == 1
     assert threads[0].conversation_id == "conv_root-thread-1"  # native root_id thread
     assert builder.stats["threads_merged_by_semantic"] == 0  # no subject-merge for mm
+
+
+# ---------------------------------------------------------------------------
+# 7. Scan-then-% progress + per-channel resilience (the live-bug regression)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSink:
+    """A ProgressSink stand-in that records every ``on_stage_progress`` call.
+
+    Structural (duck-typed) — the ``emit()`` helper only calls the named method,
+    so a plain recorder is enough and keeps the test offline + payload-free.
+    """
+
+    def __init__(self) -> None:
+        # Each entry: (stage, done, total, unit, detail).
+        self.progress: list[tuple[str, int, int, str, str]] = []
+
+    def on_stage_progress(self, stage, done, total=None, unit="", detail=""):
+        self.progress.append((stage, done, total, unit, detail))
+
+
+def _multi_channel_http(skip_second: bool = False) -> "_FakeHttp":
+    """Three active channels, each with one in-window @owner mention.
+
+    When ``skip_second`` is True the 2nd channel's ``get_posts`` raises
+    ``httpx.ReadTimeout`` (the live bug: a slow channel timed out at 45s). The
+    1st and 3rd must still be processed and their mentions returned.
+    """
+    me = {"id": _OWNER_ID, "username": _OWNER_USERNAME, "email": "me@corp"}
+    teams = [{"id": "team-1"}]
+
+    def _chan(cid: str, name: str) -> dict:
+        return {
+            "id": cid,
+            "display_name": name,
+            "name": name,
+            "last_post_at": _MID_DAY_MS,  # all three active within the window
+        }
+
+    # Order by last_post_at is equal; _active_channels keeps insertion-ish order
+    # after a stable sort, but to make the "2nd channel" deterministic we stagger
+    # last_post_at so the sort is unambiguous (newest first → c1, c2, c3).
+    chans = [
+        {**_chan("chan-1", "alpha"), "last_post_at": _MID_DAY_MS + 3000},
+        {**_chan("chan-2", "bravo"), "last_post_at": _MID_DAY_MS + 2000},
+        {**_chan("chan-3", "charlie"), "last_post_at": _MID_DAY_MS + 1000},
+    ]
+
+    def _mention_post(cid: str) -> dict:
+        return {
+            "id": f"p-{cid}",
+            "root_id": "",
+            "user_id": "author-1",
+            "channel_id": cid,
+            "create_at": _MID_DAY_MS,
+            "delete_at": 0,
+            "type": "",
+            "message": f"{_OWNER_HANDLE} please review {cid}",
+        }
+
+    def _postlist(cid: str) -> dict:
+        return {"order": [f"p-{cid}"], "posts": {f"p-{cid}": _mention_post(cid)}}
+
+    routes_get = {
+        "/api/v4/users/me": me,
+        "/api/v4/users/me/teams": teams,
+        "/api/v4/users/me/teams/team-1/channels": chans,
+        "/api/v4/channels/chan-1/posts": _postlist("chan-1"),
+        "/api/v4/channels/chan-2/posts": _postlist("chan-2"),
+        "/api/v4/channels/chan-3/posts": _postlist("chan-3"),
+    }
+    routes_post = {
+        "/api/v4/users/ids": [
+            {"id": "author-1", "username": "alice.author", "email": "alice@corp"},
+        ],
+    }
+    http = _FakeHttp(routes_get, routes_post)
+
+    if skip_second:
+        # Wrap .get so chan-2's PostList fetch raises a timeout (the live bug).
+        original_get = http.get
+
+        def _get_with_timeout(url, *, params=None, headers=None):
+            if url.endswith("/channels/chan-2/posts"):
+                http.calls.append(("GET", url))  # the attempt is still recorded
+                raise httpx.ReadTimeout("simulated slow channel (45s)")
+            return original_get(url, params=params, headers=headers)
+
+        http.get = _get_with_timeout  # type: ignore[method-assign]
+
+    return http
+
+
+def _make_adapter_with_sink(http: "_FakeHttp", sink) -> MattermostSourceAdapter:
+    client = MattermostReadClient(
+        "https://mm.corp", "fake-pat-not-a-real-token", http_client=http, per_page=200
+    )
+    return MattermostSourceAdapter(
+        MattermostSourceConfig(base_url="https://mm.corp"),
+        _utc_time_config(),
+        client=client,
+        sink=sink,
+    )
+
+
+def test_progress_emits_one_event_per_active_channel():
+    """A per-channel progress event ramps 1/N … N/N over the active denominator.
+
+    There is a leading 0/N starting event and a trailing summary event; the
+    per-channel events in between must be exactly (1,N) … (N,N) with
+    unit="channels".
+    """
+    sink = _RecordingSink()
+    adapter = _make_adapter_with_sink(_multi_channel_http(), sink)
+    adapter.fetch(_DIGEST_DATE)
+
+    n = 3
+    # Per-channel events: the ramp 1/N..N/N (excludes the 0/N start + duplicate
+    # final-summary emit which also reads done==N).
+    ramp = [(d, t, u) for (_, d, t, u, _) in sink.progress if u == "channels" and d >= 1]
+    # The per-channel events are the first N with done 1..N; the last entry is the
+    # summary (also done==N). Assert the ascending 1..N prefix exists.
+    per_channel = ramp[:n]
+    assert [d for (d, _, _) in per_channel] == [1, 2, 3]
+    assert all(t == n for (_, t, _) in per_channel)
+    assert all(u == "channels" for (_, _, u) in per_channel)
+
+    # A leading 0/N starting event was emitted (footer shows a real % at once).
+    assert sink.progress[0][1] == 0 and sink.progress[0][2] == n
+
+
+def test_per_channel_timeout_is_skipped_others_still_returned():
+    """REGRESSION (live bug): one channel's get_posts timeout must NOT empty the
+    adapter. The 1st and 3rd channels are processed; their mentions are returned;
+    only the 2nd is skipped and counted."""
+    sink = _RecordingSink()
+    http = _multi_channel_http(skip_second=True)
+    adapter = _make_adapter_with_sink(http, sink)
+
+    messages = adapter.fetch(_DIGEST_DATE)
+
+    kept = {m.msg_id for m in messages}
+    # chan-2 timed out and was skipped; chan-1 and chan-3 still produced mentions.
+    assert kept == {"mm:p-chan-1", "mm:p-chan-3"}
+    assert messages, "the timeout must NOT collapse the adapter to an empty list"
+
+    assert adapter.last_fetch_stats["channels_skipped"] == 1
+    assert adapter.last_fetch_stats["channels_scanned"] == 2
+    assert adapter.last_fetch_stats["mentions"] == 2
+
+    # All three channels were ATTEMPTED (the skip did not abort the loop early).
+    attempted = [
+        url for (_, url) in http.calls if "/channels/chan-" in url and url.endswith("/posts")
+    ]
+    assert any(u.endswith("/chan-1/posts") for u in attempted)
+    assert any(u.endswith("/chan-2/posts") for u in attempted)
+    assert any(u.endswith("/chan-3/posts") for u in attempted)
+
+
+def test_per_channel_skip_surfaced_in_progress_detail():
+    """The final progress emit carries the scanned/skipped/found summary so the
+    live footer shows the degrade — a skip is never invisible."""
+    sink = _RecordingSink()
+    adapter = _make_adapter_with_sink(_multi_channel_http(skip_second=True), sink)
+    adapter.fetch(_DIGEST_DATE)
+
+    final_detail = sink.progress[-1][4]
+    assert "scanned" in final_detail
+    assert "1 skipped" in final_detail
+    assert "found" in final_detail
+
+
+def test_last_fetch_stats_populated_full_counts():
+    """No-skip happy path: last_fetch_stats carries the full count shape."""
+    adapter = _make_adapter_with_sink(_multi_channel_http(), _RecordingSink())
+    adapter.fetch(_DIGEST_DATE)
+    stats = adapter.last_fetch_stats
+    assert stats == {
+        "channels_total": 3,
+        "channels_active": 3,
+        "channels_scanned": 3,
+        "channels_skipped": 0,
+        "mentions": 3,
+    }
+
+
+def test_nullsink_default_is_behavior_preserving():
+    """With no sink the adapter behaves exactly as before (NullSink swallows
+    every emit) — the 26 legacy tests rely on this."""
+    adapter = _make_adapter()  # no sink passed → NullSink default
+    messages = adapter.fetch(_DIGEST_DATE)
+    assert len(messages) == 1  # identical to test_fetch_keeps_only_owner_mention
+    # Stats are still populated even with a NullSink.
+    assert adapter.last_fetch_stats["mentions"] == 1
+    assert adapter.last_fetch_stats["channels_skipped"] == 0
 
 
 def test_read_client_low_level_uses_bearer_header():

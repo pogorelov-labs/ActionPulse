@@ -51,6 +51,7 @@ import structlog
 
 from digest_core.config import MattermostSourceConfig, TimeConfig
 from digest_core.ingest.ews import NormalizedMessage
+from digest_core.progress import NullSink, ProgressSink, emit
 
 logger = structlog.get_logger()
 
@@ -205,6 +206,22 @@ def _has_file_metadata(post: dict) -> bool:
     return bool(files)
 
 
+#: Progress-detail channel labels are kept short (the live footer is one line).
+_CHANNEL_LABEL_MAX = 32
+
+
+def _short_channel(name: str) -> str:
+    """Trim a channel display name for the progress detail line (footer-safe).
+
+    The label is the owner's own channel name (not message text), but the live
+    footer is a single line, so collapse whitespace and end-ellipsis past a cap.
+    """
+    name = " ".join((name or "").split())
+    if len(name) <= _CHANNEL_LABEL_MAX:
+        return name
+    return name[: _CHANNEL_LABEL_MAX - 1] + "…"
+
+
 class MattermostSourceAdapter:
     """A ``SourceAdapter`` that surfaces @-mentions of the owner from Mattermost.
 
@@ -221,6 +238,7 @@ class MattermostSourceAdapter:
         *,
         client: Optional[MattermostReadClient] = None,
         http_client: Optional[_HttpClient] = None,
+        sink: ProgressSink = NullSink(),
     ) -> None:
         """Build the adapter.
 
@@ -228,9 +246,18 @@ class MattermostSourceAdapter:
         httpx-like client the adapter wraps) may be injected for tests. In
         production neither is passed and the adapter constructs a real
         ``httpx.Client`` from the config (base_url + PAT from ENV).
+
+        ``sink`` receives intra-stage progress events (``on_stage_progress``) so
+        the 65-active-channel sequential scan reports a live %; it defaults to
+        ``NullSink()`` so nothing renders unless ``run.py`` threads in a real
+        sink (behavior-preserving for every existing caller).
         """
         self._config = config
         self._time_config = time_config
+        self._sink = sink
+        #: Outcome of the last ``fetch()`` — mirrors ``EWSIngest.last_fetch_stats``
+        #: so a degrade (skipped channels) is never invisible. Populated by fetch().
+        self.last_fetch_stats: dict = {}
         if client is not None:
             self._client = client
         else:
@@ -298,26 +325,72 @@ class MattermostSourceAdapter:
 
         channels = self._client.get_my_channels()
         active = self._active_channels(channels, start_ms, end_ms)
+        total_active = len(active)
         logger.info(
             "Mattermost channels pre-gated",
             total=len(channels),
-            active=len(active),
+            active=total_active,
+        )
+        # Starting event: the scan denominator (``total_active``) is now known, so
+        # the live footer can render a real percentage (0/N) before the first
+        # channel is fetched — sequential 65-channel scans no longer feel hung.
+        emit(
+            self._sink,
+            "on_stage_progress",
+            "ingest",
+            0,
+            total_active,
+            "channels",
+            detail="scanning mentions",
         )
 
         kept_posts: List[tuple[dict, dict]] = []  # (post, channel)
         author_ids: set[str] = set()
+        channels_scanned = 0  # channels whose post fetch+parse completed cleanly
+        channels_skipped = 0  # channels abandoned on a per-channel fetch error
+        done = 0  # channels processed so far (scanned + skipped), the % numerator
         for channel in active:
             channel_id = channel.get("id")
             if not channel_id:
+                # A malformed channel object still counts toward the denominator
+                # progress-wise; nothing to fetch, so advance and move on.
+                done += 1
                 continue
-            for post in self._iter_window_posts(channel_id, start_ms, end_ms):
-                message = post.get("message") or ""
-                if not mention_re.search(message):
-                    continue
-                kept_posts.append((post, channel))
-                uid = post.get("user_id")
-                if uid:
-                    author_ids.add(uid)
+            channel_name = channel.get("display_name") or channel.get("name") or channel_id
+            # Per-channel resilience (the live-bug fix): one channel's timeout/HTTP
+            # error MUST NOT propagate out of fetch(). If it did, run_sources(
+            # strict=False) would drop the WHOLE adapter → a silent "0 messages".
+            # Instead we log payload-free, count the skip, and keep going so the
+            # mentions from the channels that DID succeed are still returned.
+            try:
+                for post in self._iter_window_posts(channel_id, start_ms, end_ms):
+                    message = post.get("message") or ""
+                    if not mention_re.search(message):
+                        continue
+                    kept_posts.append((post, channel))
+                    uid = post.get("user_id")
+                    if uid:
+                        author_ids.add(uid)
+                channels_scanned += 1
+            except Exception as exc:  # noqa: BLE001 - per-channel degrade, never fatal
+                channels_skipped += 1
+                logger.warning(
+                    "Mattermost channel skipped (fetch error); continuing",
+                    channel_id=channel_id[:8],  # truncated id only — payload-free
+                    error_type=type(exc).__name__,
+                )
+            done += 1
+            # Per-channel progress: 1..N over the known denominator. The detail is
+            # the owner's own channel display name (short) + the running kept count.
+            emit(
+                self._sink,
+                "on_stage_progress",
+                "ingest",
+                done,
+                total_active,
+                "channels",
+                detail=f"#{_short_channel(channel_name)} · {len(kept_posts)} found",
+            )
 
         authors = self._resolve_authors(list(author_ids))
 
@@ -333,9 +406,36 @@ class MattermostSourceAdapter:
                     owner_email=owner_email,
                 )
             )
-        logger.info(
+
+        # Record the outcome so a degrade is never invisible (mirrors EWSIngest).
+        self.last_fetch_stats = {
+            "channels_total": len(channels),
+            "channels_active": total_active,
+            "channels_scanned": channels_scanned,
+            "channels_skipped": channels_skipped,
+            "mentions": len(messages),
+        }
+        # Final progress emit carries the summary so the live footer shows skips.
+        emit(
+            self._sink,
+            "on_stage_progress",
+            "ingest",
+            done,
+            total_active,
+            "channels",
+            detail=(
+                f"{channels_scanned}/{total_active} scanned · "
+                f"{channels_skipped} skipped · {len(messages)} found"
+            ),
+        )
+        # Prominent final summary: WARNING when any channel was skipped (a degrade
+        # must be loud), info otherwise. Payload-free (counts only).
+        log = logger.warning if channels_skipped else logger.info
+        log(
             "Mattermost mentions fetched",
-            channels_active=len(active),
+            channels_active=total_active,
+            channels_scanned=channels_scanned,
+            channels_skipped=channels_skipped,
             mentions=len(messages),
         )
         return messages

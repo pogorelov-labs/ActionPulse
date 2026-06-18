@@ -339,7 +339,10 @@ _MM_SOURCE_NAMES = frozenset({"mm", "mattermost"})
 
 
 def _build_source_adapters(
-    sources: Sequence[str], ingest: EWSIngest, config: Config | None = None
+    sources: Sequence[str],
+    ingest: EWSIngest,
+    config: Config | None = None,
+    sink: ProgressSink | None = None,
 ) -> tuple[List[SourceAdapter], List[SourceAdapter]]:
     """Build the live adapter list from ``--sources``, split by strictness.
 
@@ -370,7 +373,7 @@ def _build_source_adapters(
                 seen_ews = True
         elif key in _MM_SOURCE_NAMES:
             if not seen_mm:
-                lenient_adapters.append(_build_mm_adapter(config))
+                lenient_adapters.append(_build_mm_adapter(config, sink))
                 seen_mm = True
         else:
             # An unrecognized source must fail loudly so a typo or a not-yet-built
@@ -382,13 +385,16 @@ def _build_source_adapters(
     return strict_adapters, lenient_adapters
 
 
-def _build_mm_adapter(config: Config | None) -> SourceAdapter:
+def _build_mm_adapter(config: Config | None, sink: ProgressSink | None = None) -> SourceAdapter:
     """Construct the Mattermost mentions adapter, or raise an actionable error.
 
     Selecting ``--sources mm`` is an explicit operator request; if the source is
     not configured (no ``base_url`` and/or ``MM_PAT`` unset) we crash with a
     message that says exactly what to set, rather than degrading to a silent
     empty digest. The PAT is read from ENV by ``MattermostSourceConfig.get_token``.
+
+    ``sink`` is threaded into the adapter so the sequential channel scan emits a
+    live percentage; ``None`` falls back to the adapter's ``NullSink()`` default.
     """
     # Imported lazily so the EWS-only default path never imports httpx-heavy MM.
     from digest_core.ingest.mattermost import MattermostSourceAdapter
@@ -409,6 +415,8 @@ def _build_mm_adapter(config: Config | None) -> SourceAdapter:
             f"Mattermost source selected (--sources mm) but the PAT is not set: {exc}. "
             f"Export ${mm_cfg.token_env} (the personal access token; ENV only, never YAML)."
         ) from exc
+    if sink is not None:
+        return MattermostSourceAdapter(mm_cfg, config.time, sink=sink)
     return MattermostSourceAdapter(mm_cfg, config.time)
 
 
@@ -446,7 +454,9 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         # globally flip ``strict=False`` (that would swallow EWS config errors). With
         # only EWS selected (the default), this is exactly one
         # ``run_sources([EWSSourceAdapter], strict=True)`` call — behavior-preserving.
-        strict_adapters, lenient_adapters = _build_source_adapters(ctx.sources, ingest, ctx.config)
+        strict_adapters, lenient_adapters = _build_source_adapters(
+            ctx.sources, ingest, ctx.config, ctx.sink
+        )
         envelopes = []
         if strict_adapters:
             envelopes += run_sources(strict_adapters, ctx.digest_date, strict=True)
@@ -458,8 +468,20 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
         ingest_counts: Dict[str, Any] = {"messages": len(messages)}
         if fetch_stats.get("retries"):
             ingest_counts["retries"] = fetch_stats["retries"]
-        if fetch_stats.get("skipped"):
-            ingest_counts["errors"] = fetch_stats["skipped"]
+        # A skipped channel in a lenient source (MM) is a real degrade — surface
+        # it on the stage line alongside any EWS normalize skips so a partial
+        # fetch is never invisible. ``last_fetch_stats`` is the per-adapter mirror
+        # of EWSIngest's (the MM adapter sets ``channels_skipped``).
+        errors = fetch_stats.get("skipped") or 0
+        mm_stats = [
+            dict(getattr(a, "last_fetch_stats", {}) or {})
+            for a in lenient_adapters
+            if a.name == "mm"
+        ]
+        mm_skipped = sum(int(s.get("channels_skipped") or 0) for s in mm_stats)
+        errors += mm_skipped
+        if errors:
+            ingest_counts["errors"] = errors
         _finish_stage(ctx, "ingest", ingest_start, **ingest_counts)
         ctx.run_meta["ews_fetch_stats"] = {
             "source": "ews",
@@ -467,6 +489,10 @@ def _stage_ingest(ctx: RunContext) -> List[NormalizedMessage]:
             "fetch_timestamp": datetime.now(timezone.utc).isoformat(),
             **fetch_stats,
         }
+        if mm_stats:
+            # Per-source MM stats (degrade visibility) — kept distinct from the
+            # ews_fetch_stats key so neither source's numbers mask the other.
+            ctx.run_meta["mm_fetch_stats"] = mm_stats[0]
 
         normalize_start = time.perf_counter()
         _emit(ctx, "on_stage_start", "normalize")
