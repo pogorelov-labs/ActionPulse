@@ -56,6 +56,18 @@ def _coerce_env_value(annotation: Any, raw: str) -> Any:
         return raw
 
 
+def _env_flag(raw: str) -> bool:
+    """Truthiness of a boolean ENV string: ``1/true/yes/on`` (case-insensitive) → True.
+
+    The single bool-coercion idiom for the per-class ``__init__`` env blocks (StoreConfig /
+    RetentionConfig), which apply their few documented ``DIGEST_*`` vars as a KWARG-fallback
+    on DIRECT construction (kwarg wins; tests rely on ``StoreConfig()`` / ``RetentionConfig()``
+    reading env). This is a deliberately SEPARATE path from ``Config._merge_model`` (which uses
+    ``_coerce_env_value`` and applies env with ENV-wins precedence over YAML) — do not delete
+    these blocks expecting the merge to cover them; the merge only runs for ``Config()``."""
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 class TimeConfig(BaseModel):
     """Time zone and window configuration."""
 
@@ -1099,7 +1111,7 @@ class RetentionConfig(BaseModel):
         # (matching the operator-facing contract for the two documented vars).
         env_enabled = os.getenv("DIGEST_RETENTION_ENABLED")
         if "enabled" not in kwargs and env_enabled is not None and env_enabled != "":
-            kwargs["enabled"] = env_enabled.strip().lower() in ("1", "true", "yes", "on")
+            kwargs["enabled"] = _env_flag(env_enabled)
         env_keep = os.getenv("DIGEST_RETENTION_KEEP_DAYS")
         if "keep_days" not in kwargs and env_keep is not None and env_keep.strip() != "":
             try:
@@ -1223,7 +1235,7 @@ class StoreConfig(BaseModel):
         ):
             value = os.getenv(env)
             if name not in kwargs and value is not None and value.strip() != "":
-                kwargs[name] = value.strip().lower() in ("1", "true", "yes", "on")
+                kwargs[name] = _env_flag(value)
         ttl = os.getenv("DIGEST_STORE_TTL_DAYS")
         if "ttl_days" not in kwargs and ttl and ttl.strip().isdigit():
             kwargs["ttl_days"] = int(ttl)
