@@ -73,6 +73,14 @@ class TokenBudgetExceeded(Exception):
     """Raised when a run's cumulative token usage exceeds ``max_tokens_per_run``."""
 
 
+class CostBudgetExceeded(Exception):
+    """Raised when a run's cumulative USD cost exceeds ``cost_limit_per_run`` (TD-006).
+
+    Only reachable when ``price_per_1k_*_usd`` are non-zero; with the default $0 prices the
+    accumulated cost is always 0 and this never fires. Sibling of TokenBudgetExceeded so the
+    LLM-stage degrade policy treats it the same way (operational error → degrade, not crash)."""
+
+
 class LLMTruncationError(Exception):
     """Output hit ``max_output_tokens`` and the truncated JSON could not be parsed.
 
@@ -122,6 +130,7 @@ class LLMGateway:
         self._rate_broker = rate_broker
         self._stage = stage
         self._run_tokens_used = 0
+        self._run_cost_usd = 0.0  # TD-006: accrued USD cost (0 unless price_per_1k_*_usd set)
         self._run_calls_made = 0  # network calls only (replay excluded) — D6 visibility
         self._record_path = Path(record_llm) if record_llm else None
         self._replay_data: Optional[Dict[str, Any]] = None
@@ -456,6 +465,13 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
 
         raise RuntimeError("LLM retry loop exited without a response")
 
+    def _call_cost_usd(self, tokens_in: Optional[int], tokens_out: Optional[int]) -> float:
+        """USD cost of one call from its token counts (0 unless price_per_1k_*_usd are set)."""
+        cfg = self.config
+        return (tokens_in or 0) / 1000.0 * cfg.price_per_1k_input_usd + (
+            tokens_out or 0
+        ) / 1000.0 * cfg.price_per_1k_output_usd
+
     def _make_request_once(self, messages: List[Dict[str, str]], trace_id: str) -> Dict[str, Any]:
         """Perform a single HTTP request to the LLM gateway (or replay from file)."""
         # ── REPLAY MODE ──────────────────────────────────────────────
@@ -637,6 +653,19 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                 f" > {self.config.max_tokens_per_run}"
             )
 
+        self._run_cost_usd += self._call_cost_usd(tokens_in, tokens_out)
+        if self.config.cost_limit_per_run and self._run_cost_usd > self.config.cost_limit_per_run:
+            logger.warning(
+                "Cost budget exceeded for this run",
+                run_cost_usd=round(self._run_cost_usd, 4),
+                cost_limit_per_run=self.config.cost_limit_per_run,
+                trace_id=trace_id,
+            )
+            raise CostBudgetExceeded(
+                f"Run cost budget exhausted: ${self._run_cost_usd:.4f}"
+                f" > ${self.config.cost_limit_per_run:.2f}"
+            )
+
         logger.info(
             "LLM request successful",
             latency_ms=self.last_latency_ms,
@@ -660,6 +689,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             "latency_ms": self.last_latency_ms,
             "validation_errors": 0,
             "run_tokens_used": self._run_tokens_used,
+            "run_cost_usd": round(self._run_cost_usd, 6),
             "run_calls_made": self._run_calls_made,
             "finish_reason": finish_reason,
         }
@@ -726,6 +756,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         tokens_in = entry.get("meta", {}).get("tokens_in", 0)
         tokens_out = entry.get("meta", {}).get("tokens_out", 0)
         self._run_tokens_used += tokens_in + tokens_out
+        self._run_cost_usd += self._call_cost_usd(tokens_in, tokens_out)
         return entry
 
     def _record_response(self, messages: List[Dict[str, str]], result: Dict[str, Any]) -> None:

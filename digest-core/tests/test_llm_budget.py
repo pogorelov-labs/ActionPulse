@@ -71,6 +71,60 @@ def test_gateway_counts_network_calls():
     assert gateway.last_request_meta["run_calls_made"] == 2
 
 
+def _usage_handler(prompt_tokens: int, completion_tokens: int):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"sections": []})}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+            },
+        )
+
+    return handler
+
+
+def _chunk():
+    return EvidenceChunk(
+        evidence_id="ev",
+        content="text",
+        source_ref={"type": "email", "msg_id": "m"},
+        priority_score=1.0,
+    )
+
+
+def test_cost_cap_trips_when_priced():
+    # TD-006: with non-zero token prices, a run exceeding cost_limit_per_run raises.
+    import pytest
+
+    from digest_core.llm.gateway import CostBudgetExceeded
+
+    with patch.dict(os.environ, {"LLM_TOKEN": "mock"}):
+        cfg = LLMConfig(
+            endpoint="http://test/v1/chat/completions",
+            price_per_1k_input_usd=1.0,
+            price_per_1k_output_usd=1.0,
+            cost_limit_per_run=1.5,
+        )
+        gateway = LLMGateway(cfg)
+        gateway.client = httpx.Client(transport=httpx.MockTransport(_usage_handler(1000, 1000)))
+        # First call costs $2.00 (1k in + 1k out at $1/1k) > $1.50 cap.
+        with pytest.raises(CostBudgetExceeded):
+            gateway.extract_actions([_chunk()], "PROMPT", "trace-cost")
+
+
+def test_cost_cap_noop_with_default_zero_prices():
+    # Default $0 prices (the corp gateway) → cost stays 0, so even a tiny cap never trips.
+    with patch.dict(os.environ, {"LLM_TOKEN": "mock"}):
+        cfg = LLMConfig(endpoint="http://test/v1/chat/completions", cost_limit_per_run=0.000001)
+        gateway = LLMGateway(cfg)
+        gateway.client = httpx.Client(transport=httpx.MockTransport(_usage_handler(100, 50)))
+        gateway.extract_actions([_chunk()], "PROMPT", "trace-free")
+        assert gateway.last_request_meta["run_cost_usd"] == 0.0
+
+
 def test_mm_message_never_carries_budget():
     # Owner C5/C8: the budget is operator-only. Even when a budget is threaded
     # for signature compatibility, the delivered message must not surface it.
