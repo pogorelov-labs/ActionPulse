@@ -34,6 +34,30 @@ Thank you for your interest in contributing to ActionPulse! This document provid
    make test
    ```
 
+## Project conventions (read first)
+
+These are load-bearing and not obvious from a generic GitHub flow:
+
+- **Optional extras.** The encrypted store and the MCP server are optional dependencies:
+  `uv sync --extra store --extra mcp`. On macOS the `store` extra needs SQLCipher first:
+  `brew install sqlcipher`. A plain `uv sync` leaves `HAS_SQLCIPHER`/`HAS_MCP` false and the
+  store/MCP/InboxAPI tests **skip** (green but unexercised) — install the extras before
+  trusting a local `make test` on that code.
+- **Secrets via ENV only — never in YAML.** Secrets live in `~/.config/actionpulse/env`
+  (chmod 600), never in `configs/config.yaml`. `DIGEST_STORE_KEY` in particular is never
+  written into any client/MCP config; the server self-loads it. DM bodies are redacted at
+  rest (guardrail #9, fail-closed).
+- **Git preflight (CLAUDE.md).** `git fetch origin --prune` before starting; branch from a
+  fresh `origin/main`; never work from detached HEAD. Don't stack a PR on an unmerged
+  branch — merge each to `main` before cutting the next. If a PR was opened from stale
+  `main`, close and restack rather than salvage.
+- **CI test lanes.** Beyond `lint`/`test`, CI runs blocking **`test-store`** and
+  **`test-mcp`** lanes (they install the extras) and an offline **`eval-replay`** gate
+  (`make ci` = `lint test eval-replay`). New store/MCP code must pass its lane.
+- **Offline development.** EWS + the LLM gateway are corp-network only. Develop offline with
+  `--dump-ingest` / `--replay-ingest` (record once inside the network, replay outside —
+  ADR-012, "code outside, run inside, debug outside").
+
 ## Code Style
 
 We use the following tools to maintain code quality:
@@ -80,10 +104,18 @@ make lint
 
 ## Repository Hygiene
 
-- **Документация только в `docs/`:** новые руководства, описания PR и отчёты добавляйте в соответствующие разделы каталога `docs/`. Актуализируйте существующие файлы вместо создания дубликатов в корне репозитория.
-- **История в `docs/legacy/`:** архивные материалы и ретроспективы переносите в `docs/legacy/`, чтобы сохранить контекст и не захламлять рабочие директории.
-- **Не коммитьте артефакты выполнения:** каталоги `out/`, `.state/` и `logs/` игнорируются Git. Перед коммитом убедитесь, что временные файлы удалены или заменены на `.gitkeep`.
-- **Проверяйте статус:** запускайте `git status --short` перед отправкой изменений, чтобы убедиться в отсутствии временных или дубль-файлов.
+- **Two documentation trees — know which one owns what.** Repo-root `docs/` holds
+  product/process docs (planning, operations, reference, troubleshooting, development,
+  `docs/legacy/`). `digest-core/docs/` holds the engineering **source of truth**
+  (`ARCHITECTURE.md`, `RUNBOOK.md`, ADRs, audits). Architecture/contract changes go in
+  `digest-core/docs/`; roadmaps/process go in repo-root `docs/`. Update the existing file
+  rather than creating a duplicate in the repo root.
+- **History in `docs/legacy/`.** Move archival material and retrospectives into
+  `docs/legacy/` (with a dated banner) to preserve context without cluttering working dirs.
+- **Don't commit run artifacts.** `out/`, `.state/`, and `logs/` are gitignored; the data
+  home lives under `var/` (see `actionpulse paths`). Verify before committing.
+- **Check status.** Run `git status --short` before pushing to confirm no temp/duplicate
+  files slipped in.
 
 ## Testing
 
@@ -201,6 +233,8 @@ test: add integration tests for LLM Gateway
 - `docs/planning/` - Roadmaps and future plans
 - `docs/reference/` - API docs, KPI, quality metrics
 - `docs/troubleshooting/` - Common issues and solutions
+- `digest-core/docs/` - **engineering source of truth**: `ARCHITECTURE.md`, `RUNBOOK.md`,
+  ADRs, audits (architecture/contract changes go here, not in repo-root `docs/`)
 
 ## Getting Help
 

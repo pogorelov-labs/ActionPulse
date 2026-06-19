@@ -1,6 +1,6 @@
 # ActionPulse Architecture & Technical Specification
 
-> **Version:** 1.2.1 | **Status:** Living Document | **Last Updated:** 2026-03-30
+> **Version:** 1.2.1 | **Status:** Living Document | **Last Updated:** 2026-06-19 (ADR-014 store, ADR-015 MCP/InboxAPI added)
 >
 > Этот документ — единственный источник правды для архитектуры, контрактов и роадмапа.
 > Любые решения, противоречащие этому документу, требуют его обновления.
