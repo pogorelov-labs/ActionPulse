@@ -150,6 +150,13 @@ retention:
 #   vector_dtype: "float32"  # or float16 to halve vector RAM/disk
 #   # db_path: <data home>/var/store/messages.db   # default; override if needed
 #   # DIGEST_STORE_KEY required when enabled — ENV only, never here.
+#   # Cross-day "Open loops" section: surfaces threads where you were addressed on
+#   # an earlier day that have since gone quiet (still likely waiting on you).
+#   # Opt-in (needs enabled: true + a few days of stored history); DMs excluded.
+#   carryover: false
+#   carryover_lookback_days: 7   # how many prior days to scan
+#   carryover_stale_days: 2      # thread quiet >= N days → an open loop
+#   carryover_max_items: 5       # cap on open-loop items added to the digest
 
 # Embedding-assisted thread merging (REDESIGN PR12a, cosine tier). OFF by
 # default: enabling sends thread-representative text to /v1/embeddings —
