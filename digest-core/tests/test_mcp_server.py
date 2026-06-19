@@ -104,28 +104,44 @@ def test_ask_tool_empty_store_no_gateway(api):
 
 
 def test_no_tool_accepts_a_key_parameter():
-    for fn, _name in server._TOOLS + server._MAINTENANCE_TOOLS:
+    for fn, _name in server._TOOLS + server._SOURCE_TOOLS + server._MAINTENANCE_TOOLS:
         params = inspect.signature(fn).parameters
         assert not any("key" in p.lower() for p in params), fn  # key comes from ENV only
 
 
+def test_source_tools_delegate(api, monkeypatch):
+    # list_containers (EWS) reports the configured folders without a network call
+    api._config.ews.folders = ["Inbox", "Sent"]
+    assert {c["name"] for c in server._tool_list_containers("ews")} == {"Inbox", "Sent"}
+    # fetch_source maps live NormalizedMessages → record dicts (no persistence)
+    fake = [_msg("live@corp", "fresh budget memo", to=["me@corp"])]
+    monkeypatch.setattr(
+        api, "_source_adapter", lambda source: type("A", (), {"fetch": lambda s, d: fake})()
+    )
+    recs = server._tool_fetch_source("ews", "2026-06-19")
+    assert recs[0]["message_id"] == "urn:email:live@corp" and recs[0]["subject"] == "S"
+    assert api.store.stats()["messages"] == 0  # fetch_source does NOT write the store
+
+
 @pytest.mark.skipif(not HAS_MCP, reason="mcp extra not installed")
-def test_build_app_registers_read_and_reason_tools():
+def test_build_app_registers_read_reason_and_source_tools():
     import asyncio
 
     app = server._build_app()
     tools = {t.name for t in asyncio.run(app.list_tools())}
     assert {"search", "ask", "compare", "open_loops", "pending", "get_message"} <= tools
-    assert len(tools) == 17  # maintenance OFF by default
-    assert "sweep_ttl" not in tools
+    assert {"list_containers", "get_reactions"} <= tools  # corp source reads always on
+    assert len(tools) == 19  # 17 read/reason + 2 source; maintenance + fetch OFF
+    assert "sweep_ttl" not in tools and "fetch_source" not in tools
 
 
 @pytest.mark.skipif(not HAS_MCP, reason="mcp extra not installed")
-def test_maintenance_tools_only_behind_flag(monkeypatch):
+def test_gated_tools_only_behind_flags(monkeypatch):
     import asyncio
 
     monkeypatch.setenv("ACTIONPULSE_MCP_ENABLE_MAINTENANCE", "1")
+    monkeypatch.setenv("ACTIONPULSE_MCP_ENABLE_FETCH", "1")
     app = server._build_app()
     tools = {t.name for t in asyncio.run(app.list_tools())}
-    assert {"sweep_ttl", "embed_backlog", "reembed", "vacuum"} <= tools
-    assert len(tools) == 21
+    assert {"sweep_ttl", "embed_backlog", "reembed", "vacuum", "fetch_source"} <= tools
+    assert len(tools) == 24  # 19 + 4 maintenance + fetch_source

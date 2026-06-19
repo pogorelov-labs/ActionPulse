@@ -14,6 +14,9 @@ Exposure policy:
 * Store-MUTATING maintenance (sweep_ttl / embed_backlog / reembed / vacuum) is OFF
   unless ``ACTIONPULSE_MCP_ENABLE_MAINTENANCE=1`` — an autonomous agent should not
   prune or re-embed your store unprompted.
+* CORP-NETWORK source tools: ``list_containers`` / ``get_reactions`` (read-only) are
+  always registered; the live ``fetch_source`` pull is OFF unless
+  ``ACTIONPULSE_MCP_ENABLE_FETCH=1``.
 
 The store key (``DIGEST_STORE_KEY``) is read from the environment (the 0600
 ``~/.config/actionpulse/env`` the CLI already loads) — NEVER from a tool argument or a
@@ -241,6 +244,27 @@ def _tool_vacuum() -> str:
     return "ok"
 
 
+# sources (corp network). list_containers/get_reactions are read-only and always
+# registered (flagged corp-only); fetch_source triggers a live pull, so it's behind
+# ACTIONPULSE_MCP_ENABLE_FETCH.
+
+
+def _tool_list_containers(source: str) -> List[Dict[str, Any]]:
+    """CORP-ONLY. Folders (source='ews') or channels (source='mm') for a source."""
+    return _get_api().list_containers(source)
+
+
+def _tool_get_reactions(post_id: str) -> List[Dict[str, Any]]:
+    """CORP-ONLY. Mattermost reactions on a post."""
+    return _get_api().get_reactions(post_id)
+
+
+def _tool_fetch_source(source: str, digest_date: str) -> List[Dict[str, Any]]:
+    """CORP-ONLY, off unless ACTIONPULSE_MCP_ENABLE_FETCH. Live-fetch a source
+    ('ews'|'mm') for a date (YYYY-MM-DD) without persisting."""
+    return _records(_get_api().fetch_source(source, digest_date))
+
+
 # -- resources -------------------------------------------------------------
 
 
@@ -299,6 +323,11 @@ _MAINTENANCE_TOOLS = [
     (_tool_reembed, "reembed"),
     (_tool_vacuum, "vacuum"),
 ]
+# Read-only corp-network source tools; always registered (flagged corp-only).
+_SOURCE_TOOLS = [
+    (_tool_list_containers, "list_containers"),
+    (_tool_get_reactions, "get_reactions"),
+]
 
 
 def _build_app():
@@ -310,11 +339,13 @@ def _build_app():
     from mcp.server.fastmcp import FastMCP
 
     app = FastMCP("actionpulse")
-    for fn, name in _TOOLS:
+    for fn, name in _TOOLS + _SOURCE_TOOLS:
         app.tool(name=name)(fn)
     if os.getenv("ACTIONPULSE_MCP_ENABLE_MAINTENANCE"):
         for fn, name in _MAINTENANCE_TOOLS:
             app.tool(name=name)(fn)
+    if os.getenv("ACTIONPULSE_MCP_ENABLE_FETCH"):
+        app.tool(name="fetch_source")(_tool_fetch_source)
     app.resource("message://{message_id}")(_resource_message)
     app.resource("thread://{thread_id}")(_resource_thread)
     app.resource("stats://store")(_resource_stats)
