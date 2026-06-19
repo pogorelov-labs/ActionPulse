@@ -37,6 +37,7 @@ class DeliveredPost:
     channel_id: str
     digest_date: str
     evidence_ids: List[str]
+    trace_id: str = ""  # the delivering run's id — gold rows key on (trace_id, item_key)
     delivered_at: str = ""
     extra: dict = field(default_factory=dict)
 
@@ -52,6 +53,7 @@ def record_delivery(
     evidence_ids: List[str],
     channel_id: str = "",
     digest_date: str = "",
+    trace_id: str = "",
     now: Optional[datetime] = None,
 ) -> int:
     """Append one ledger entry per delivered ``post_id``. Returns entries written.
@@ -77,6 +79,7 @@ def record_delivery(
                             "channel_id": channel_id,
                             "digest_date": digest_date,
                             "evidence_ids": ev,
+                            "trace_id": trace_id,
                             "delivered_at": when,
                         },
                         ensure_ascii=False,
@@ -111,6 +114,7 @@ def read_ledger(state_dir: Path, *, digest_date: Optional[str] = None) -> List[D
                 channel_id=str(row.get("channel_id", "")),
                 digest_date=str(row.get("digest_date", "")),
                 evidence_ids=list(row.get("evidence_ids", []) or []),
+                trace_id=str(row.get("trace_id", "")),
                 delivered_at=str(row.get("delivered_at", "")),
             )
         )

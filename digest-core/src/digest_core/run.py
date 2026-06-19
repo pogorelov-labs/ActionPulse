@@ -1386,6 +1386,7 @@ def _record_delivered_posts(ctx: RunContext, digest: Digest, receipt: Dict[str, 
             evidence_ids=evidence_ids,
             channel_id=str(receipt.get("channel_id", "")),
             digest_date=ctx.digest_date,
+            trace_id=ctx.trace_id,
         )
     except Exception as exc:  # noqa: BLE001 - feedback metadata is best-effort
         logger.warning("delivered_ledger_record_failed", error=str(exc), trace_id=ctx.trace_id)

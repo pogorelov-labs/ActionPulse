@@ -785,17 +785,27 @@ def reactions_harvest(
     out: str = typer.Option(
         None, "--out", help="Write the per-evidence ack/nack summary JSON here"
     ),
+    gold_out: str = typer.Option(
+        None,
+        "--gold-out",
+        help="Write a gold-label JSONL here, ready for `eval-gold --reactions` (the flywheel bridge)",
+    ),
+    lang: str = typer.Option("ru", "--lang", help="Language stratum stamped on gold rows (ru|en)"),
 ):
     """Harvest Mattermost reactions on delivered digest posts → ack/nack per evidence id.
 
     Reads the delivered-posts ledger (written by api-mode delivery) and queries the MM
     API — corp network only (ADR-012). Feeds EP-15 calibration of the citation gate.
+
+    ``--gold-out`` closes the flywheel: it writes the per-reaction JSONL that
+    ``eval-gold --reactions`` / ``eval-calibrate`` consume, so the harvest feeds
+    calibration directly with no hand-built file.
     """
     import httpx
 
     from digest_core.config import Config
     from digest_core.feedback.delivered_ledger import read_ledger
-    from digest_core.feedback.reactions import harvest_reactions, summarize
+    from digest_core.feedback.reactions import harvest_reactions, summarize, to_gold_rows
     from digest_core.ingest.mattermost import MattermostReadClient
 
     config = Config()
@@ -838,6 +848,14 @@ def reactions_harvest(
     if out:
         Path(out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         typer.echo(f"  wrote per-evidence summary → {out}")
+    if gold_out:
+        rows = to_gold_rows(records, lang=lang)
+        Path(gold_out).write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8"
+        )
+        typer.echo(
+            f"  wrote {len(rows)} gold row(s) → {gold_out} (feed to `eval-gold --reactions`)"
+        )
 
 
 @app.command()

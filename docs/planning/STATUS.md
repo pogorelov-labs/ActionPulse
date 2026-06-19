@@ -62,11 +62,15 @@ inventory to live **with zero new features** (§5).
 - **Missing:** `store.enabled=False` by default; semantic / `ask` / carryover need store-on + the
   corp gateway. Offline keyword search + history browse are what's live today.
 
-### 4 · Deliver + reactions flywheel — 80 / 35
+### 4 · Deliver + reactions flywheel — 84 / 35
 - **Done:** webhook delivery (live); api-mode + owner-only channel + post-id capture;
-  `delivered_ledger` + `reactions` harvest + `eval-gold` / `eval-calibrate` — *a finished engine*.
+  `delivered_ledger` (now carries `trace_id`) + `reactions harvest --gold-out` **bridge** →
+  `eval-gold` / `eval-calibrate`, on **one shared emoji vocab** (no silent signal drop); the
+  `ledger → harvest → bridge → eval-gold → eval-calibrate` chain is **synthetically verified**
+  end-to-end — *a finished, connected, proven engine*.
 - **Missing:** the flywheel has **never been spun** (no corp deliver → react → calibrate cycle);
-  least-privilege **bot** identity; per-section threading; slash commands.
+  least-privilege **bot** identity; per-section threading (the per-item granularity unlock);
+  slash commands.
 
 ### 5 · Terminal UX / setup — 94 / 90  ← *most realized*
 - **Done:** setup wizard (+ encrypted-store step, + MM-creds collection #178); launcher menu
@@ -127,8 +131,10 @@ share one unlock. In order:
 2. **Run the digest live** — prove the EP-14 validation pack + the store on the real EWS/MM/gateway/
    Linux stack (closes the "never run in production" risk).
 3. **Deliver in api-mode for ~1–2 weeks** — real recipients react ✓/✗ on owner-only posts.
-4. **Harvest → calibrate** — `reactions harvest` → `eval-gold` → `eval-calibrate` → set
-   `recall_floor > 0` and flip `reranker`/`judge`/relevance.
+4. **Harvest → calibrate** — `reactions harvest --gold-out gold.jsonl` → `eval-gold --reactions
+   gold.jsonl` → `eval-calibrate` → set `recall_floor > 0` and flip `reranker`/`judge`/relevance.
+   (The harvest→gold bridge + a synthetic end-to-end test landed offline, so this step is now pure
+   execution — no code to write mid-session.)
 
 That sequence moves Extract-&-Trust ~20→70, Remember-&-Retrieve ~40→80, Deliver ~35→75 — i.e. it
 turns the trust promise from *asserted* to *measured*, with **zero new features**. The highest-value
