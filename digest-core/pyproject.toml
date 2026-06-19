@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 digest-core = "digest_core.cli:app"
 actionpulse = "digest_core.cli:app"
+actionpulse-mcp = "digest_core.mcp:main"
 
 [project.optional-dependencies]
 otel = [
@@ -44,6 +45,12 @@ store = [
     "numpy>=1.26",
     "sqlcipher3-binary>=0.6.0; platform_system == 'Linux'",
     "sqlcipher3>=0.5.4; platform_system == 'Darwin'",
+]
+# Opt-in MCP server (digest_core.mcp) exposing the local InboxAPI over stdio to AI
+# coding CLIs. A default `uv sync` does NOT pull it; enable with `uv sync --extra mcp`
+# (also needs `--extra store` to actually read the message store).
+mcp = [
+    "mcp>=1.2",
 ]
 
 [dependency-groups]

@@ -117,6 +117,31 @@ jobs:
         env:
           PYTHONPATH: src
 
+  test-mcp:
+    # The opt-in MCP server (digest_core.mcp) needs the `mcp` extra (FastMCP SDK) to
+    # build its app; the _build_app registration tests skip without it. This lane
+    # installs mcp + store so the MCP server is actually exercised in CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'digest-core/pyproject.toml'
+
+      - name: Install dependencies (+ mcp + store extras)
+        run: uv sync --all-groups --extra mcp --extra store
+
+      - name: Run MCP server tests
+        run: uv run --extra mcp --extra store pytest tests/test_mcp_server.py -q
+        env:
+          PYTHONPATH: src
+
   docker:
     runs-on: ubuntu-latest
     needs: [lint, test]
