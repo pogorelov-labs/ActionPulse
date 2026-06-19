@@ -70,3 +70,58 @@ def test_carryover_section_title_localizes_to_russian():
     )
     # The section title is re-rendered from the canonical key, not the EN literal.
     assert "Открытые вопросы" in text
+
+
+def _pending_digest():
+    return Digest(
+        schema_version="1.0",
+        prompt_version="v1",
+        digest_date="2026-06-19",
+        trace_id="trace-1",
+        sections=[
+            {
+                "title": "Awaiting your reply",
+                "items": [
+                    {
+                        "title": 'Reply needed 3d — "Budget sign-off"',
+                        "evidence_id": "pending:abc123def4567890",
+                        "confidence": 0.7,
+                        "source_ref": {
+                            "type": "pending",
+                            "msg_id": "urn:email:m-9",
+                            "conversation_id": "thread-9",
+                            "source": "email",
+                            "age_days": 3,
+                            "kind": "approval",
+                        },
+                        "source_subject": "Budget sign-off",
+                        "source_from": "Ivan Petrov",
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def test_pending_renders_in_markdown():
+    content = MarkdownAssembler(language="en")._generate_markdown(_pending_digest())
+    assert "## Awaiting your reply" in content
+    assert "Reply needed 3d" in content
+    assert "pending" in content  # Source line carries the type
+    assert "Confidence" not in content
+
+
+def test_pending_renders_in_mattermost():
+    text = MattermostDeliverer(MattermostDeliverConfig(), language="en")._format_digest(
+        _pending_digest()
+    )
+    assert "**Awaiting your reply**" in text
+    assert "Reply needed 3d" in text
+    assert "confidence" not in text.lower()
+
+
+def test_pending_section_title_localizes_to_russian():
+    text = MattermostDeliverer(MattermostDeliverConfig(), language="ru")._format_digest(
+        _pending_digest()
+    )
+    assert "Ждут вашего ответа" in text
