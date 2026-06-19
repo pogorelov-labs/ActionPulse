@@ -7,7 +7,7 @@
 
 ## 1. Executive snapshot
 
-ActionPulse is **~87% built but ~58% live**. The codebase is feature-complete and well-tested
+ActionPulse is **~88% built but ~60% live**. The codebase is feature-complete and well-tested
 across eight streams; the gap between *built* and *live* is the whole story, and it concentrates
 in the three differentiating streams (Extract & Trust, Remember & Retrieve, Deliver). They share
 a **single unlock**: one supervised corp-network session (write PC-2, run live, deliver in
@@ -24,14 +24,19 @@ inventory to live **with zero new features** (§5).
 |---|--------|:----:|:----:|----------------|
 | 1 | Capture — EWS + Mattermost ingest | 90% | 60% | Both sources built; only the EWS basic path is proven live |
 | 2 | Extract & Trust — the quality loop | 85% | 20% | All trust tiers built but **dark**; `recall_floor=0.0` (inert) |
-| 3 | Remember & Retrieve — store · API · MCP | 95% | 40% | Whole surface shipped; store off-by-default, semantic needs corp |
+| 3 | Remember & Retrieve — store · API · MCP | 96% | 45% | + cross-digest history browser (live offline); store off-by-default, semantic needs corp |
 | 4 | Deliver + reactions flywheel | 80% | 35% | Webhook live; the flywheel is a finished engine, **never spun** |
-| 5 | Terminal UX · setup · onboarding | 92% | 88% | Most-realized stream; works offline today |
-| 6 | Privacy · consent · retention | 80% | 75% | Guardrails strong; the **PC-2 ADR is unwritten** |
-| 7 | Observability · eval · QA | 82% | 60% | Harness + coverage gate built; real corp P/R/F1 un-measured |
+| 5 | Terminal UX · setup · onboarding | 94% | 90% | Most-realized; wizard now collects MM creds too |
+| 6 | Privacy · consent · retention | 82% | 77% | Guardrails strong (+ bearer/PAT log redaction); **PC-2 ADR unwritten** |
+| 7 | Observability · eval · QA | 85% | 63% | Coverage + cost-cap (TD-006) + shellcheck gates; real corp P/R/F1 un-measured |
 | 8 | Docs · architecture · contribution | 88% | 88% | SoT + ADRs + CONTRIBUTING current (truth-pass done) |
 
-**Overall: ~87% built / ~58% live.**
+**Overall: ~88% built / ~60% live.**
+
+> **Update (post-snapshot, same day):** the offline Phase-A batch landed — cross-digest history
+> browser (#175), cost-cap enforcement / TD-006 (#176), bearer/PAT log redaction (#177), wizard
+> MM-creds collection (#178), shellcheck CI lane (#179). Streams 3/5/6/7 nudged up accordingly.
+> The corp pivot (Phase B) is unchanged — still the only path to the big live gains.
 
 ## 3. Per-stream: done / missing
 
@@ -53,8 +58,9 @@ inventory to live **with zero new features** (§5).
 - **Done:** SQLCipher 30-day store (FTS5 + brute-force cosine + RRF hybrid); `InboxAPI` facade
   (retrieve / search / `ask` / summarize / compare / related / open-loops / pending / source verbs);
   `actionpulse-mcp` MCP server + macOS AI-CLI installer; `ask`/RAG; carryover + pending sections.
+- **Done (+):** cross-digest **history browser** — `actionpulse history` over past digest artifacts (#175).
 - **Missing:** `store.enabled=False` by default; semantic / `ask` / carryover need store-on + the
-  corp gateway; cross-digest **history browser** unbuilt. Offline keyword search is what's live today.
+  corp gateway. Offline keyword search + history browse are what's live today.
 
 ### 4 · Deliver + reactions flywheel — 80 / 35
 - **Done:** webhook delivery (live); api-mode + owner-only channel + post-id capture;
@@ -62,25 +68,27 @@ inventory to live **with zero new features** (§5).
 - **Missing:** the flywheel has **never been spun** (no corp deliver → react → calibrate cycle);
   least-privilege **bot** identity; per-section threading; slash commands.
 
-### 5 · Terminal UX / setup — 92 / 88  ← *most realized*
-- **Done:** setup wizard (+ encrypted-store step); launcher menu (+ search / ask rows, store-gated);
-  digest reader; the full terminal design system + conformance CI; global `actionpulse` command.
-- **Missing:** wizard prompts for `MM_PAT` / api-mode delivery (minor); corp visual checks C2–C5.
+### 5 · Terminal UX / setup — 94 / 90  ← *most realized*
+- **Done:** setup wizard (+ encrypted-store step, + MM-creds collection #178); launcher menu
+  (+ search / ask / history rows); digest reader; design system + conformance CI; global command.
+- **Missing:** api-mode delivery **channel** pick in the wizard (corp-interactive — needs the live
+  API); corp visual checks C2–C5.
 
-### 6 · Privacy / Consent / Retention — 80 / 75
+### 6 · Privacy / Consent / Retention — 82 / 77
 - **Done:** fail-closed DM-at-rest redaction (structural — DMs get no chunk rows); consent gate
   (Pydantic validator + wizard/menu UX); retention knobs (7 d plaintext / 7 d ledger / 30 d store);
-  secrets-via-ENV-only; log redaction; fail-closed `--dump-ingest` redaction.
+  secrets-via-ENV-only; log redaction (+ bearer/PAT tokens #177); fail-closed `--dump-ingest` redaction.
 - **Missing:** **the PC-2 per-endpoint data-handling ADR is unwritten** (referenced everywhere as the
   master gate); ARCHITECTURE §16 fictional-masking correction; rotate the exposed PAT; optional
   local-masking fallback.
 
-### 7 · Observability / Eval / QA — 82 / 60
+### 7 · Observability / Eval / QA — 85 / 63
 - **Done:** structlog JSON · Prometheus · healthz · OTel spans; `eval-replay` regression gate; the
-  gold/judge/calibrate harness; **coverage gate (86% on store/api/mcp, CI-enforced)**; CI lanes
-  (test · test-store · test-mcp · coverage · terminal-matrix · eval-replay).
+  gold/judge/calibrate harness; **coverage gate (86% on store/api/mcp)**; cost-cap enforcement
+  (TD-006, #176); CI lanes (test · test-store · test-mcp · coverage · terminal-matrix · eval-replay
+  · **shellcheck** #179).
 - **Missing:** real corp P/R/F1 (calibration un-run); the corp LLM/EWS paths are faked in tests;
-  `cost_limit_per_run` unenforced (TD-006); a true subprocess/stdio MCP e2e; `install.sh` shellcheck.
+  a true subprocess/stdio MCP e2e; EP-11 continuous failure→gold loop.
 
 ### 8 · Docs / Architecture / Contribution — 88 / 88
 - **Done:** ARCHITECTURE SoT + ADR-014 (store) / ADR-015 (MCP); current ROADMAP; RUNBOOK;
@@ -139,6 +147,8 @@ Three PR waves landed this day, all squash-merged to `main`:
   DM-redaction-at-tool-boundary test · RV5 UX (menu search/ask, hide `eval-*`, glyphs).
 - **Architecture refactor** (#168–#172) — `from_config` factories · source-adapter dispatch ·
   config env-flag dedup · `run.py` snapshot extraction · JSON-list dedup + dead-code deletion.
+- **Phase-A offline batch** (#174–#179) — stream-integrated roadmap · cross-digest history browser ·
+  cost-cap (TD-006) · bearer/PAT log redaction · wizard MM-creds · shellcheck CI lane.
 
 ## 7. Deferred (consciously not done)
 
@@ -147,6 +157,6 @@ Three PR waves landed this day, all squash-merged to `main`:
   with real circular-import risk. The god-module coupling is partly inherent.
 - **`NormalizedMessage` → `ingest/models.py`** (11 importers) and the **`EnhancedDigest` /
   `process_digest`** dead subsystem (still test-coupled) — larger cleanups than warranted now.
-- **Wizard `MM_PAT` / api-delivery prompts** — EWS is primary; webhook delivery works; secret
-  *preservation* on re-run already landed.
-- **Everything in §5** — corp-network-only; cannot be validated offline.
+- **Wizard api-mode delivery channel** — MM-creds collection landed (#178); the channel pick is
+  corp-interactive (needs the live API), so it's a Phase-B step.
+- **Everything in the critical path (§5)** — corp-network-only; cannot be validated offline.
