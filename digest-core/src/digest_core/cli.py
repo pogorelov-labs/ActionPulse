@@ -13,6 +13,7 @@ from digest_core.diagnostics import export_diagnostics, _build_env_info
 from digest_core.deliver.mattermost import ping_mattermost_webhook
 from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
+from digest_core.mcp.commands import mcp_app
 from digest_core.ui import resolve_sink
 from digest_core.ui.glyphs import FAIL, OK
 from digest_core.ui.menu import RunChoice, load_env_file, run_menu, stdin_is_tty
@@ -685,6 +686,8 @@ def store_drop(yes: bool = typer.Option(False, "--yes", help="Skip the confirmat
 
 reactions_app = typer.Typer(help="EP-15 reaction feedback on delivered digests (corp-only).")
 app.add_typer(reactions_app, name="reactions")
+
+app.add_typer(mcp_app, name="mcp")
 
 
 @reactions_app.command("harvest")
