@@ -195,7 +195,20 @@ class LLMConfig(BaseModel):
     )
     headers: Dict[str, str] = Field(default_factory=dict, description="Additional headers")
     max_tokens_per_run: int = Field(default=30000, description="Max tokens per run")
-    cost_limit_per_run: float = Field(default=5.0, description="Cost limit per run in USD")
+    cost_limit_per_run: float = Field(
+        default=5.0,
+        description=(
+            "Max USD per run (TD-006). Enforced once price_per_1k_*_usd are set; with the"
+            " default $0 prices (the corp gateway is not billed per token) cost stays 0 and"
+            " the cap never trips — max_tokens_per_run is then the live guard."
+        ),
+    )
+    price_per_1k_input_usd: float = Field(
+        default=0.0, description="USD per 1k input tokens (0 = free, e.g. the corp gateway)"
+    )
+    price_per_1k_output_usd: float = Field(
+        default=0.0, description="USD per 1k output tokens (0 = free)"
+    )
     rate_limit_rpm: int = Field(
         default=15, description="Default per-model RPM when a model is absent from fleet_rpm"
     )
