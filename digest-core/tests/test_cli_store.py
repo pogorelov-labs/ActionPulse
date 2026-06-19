@@ -108,3 +108,32 @@ def test_store_purge_and_drop(monkeypatch, tmp_path):
     rd = runner.invoke(app, ["store", "drop", "--yes"])
     assert rd.exit_code == 0 and "Deleted" in rd.output
     assert not (tmp_path / "var" / "store" / "messages.db").exists()
+
+
+@needs_driver
+def test_ask_cli_keyword_grounded(monkeypatch, tmp_path):
+    import digest_core.ask as ask_mod
+
+    class _FakeGW:
+        def __init__(self, *a, **k):
+            pass
+
+        def judge(self, system, user, trace_id="ask"):
+            return {
+                "answer": "Yes — approve the budget by Friday.",
+                "answered": True,
+                "citations": [{"message_id": "urn:email:a@corp", "quote": "approve the budget"}],
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ask_mod, "LLMGateway", _FakeGW)
+    _enable(monkeypatch, tmp_path)
+    _seed([_msg("a@corp", "please approve the budget by friday")])
+
+    r = runner.invoke(app, ["ask", "budget", "--mode", "keyword", "--json"])
+    assert r.exit_code == 0
+    data = json.loads(r.output)
+    assert data["answered"] is True
+    assert data["citations"][0]["message_id"] == "urn:email:a@corp"

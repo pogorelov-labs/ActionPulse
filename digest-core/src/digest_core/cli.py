@@ -467,6 +467,76 @@ def search(
         typer.echo(f"  {h.received_at[:10]}  {h.source:<5}  {subj:<48}  {snippet}")
 
 
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="A question about your stored messages"),
+    k: int = typer.Option(8, "--k", "-k", help="How many passages to ground the answer on"),
+    mode: str = typer.Option(None, "--mode", help="retrieval: keyword | semantic | hybrid"),
+    source: str = typer.Option(None, "--source", help="Filter retrieval: ews | mm"),
+    since: str = typer.Option(None, "--since", help="Only on/after YYYY-MM-DD"),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Ask a grounded, cited question about your stored messages (RAG over the store).
+
+    Retrieves with hybrid search, then asks the corp gateway ONE question that may only
+    answer from your retrieved messages (Extract-over-Generate). Needs the corp network;
+    keyword `search` stays offline. DMs are never retrievable (redacted at rest).
+    """
+    from digest_core.ask import AskUnavailable, answer_question
+
+    store = _open_store_or_exit()
+    try:
+        eff_mode = mode or store.config.search_default_mode
+        backend = None
+        if eff_mode in ("semantic", "hybrid"):
+            try:
+                backend = _store_embed_backend()
+            except Exception as exc:  # noqa: BLE001 - actionable CLI error
+                typer.echo(
+                    f"{FAIL} {eff_mode} retrieval needs the embeddings gateway: {exc}", err=True
+                )
+                raise typer.Exit(1)
+        try:
+            result = answer_question(
+                store, question, backend=backend, mode=eff_mode, top_k=k, source=source, since=since
+            )
+        except AskUnavailable as exc:
+            typer.echo(f"{FAIL} {exc}", err=True)
+            raise typer.Exit(1)
+    finally:
+        store.close()
+
+    if json_out:
+        import json as _json
+
+        typer.echo(
+            _json.dumps(
+                {
+                    "question": result.question,
+                    "answer": result.answer,
+                    "answered": result.answered,
+                    "citations": [
+                        {"message_id": c.message_id, "quote": c.quote} for c in result.citations
+                    ],
+                    "model": result.model,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    from digest_core.ui import get_console
+
+    console = get_console()
+    console.print(result.answer, style="ap.em" if result.answered else "ap.dim")
+    if result.citations:
+        console.print("\n[ap.dim]sources[/]")
+        for c in result.citations:
+            quote = (" — " + c.quote) if c.quote else ""
+            console.print(f"  [ap.accent]{c.message_id}[/]{quote}", style="ap.dim")
+
+
 store_app = typer.Typer(help="Manage the encrypted message store (opt-in).")
 app.add_typer(store_app, name="store")
 
