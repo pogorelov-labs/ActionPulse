@@ -248,6 +248,83 @@ def _hits_for_chunks(conn, ranked, *, method: str) -> List[SearchHit]:
     return hits
 
 
+def _message_vector(conn, message_id: str, model: str):
+    """Mean-pool the source message's stored chunk vectors → one query vector, or None.
+
+    Lets ``related_to_message`` run OFFLINE when the store is already embedded (no
+    gateway call): the message's own vectors are the query.
+    """
+    import numpy as np
+
+    rows = conn.execute(
+        "SELECT e.dim, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id "
+        "WHERE c.message_id = ? AND e.model = ?",
+        (message_id, model),
+    ).fetchall()
+    vecs: List[Any] = []
+    for dim, blob in rows:
+        if not dim or len(blob) % dim != 0:
+            continue
+        itemsize = len(blob) // dim
+        np_dtype = np.float16 if itemsize == 2 else np.float32
+        vec = np.frombuffer(blob, dtype=np_dtype).astype(np.float32)
+        if vec.shape[0] == dim:
+            vecs.append(vec)
+    if not vecs:
+        return None
+    return np.mean(np.vstack(vecs), axis=0)
+
+
+def related_to_message(
+    conn,
+    message_id: str,
+    *,
+    model: str = "bge-m3",
+    limit: int = 10,
+    max_rows: Optional[int] = None,
+    backend: Optional[EmbeddingBackend] = None,
+) -> List[SearchHit]:
+    """Chunks most similar to ``message_id``, excluding the message's own chunks.
+
+    Uses the message's stored chunk vectors as the query (OFFLINE when embedded); if
+    it has none and a ``backend`` is given, embeds its body on the fly. Returns []
+    when there is nothing to compare (no query vector or no other embedded chunks).
+    """
+    import numpy as np
+
+    qvec = _message_vector(conn, message_id, model)
+    if qvec is None and backend is not None:
+        row = conn.execute(
+            "SELECT body_normalized FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        if row and row[0]:
+            embs = backend.embed([row[0]])
+            if embs:
+                qvec = np.asarray(embs[0], dtype=np.float32)
+    if qvec is None:
+        return []
+    chunk_ids, mat = _load_matrix(conn, model, None, None, max_rows=max_rows)
+    if mat.shape[0] == 0 or qvec.shape[0] != mat.shape[1]:
+        return []
+    own = {
+        r[0]
+        for r in conn.execute("SELECT chunk_id FROM chunks WHERE message_id = ?", (message_id,))
+    }
+    keep = [i for i, cid in enumerate(chunk_ids) if cid not in own]
+    if not keep:
+        return []
+    sub_ids = [chunk_ids[i] for i in keep]
+    sub_mat = mat[keep]
+    q = qvec / (np.linalg.norm(qvec) or 1.0)
+    mat_n = sub_mat / (np.linalg.norm(sub_mat, axis=1, keepdims=True) + 1e-12)
+    sims = mat_n @ q
+    k = min(limit, sims.shape[0])
+    top = np.argpartition(-sims, k - 1)[:k]
+    top = top[np.argsort(-sims[top])]
+    ranked = [(sub_ids[i], float(sims[i])) for i in top]
+    return _hits_for_chunks(conn, ranked, method="related")
+
+
 def hybrid(
     conn,
     backend: EmbeddingBackend,

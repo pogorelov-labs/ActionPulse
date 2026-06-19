@@ -18,6 +18,7 @@ import structlog
 
 from digest_core.store import ingest as _ingest
 from digest_core.store import retention as _retention
+from digest_core.store import retrieve as _retrieve
 from digest_core.store import search as _search
 from digest_core.store._driver import HAS_SQLCIPHER, INSTALL_HINT, connect, key_pragma
 from digest_core.store.schema import apply_schema, migrate
@@ -206,6 +207,61 @@ class MessageStore:
 
     def stats(self) -> Dict[str, Any]:
         return _ingest.stats(self.conn)
+
+    # -- retrieval (offline reads; see store/retrieve.py) -------------------
+
+    def get_message(self, message_id: str):
+        """One message by URN id, or None."""
+        return _retrieve.get_message(self.conn, message_id)
+
+    def get_thread(self, thread_id: str, *, limit: int = 200):
+        """All messages in a thread, oldest-first."""
+        return _retrieve.get_thread(self.conn, thread_id, limit=limit)
+
+    def list_recent(self, *, limit: int = 50, source: Optional[str] = None):
+        """Most recent messages first, optionally by source."""
+        return _retrieve.list_recent(self.conn, limit=limit, source=source)
+
+    def list_by_sender(self, email: str, *, limit: int = 50):
+        """Messages from a sender (case-insensitive), newest-first."""
+        return _retrieve.list_by_sender(self.conn, email, limit=limit)
+
+    def list_by_date_range(
+        self, start: str, end: str, *, source: Optional[str] = None, limit: int = 200
+    ):
+        """Messages in [start, end] inclusive (whole UTC days), oldest-first."""
+        return _retrieve.list_by_date_range(self.conn, start, end, source=source, limit=limit)
+
+    def list_threads(self, *, limit: int = 50, source: Optional[str] = None):
+        """Most-recently-active threads first, with count + latest subject/author."""
+        return _retrieve.list_threads(self.conn, limit=limit, source=source)
+
+    def count_by_sender(self, *, limit: int = 20, since: Optional[str] = None):
+        """Top senders by message count (optionally since a YYYY-MM-DD date)."""
+        return _retrieve.count_by_sender(self.conn, limit=limit, since=since)
+
+    def count_by_day(
+        self, *, days: int = 30, source: Optional[str] = None, now: Optional[datetime] = None
+    ):
+        """Message counts per UTC day over the last ``days`` days."""
+        return _retrieve.count_by_day(self.conn, days=days, source=source, now=now)
+
+    def related(
+        self, message_id: str, *, backend: Any = None, limit: int = 10
+    ) -> "list[SearchHit]":
+        """Messages semantically similar to ``message_id`` (offline when embedded).
+
+        Uses the message's stored chunk vectors as the query; if it has none and a
+        gateway ``backend`` is given, embeds its body on the fly. Excludes itself.
+        """
+        return _search.related_to_message(
+            self.conn,
+            message_id,
+            model=self.config.embedding_model,
+            limit=limit,
+            max_rows=self.config.bruteforce_max_rows,
+            backend=backend,
+        )
 
     def vacuum(self) -> None:
         _retention.vacuum(self.conn)
