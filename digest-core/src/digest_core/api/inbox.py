@@ -317,6 +317,10 @@ class InboxAPI:
             return summarize_passages(passages, config=self._config)
         except AskUnavailable as exc:
             raise GatewayUnavailable(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - summarize is corp-only; any failure ≈ gateway
+            raise GatewayUnavailable(
+                f"summarize_thread needs the corp gateway ({type(exc).__name__})"
+            ) from exc
 
     def compare(
         self, message_id_a: str, message_id_b: str, *, top_terms: int = 15

@@ -74,3 +74,7 @@ async def test_real_protocol_roundtrip(seeded):
 
         prompt = await client.get_prompt("inbox_triage", {})
         assert prompt.messages
+
+        # a resource resolves a real URN id via the triple-slash path (used to return null)
+        res = await client.read_resource("message:///urn:email:a@corp")
+        assert "budget" in str(res.contents).lower()

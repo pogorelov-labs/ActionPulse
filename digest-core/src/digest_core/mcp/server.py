@@ -26,6 +26,7 @@ client config. Gateway verbs (semantic/ask/...) degrade or error honestly off-co
 from __future__ import annotations
 
 import os
+import urllib.parse
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
@@ -269,11 +270,13 @@ def _tool_fetch_source(source: str, digest_date: str) -> List[Dict[str, Any]]:
 
 
 def _resource_message(message_id: str) -> Optional[Dict[str, Any]]:
-    return _record_dict(_get_api().get_message(message_id))
+    # ids are URNs (urn:email:… / urn:mm:…) with ':' / '@'; unquote so an encoded URI
+    # path segment round-trips to the stored id (see the triple-slash template below).
+    return _record_dict(_get_api().get_message(urllib.parse.unquote(message_id)))
 
 
 def _resource_thread(thread_id: str) -> List[Dict[str, Any]]:
-    return _records(_get_api().get_thread(thread_id))
+    return _records(_get_api().get_thread(urllib.parse.unquote(thread_id)))
 
 
 def _resource_stats() -> Dict[str, Any]:
@@ -346,8 +349,10 @@ def _build_app():
             app.tool(name=name)(fn)
     if os.getenv("ACTIONPULSE_MCP_ENABLE_FETCH"):
         app.tool(name="fetch_source")(_tool_fetch_source)
-    app.resource("message://{message_id}")(_resource_message)
-    app.resource("thread://{thread_id}")(_resource_thread)
+    # Triple slash → the id is the URI PATH (not the authority), so a URN's ':'/'@'
+    # survive instead of being mangled into a host/port/userinfo split.
+    app.resource("message:///{message_id}")(_resource_message)
+    app.resource("thread:///{thread_id}")(_resource_thread)
     app.resource("stats://store")(_resource_stats)
     app.prompt(name="inbox_triage")(_prompt_inbox_triage)
     app.prompt(name="catch_up_on_thread")(_prompt_catch_up_on_thread)
