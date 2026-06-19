@@ -156,6 +156,11 @@ def _write_env_file(values: dict[str, str], ntlm_login_hint: Optional[str] = Non
     lines.append("")
     lines.append("# === Optional ===")
     lines.append("")
+    # Store key + MM credentials when configured (secrets; ENV-only, never YAML). Written
+    # here so re-running setup preserves them rather than dropping them on the rewrite.
+    for key in ("DIGEST_STORE_KEY", "MM_PAT", "MM_BASE_URL"):
+        if key in values:
+            lines.append(f"{key}={values[key]}")
     lines.append("# DIGEST_CONFIG_PATH=/path/to/config.yaml")
     lines.append("# DIGEST_OUT_DIR=/custom/out")
     lines.append("# DIGEST_STATE_DIR=/custom/state")
@@ -184,6 +189,7 @@ def _write_config_yaml(
     dm_allowlist: Optional[list[str]] = None,
     dm_consent_acknowledged: bool = False,
     dm_consent_acknowledged_at: Optional[str] = None,
+    store_enabled: bool = False,
 ) -> Path:
     """Generate configs/config.yaml from example with user values applied."""
     if not CONFIG_EXAMPLE.exists():
@@ -237,6 +243,13 @@ def _write_config_yaml(
     if dm_scope != "off":
         mm_source["enabled"] = True
     config["mm_source"] = mm_source
+
+    # Encrypted store: the example ships `store:` commented out, so set the block here when
+    # the wizard enabled it (Config() merges `store` unconditionally → this enabled wins).
+    if store_enabled:
+        store_block = config.get("store", {}) or {}
+        store_block["enabled"] = True
+        config["store"] = store_block
 
     CONFIG_USER.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_USER, "w", encoding="utf-8") as f:
@@ -849,6 +862,51 @@ def _merge_aliases(aliases: list[str], det: Optional[DetectedEnv]) -> list[str]:
     return merged
 
 
+def _store_step(existing_cfg: dict) -> tuple[bool, Optional[str]]:
+    """Optional encrypted-store enable. Returns ``(enabled, key)``.
+
+    Reuses an EXISTING DIGEST_STORE_KEY (never regenerates — that would orphan the
+    encrypted DB) and only generates one on first enable. Declining keeps any existing
+    key (so re-running setup never drops it) with the store off. No-op when the ``store``
+    extra isn't installed.
+    """
+    import secrets
+
+    from digest_core.store import HAS_SQLCIPHER
+
+    existing_key = os.getenv("DIGEST_STORE_KEY") or None
+    default_on = bool((existing_cfg.get("store", {}) or {}).get("enabled")) or bool(existing_key)
+
+    console.print()
+    console.rule("[bold]Encrypted message store (optional)[/]", align="left", style="ap.rule")
+    console.print(
+        "[dim]Persist fetched messages (30d, encrypted at rest) → `search`, `ask`, and the"
+        " cross-day Open-loops / Awaiting-your-reply sections (and the MCP server).[/]"
+    )
+    if not HAS_SQLCIPHER:
+        console.print(
+            "  [ap.dim]Store driver not installed — run `uv sync --extra store`, then re-run"
+            " setup to enable it.[/]"
+        )
+        # Preserve an already-configured key/state even if the driver is absent right now.
+        return (default_on and existing_key is not None), existing_key
+    if not sys.stdin.isatty():
+        return default_on, existing_key  # scripted: keep current state, never prompt
+    if not Confirm.ask("Enable the encrypted message store?", default=default_on):
+        return False, existing_key  # keep the key (don't orphan a prior DB); store stays off
+    key = existing_key or secrets.token_hex(32)
+    if existing_key:
+        console.print("  [ap.ok]✓[/] Store enabled (existing DIGEST_STORE_KEY reused).")
+    else:
+        console.print("  [ap.ok]✓[/] Store enabled; a new DIGEST_STORE_KEY is written (chmod 600).")
+        console.print("  [ap.warn]⚠[/] Keep the key safe — losing it makes the store unreadable.")
+    console.print(
+        "  [ap.dim]Cross-day sections are opt-in: set store.carryover / store.pending: true"
+        " in configs/config.yaml.[/]"
+    )
+    return True, key
+
+
 # ---------------------------------------------------------------------------
 # Main wizard
 # ---------------------------------------------------------------------------
@@ -1041,6 +1099,9 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             console=console,
         )
 
+    # ── Optional: encrypted message store ──
+    store_enabled, store_key = _store_step(existing_cfg)
+
     # ── Optional: CA certificate (auto-first) ──
     console.print()
     console.rule("[bold]TLS · corporate CA[/]", align="left", style="ap.rule")
@@ -1058,6 +1119,14 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
         "LLM_ENDPOINT": llm_endpoint,
         "MM_WEBHOOK_URL": mm_webhook,
     }
+    if store_key:
+        env_values["DIGEST_STORE_KEY"] = store_key
+    # Preserve optional secrets a prior `store init` / setup / hand-edit left in the env
+    # file (the file is rewritten from scratch), so re-running the wizard never drops them.
+    for _opt in ("MM_PAT", "MM_BASE_URL"):
+        _val = os.getenv(_opt)
+        if _val:
+            env_values[_opt] = _val
     console.print()
     console.print(
         Panel(
@@ -1100,6 +1169,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             dm_allowlist=dm.allowlist,
             dm_consent_acknowledged=dm.consent_acknowledged,
             dm_consent_acknowledged_at=dm.consent_acknowledged_at,
+            store_enabled=store_enabled,
         )
     console.print(f"  [ap.ok]✓[/] {env_path}  [dim](chmod 600)[/]")
     console.print(f"  [ap.ok]✓[/] {config_path}")
