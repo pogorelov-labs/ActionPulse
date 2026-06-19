@@ -1,297 +1,146 @@
-# ActionPulse Development Roadmap
+# ActionPulse — Product Roadmap
 
-Полная дорожная карта развития ActionPulse от MVP до LVL5 с детальными планами интеграции и расширения функциональности.
+> **What this is:** the *forward* product plan — current state, the coherent product
+> shape, and what we build next. Updated **2026-06-19**.
+>
+> **Source-of-truth map** (don't trust prose over code):
+> - Contracts / ADRs / pipeline → `digest-core/docs/ARCHITECTURE.md` (verify §13/§14 against code — they lag).
+> - Requirements / principles / unified data schema v3.0 → `docs/planning/BUSINESS_REQUIREMENTS.md`.
+> - Mattermost (the live SoT) → `digest-core/docs/research/MATTERMOST_INTEGRATION_DESIGN.md`.
+> - Terminal/UX program → `docs/development/TERMINAL_DESIGN_ROADMAP.md`.
+> - Quality program (EP-1…EP-15) → `digest-core/docs/audits/`.
+> - Corp bring-back lists → `digest-core/docs/VISIT_CHECKLIST_EP14.md`, `digest-core/docs/STORE_VALIDATION_CHECKLIST.md`.
+>
+> The original LVL1–LVL5 vision (this file's prior content) is **largely delivered through LVL4**;
+> its requirements live in `BUSINESS_REQUIREMENTS.md` and git history.
 
-## Принципы и рамки
+## 1. Where we are (honestly)
 
-### Основные принципы
+ActionPulse is no longer an email-digest MVP. It is a fairly complete **privacy-first
+personal communications-intelligence tool**: an 8-stage pipeline (ingest → normalize →
+threads → evidence → select → LLM extract → assemble → deliver) over **two sources**
+(Exchange/EWS email + Mattermost mentions / allowlisted channels / consent-gated DMs),
+evidence-traced extraction, and — new — an **encrypted searchable corpus**.
 
-- **Extract-over-Generate:** извлекать и цитировать основания (evidence spans) вместо генерации «с нуля»
-- **Трассируемость:** каждый пункт дайджеста связан с канонической ссылкой на источник и позициями цитат
-- **Приватность и ИБ:** минимизация ПДн, управление согласиями для DM, хранение ≤ 7 дней
-- **Версионирование:** промпты, модели, пайплайн — версионируются; релизы проходят quality-gate
-- **Идемпотентность и инкременты:** per-source high-water marks + дедуп
-- **Наблюдаемость:** техметрики + ML-метрики качества, стоимость, фидбек-петля
+The real gap forward is **not features**. It is **activation, proof, and a closed feedback
+loop**. A large fraction of the most powerful capability is **built and shipped but switched
+OFF**, gated behind two things that haven't happened yet: **corp validation** (the PC-2
+data-handling ADR) and **calibration**.
 
-### Единая схема данных
+**Built-but-dark (default off, pending corp validation / calibration):** reranker support
+tier, fused relevance scoring, LLM reference-anchored judge, best-of-N extraction,
+embedding thread-merge, the `recall_floor` citation gate (still 0.0 → annotate-only),
+consent-gated DM ingest, and the entire message store. **Unproven live:** the store
+(merged #141/#143) has never run against the real EWS/MM/gateway/Linux stack.
 
-```json
-{
-  "id": "urn:email:msgId | urn:mm:team/channel/postId",
-  "source": "email | mm-public | mm-dm",
-  "canonical_url": "...",
-  "thread_id": "...",
-  "parent_id": "...",
-  "receivedAt": "UTC-iso",
-  "author": {"display": "...", "role": "..."},
-  "title": "...",
-  "text": "...",
-  "hash_sha1": "...",
-  "evidence_spans": [{"offset_start": 123, "offset_end": 168, "confidence": 0.94}],
-  "lang": "ru|en",
-  "pii_flags": ["phone","email"],
-  "risk_level": "low|med|high",
-  "pipeline_version": "1.0.0",
-  "prompt_version": "mvp.3",
-  "model_id": "llm-xyz-2025-09",
-  "consent_id": "… (только для DM)"
-}
+## 2. The product, coherently — three pillars on a privacy spine
+
+- **① Capture** — sources. EWS email + Mattermost (mentions / allowlisted channels /
+  consent-gated DMs), incremental per-source watermark, multi-source seam. *Built; gaps:
+  chat-tuned extraction prompt, cadence/real-time.*
+- **② Extract & Trust** — the quality program. Verbatim evidence spans, citation gate
+  (shadow→quarantine→repair), best-of-N, reranker tier, reference judge, gold/τ
+  calibration harness. *Built but DARK — corp + calibration gated.*
+- **③ Remember & Retrieve** — the new store. SQLCipher-encrypted 30-day corpus → FTS5 +
+  brute-force-cosine + RRF hybrid search → (next) `ask`/RAG → cross-digest history.
+  *Newest; live-unproven, ask-layer unbuilt.*
+- **Spine (cross-cutting, strong):** privacy / consent / retention; delivery (webhook +
+  owner-only api mode); observability / eval / calibration; terminal UX / setup.
+
+## 3. The flywheel — the strategic core
+
+The whole product is one virtuous loop that is **~80% built and not yet closed**:
+
+```
+deliver digest (api mode, capture post_ids) → users react ✓/✗
+  → harvest reactions → gold set → calibrate recall_floor + judge gate
+  → extraction goes from "annotate-only" to MEASURED & gated
+  → better digests → more reactions  ↺
 ```
 
-### Стадии пайплайна
-
-`ingest → normalize → dedup/threading → evidence-extract → summarize (LLM/экстрактив) → assemble → deliver`
-
-Фолбэки и деградации определены для каждого уровня.
-
-## 🟢 MVP — Саммари почты (Inbox)
-
-### Бизнес-смысл
-
-Сжать входящие письма за период в читаемый Markdown-дайджест с ключевыми задачами, решениями и FYI.
-
-### Функциональность
-
-- Источник: Exchange (on-prem EWS)
-- Отбор писем за сутки (TZ ящика), override параметрами
-- Группировка тредов: `conversation_id` + **семантический треддинг** (нормализованный subject + эмбеддинги + `In-Reply-To/References`)
-- Очистка тела: правила для цитат/подписей + классификатор _quote vs. body_
-- Разделы отчёта: 1) **Action items** 2) **Urgent/Important** 3) **Threads recap** 4) **FYI/Noise**
-
-### Выход
-
-- `digest-YYYY-MM-DD.md` (≤ 400 слов, мобильная вёрстка)
-- `digest-YYYY-MM-DD.json` (метаданные, треды, поля версионирования)
-
-### Трассируемость
-
-Минимум: `id`, `source`, `thread_id`, `canonical_url`, `receivedAt`, `evidence_spans[]`
-
-### DoD (Definition of Done)
-
-- Файлы MD/JSON созданы; пустая выборка → валидный отчёт «новых писем нет»
-- `threads_count == distinct(thread_id)`; `∑ emails_by_thread == emails_count`
-- ≥ 95% пунктов имеют валидную `canonical_url` и хотя бы один `evidence_span`
-- Генерация T90 ≤ 60 сек при ≤ 50 письмах
-- Зафиксированы `pipeline_version`, `prompt_version`, `model_id`
-
-## 🟡 LVL2 — Обнаружение упоминаний пользователя («мои действия»)
-
-### Бизнес-смысл
-
-Быстро показать, где ожидают реакцию, одобрение или решение пользователя.
-
-### Доп. функциональность
-
-- Словарь алиасов: e-mail, логин, инициалы, отображаемые имена (+ склонения RU/EN)
-- Детекция обращений и триггер-фраз (весовые классы: imperative/approval/deadline)
-- Игнор quoted/footers; контекст получателей/отправителей
-- Раздел: **Mentions & My Actions** (каждый пункт с цитатой-основанием и `confidence`)
-
-### Метрики качества (операционализированные)
-
-- Целевые: Precision ≥ 0.85, Recall ≥ 0.80 на **gold-сете**, стратифицированном по RU/EN и email/MM
-- Считать F1, калибровку (Brier), долю пунктов с корректной цитатой
-
-### DoD
-
-- Раздел присутствует; у каждого пункта: цитата из неблоков quoted, `confidence`
-- Порог P/R/F1 выполнен на regression-наборе; инструкции разметки утверждены
-- Алиасы и списки исключений конфигурируемы
-
-## 🟠 LVL3 — Подключение публичных чатов Mattermost + прозрачные источники
-
-### Бизнес-смысл
-
-Объединить почту и публичные каналы MM с явным указанием происхождения каждого пункта.
-
-### Функциональность
-
-- Источники: Exchange + Mattermost (public)
-- Каноникализация ID: `urn:mm:{team}/{channel}/{postId}`
-- Метки источника и места поиска:
-  - `[source: email | subject:"Budget Q4"]`
-  - `[source: mm-public | channel:#project-a | permalink]`
-- «Приложение Источники и ссылки»: сводный список включённых каналов/тредов
-- Семантическое объединение по темам (кластеры) с «шапкой» (top-n keyphrases)
-
-### DoD
-
-- У каждого пункта есть `source` + `canonical_url`/`permalink`
-- В отчёт не попадают приватные чаты; neg-лист каналов применён и залогирован
-- При тесте 3–5 каналов/50 писем — T90 ≤ 90 сек
-- Дедуп кросс-постов/пересылок (sha1/MinHash + canonical URL) включён
-
-## 🔵 LVL4 — Добавление личных сообщений (DM) Mattermost
-
-### Бизнес-смысл
-
-Личный, полнота «моих действий»: DM-события приоритетно попадают в блок _My Actions_.
-
-### Доступ и приватность
-
-- Явное согласие пользователя; **журнал согласий**: `consent_id`, `obtained_at`, `scope`, `revoked_at`
-- Токены минимальных прав (scope: read-DM); возможность в настройках отключить DM
-
-### Функциональность и ИБ
-
-- Пометка приватности: `[source: mm-dm | chat:@username | privacy:private]`
-- Минимизация цитат: символный лимит, маскирование PII (телефоны, аккаунты, e-mail)
-- Ретеншн: ≤ 7 дней (конфигурируемо). Процедура удаления данных субъекта
-
-### DoD
-
-- Согласие зафиксировано (IB-аудит); при отзыве — источник отключён в течение 24 ч
-- DM-пункты помечены `privacy=private`; проверка отсутствия ПДн сверх допустимого
-- Тест «DM-утечка»: пересылка не раскрывает приватные каналы адресатам без доступа
-
-## 🟣 LVL5 — Продуктивизация в виде Mattermost-бота
-
-### Бизнес-смысл
-
-Автодоставка дайджеста в личку; интерактивные запросы и детализация.
-
-### Функциональность
-
-- Плановое формирование (cron); отправка Markdown-дайджеста в DM
-- Команды и фильтры:
-  - `/digest today`, `/digest details #project-a`
-  - `/digest since:2025-10-10 only:actions lang:ru|en`
-- История хранения 7 дней; «переслать» с ACL/аудитом
-
-### Качество и SLO
-
-- SLA доставки: ≥ 95% в окно расписания (±5 мин)
-- Ответ на команду ≤ 5 сек; сплит длинных отчётов на серию сообщений
-- Rate-limit и idempotent delivery (message-key + retry с jitter)
-
-### DoD
-
-- Ежедневная доставка подтверждается логами «сформировано/доставлено»
-- Команды возвращают корректные фильтрованные данные
-- Логируются: длительности стадий, размер отчёта, источники, статус доставки
-
-## Сквозные нефункциональные требования
-
-| Категория | Требование |
-|-----------|------------|
-| **Безопасность** | Секреты в защищённом хранилище; TLS (корп. CA); аудит обращений; scoped-tokens; rotate; DPIA/Threat Model (STRIDE/LINDDUN) |
-| **Надёжность** | Таймауты к EWS/MM/LLM ≤ 120 c; 1 retry c back-off; частичный отчёт при сбое с пометкой «неполный» |
-| **Производительность** | Цели T90: ≤ 60 сек (MVP–LVL2), ≤ 90 сек (LVL3–4) |
-| **Трассируемость** | Для каждой записи: `source`, `id`, `thread_id`, `canonical_url`, `receivedAt`, `evidence_spans` |
-| **Идемпотентность** | Per-source high-water marks: EWS `SyncState` / `(itemId,changeKey)`, MM `last_postId`; окно пересборки −48 ч; дедуп по `hash_sha1` |
-| **Наблюдаемость** | Техметрики: `emails_count`, `mm_posts_count`, `threads_count`, `duration_ms`, `errors`. ML-метрики: ниже |
-| **Хранение** | Markdown/JSON ≤ 7 дней (конфиг). Процедуры удаления по запросу субъекта |
-| **Локализация** | RU/EN авто-детект; локализация текста бота; чёткие правила translit/склонений |
-
-## Качество AI и оценка (quality-ops)
-
-### Gold-сеты и разметка
-
-- Наборы для RU/EN, источников (email/mm), типов событий (action/decision/deadline/mention), длины и шума
-- Инструкции разметчикам; межразметочное согласие κ ≥ 0.7
-
-### Метрики
-
-- _Mentions_: Precision/Recall/F1, Brier, % корректных цитат, доля «не мне»
-- _Action items_: exact-match по _(тип действия, владелец, срок)_ + F1
-- _Coverage значимых_: доля из заранее размеченного списка значимых событий
-- _Citation fidelity_: % пунктов с валидной ссылкой и корректным спаном
-- _Hallucination flags_: доля пунктов без evidence → расследование
-
-### Regression-гейтинг
-
-- Любая смена `model_id`/`prompt_version` проходит A/B с quality-bar (не ниже целевых порогов) и cost-budget
-
-## Стоимость, деградации и фолбэки
-
-| Ситуация | Политика |
-|----------|----------|
-| LLM недоступен / таймаут | Экстрактивное резюме: BM25+правила; без генерации |
-| Превышен cost-budget/user/day | Снижаем контекст, отключаем эмбеддинги, только экстрактив |
-| EWS/MM недоступен | Частичный отчёт по доступным источникам с баннером «неполный» |
-| Большой объём | Батчинг, кэш эмбеддингов, сплит на несколько сообщений у бота |
-
-**Метрики стоимости:** `tokens_in/out`, `cost_usd`, `cache_hit_rate` — с алертами
-
-## KPI и продуктовые метрики
-
-| Метрика | Цель | Как считаем |
-|---------|------|-------------|
-| Покрытие значимых писем/сообщений | ≥ 90% | По gold-сету значимых событий |
-| Точность Action Items | ≥ 80% | Exact-match @ тип/владелец/срок + F1 |
-| Время генерации (T90) | ≤ 60/90 сек | По стадиям: ingest / LLM / assemble |
-| SLA доставки бота | ≥ 95% | Доля доставок в окно ±5 мин |
-| Пользовательская оценка пользы | ≥ 4/5 | Опрос в боте + доля скрытых «noise» |
-
-## Риски и меры
-
-| Риск | Мера |
-|------|------|
-| Ограничения доступа к EWS/MM | Проба доступности, graceful degradation, частичный отчёт |
-| Галлюцинации LLM | Extract-over-Generate, evidence-спаны, quality-gates |
-| Коллизии имён/упоминаний | Алиасы + контекст реципиентов/отправителей, калиброванные пороги |
-| Перегрузка отчёта | Лимит длины, усечение по свежести/важности, «раскрыть детали» |
-| Несогласованность TZ | Используем TZ ящика; в отчёте фиксируем UTC |
-| Утечки ПДн в DM | Маскирование PII, журнал согласий, процедуры удаления |
-
-## План внедрения (этапы и артефакты)
-
-1. **MVP (EWS)** → техпилот на 10 пользователей; артефакты: спецификация схемы, промпты `mvp.*`, gold-сет v1, дашборд наблюдаемости
-2. **LVL2 (mentions)** → разметка, тренировка порогов, регресс-тесты, выпуск `prompt_version=2.x`
-3. **LVL3 (MM public)** → коннектор, каноникализация, дедуп, кластеры тем
-4. **LVL4 (MM DM)** → DPIA/Threat Model, журнал согласий, маскирование PII, процессы удаления
-5. **LVL5 (бот)** → шедулер, команды, ACL пересылки, SLA/статус-страница, алерты
-
-## Приложение A — Мини-спецификация API вывода (JSON)
-
-```json
-{
-  "digest_version": "1.0.0",
-  "generated_utc": "2025-10-11T06:00:00Z",
-  "period": {"from": "2025-10-10T00:00:00Z", "to": "2025-10-10T23:59:59Z"},
-  "threads_count": 14,
-  "emails_count": 37,
-  "mm_posts_count": 52,
-  "sections": [
-    {"name": "actions", "items": [
-      {
-        "title": "Approve Q4 budget items",
-        "source": "email",
-        "canonical_url": "...",
-        "evidence_spans": [{"offset_start": 210, "offset_end": 256, "confidence": 0.91}],
-        "owner": "you",
-        "due": "2025-10-12",
-        "confidence": 0.88
-      }
-    ]}
-  ],
-  "observability": {
-    "duration_ms": 41250,
-    "model_id": "llm-xyz-2025-09",
-    "prompt_version": "mvp.3",
-    "tokens_in": 18342,
-    "tokens_out": 1024,
-    "cost_usd": 0.006
-  }
-}
-```
-
-## Приложение B — DoD чек-листы (выжимка)
-
-- **MVP:** инварианты счётчиков, ≥95% пунктов с `canonical_url` + evidence, T90 ≤ 60 с
-- **LVL2:** P≥0.85 / R≥0.80 (стратифицированный gold-сет), у mention — цитата вне quoted, `confidence`
-- **LVL3:** дедуп кросс-постов, кластеры тем с keyphrases, neg-лист каналов применён
-- **LVL4:** `consent_id` и журнал согласий; маскирование PII; тест «DM-утечка»
-- **LVL5:** SLA ≥95%; команды с фильтрами; idempotent delivery + retry
-
-## Приложение C — Наблюдаемость (метрики и алерты)
-
-- **Тех:** `duration_ms` по стадиям, `errors`, `emails_count`, `mm_posts_count`, `threads_count`
-- **ML/качество:** P/R/F1 (mentions/actions), _coverage_, _citation fidelity_, _hallucination flags_
-- **Стоимость:** `tokens_in/out`, `cost_usd`, `cache_hit_rate`; алерты по budget
-- **Доставка:** SLA, просрочки, повторные попытки, статус-страница
-
----
-
-**Итог:** Документ фиксирует продуктовый смысл, архитектуру пайплайна, схему данных, DoD на каждом уровне, измеримость качества, приватность DM и операционные нормы (наблюдаемость, стоимость, деградации). Такой пакет достаточен, чтобы идти в разработку и параллельно проходить согласования с ИБ/легал/продуктом.
+Closing it turns *"we assert the digest is trustworthy"* into *"trust is measured and
+self-improving."* The only missing links are a **`delivered-posts.jsonl` ledger + reaction
+harvest** (small offline build) and **one corp calibration run**. This is the highest
+*strategic*-value work on the board.
+
+## 4. Phased roadmap
+
+**Phase 0 — Truth & tidy** *(offline, now).* Replace this doc's stale prose with the plan
+above; correct ARCHITECTURE §16 fictional masking claim + banner §13/§14; banner the
+superseded `MATTERMOST_INTEGRATION.md`; sweep the drifted Plane ACTPULSE board; rotate the
+exposed MM PAT + add `pat`/`bearer` to log redaction. *Cheap; makes everything after it
+honest and plannable.*
+
+**Phase 1 — Activate the dark capabilities** *(corp, 1–2 supervised sessions).* Run the
+**EP-14 validation pack** + the **store validation checklist**; write the **PC-2
+data-handling ADR**; with evidence, flip on reranker / fused relevance / judge / best-of-N,
+validate EN extraction, prove the store live. *One or two sessions convert ~10 built-but-dark
+features into real value — highest ROI.*
+
+**Phase 2 — Close the flywheel** *(corp + small build).* Build the delivered-posts ledger +
+reaction harvest; take api-delivery live; run **EP-15** calibration → set `recall_floor > 0`
+and flip the judge gate. *Trust becomes measured and self-improving.*
+
+**Phase 3 — The memory pillar** *(mostly offline, high UX payoff).* Ship `actionpulse ask
+"<question>"` as RAG over the store's hybrid search (the store **removed the old blocker** —
+no longer needs fleet retrieval/PC-2); add a store-backed "search across 30+ digests"
+history browser. *The surface the store was built for.*
+
+**Phase 4 — Reach & depth.** MM chat-tuned extraction prompt + corp A/B (convert the chat
+investment into delivered value); cadence / real-time "urgent nudge" (Track B REST poll);
+least-privilege **bot** delivery identity (vs personal PAT); slash commands; multi-user /
+productization; Docker-Compose deploy.
+
+## 5. Open backlog by stream (condensed; IDs where they exist)
+
+**① Capture / Ingest** — MM chat-extraction prompt (`extract_actions.chat.*`); PR12a
+reranker-pairwise band + LLM-adjudication thread-merge tiers (gated on C6 cosine-threshold
+calibration); cross-source thread-merge surfacing (`duplicate_sources`); ADR-004 EWS
+SyncFolderItems; TF-IDF topic clustering; real-time intraday path (MM_DESIGN §5).
+
+**② Extract & Trust** — **EP-14** corp validation pack (HIGH, checklist ready); **EP-15**
+recall_floor calibration + judge gate-flip (needs reactions + EP-14⑦); fleet live-flag flips
+(`reranker.enabled` / `enable_relevance` / `judge.enabled`, all PC-2-gated); mention/"My
+Actions" personalization (alias dict + RU declensions + dedicated section); EN-extraction
+quality unmeasured (C1/L2).
+
+**③ Remember & Retrieve** — **store corp validation** (checklist); **`ask`/RAG over store**
+(Phase 3 — newly unblocked); store-backed cross-digest history browser.
+
+**Delivery** — per-section threading + **`delivered-posts.jsonl` ledger** (EP-15 prereq);
+reaction harvest; least-privilege bot identity (decision); slash commands; overflow "and N
+more" cap; Docker-Compose; MM file-upload for `export-diagnostics --send-mm`.
+
+**Privacy / Consent / Retention** — correct ARCHITECTURE §16 fictional masking; **PC-2**
+per-endpoint data-handling ADR (master gate); **PC-1** service-account model access;
+`--dump-ingest` retention hole (dev-only + DM exclusion); rotate exposed PAT + log-redaction;
+optional local masking fallback.
+
+**Terminal / UX / Setup** — **U8 "ask your inbox"** (now via the store); L2 corp EN
+validation; L3 docs translation; corp UX checks C2–C5; slash-command UX.
+
+**Observability / Eval** — EP-11 continuous failure→gold→issue loop; OTel collector endpoint
+decision; TD-006 enforce `llm.cost_limit_per_run` (USD cap unenforced; token budget *is*
+enforced).
+
+## 6. Cross-stream dependencies (the gates)
+
+- **PC-2 ADR is the master gate** — blocks every fleet live-flag, EP-14 probes ②④⑤, EP-15
+  calibration, and the store's `reembed` against the real gateway. Nothing in the
+  fleet-quality cluster goes live without it.
+- **Calibration chain:** api-delivery-live → `delivered-posts.jsonl` → reaction harvest →
+  `eval-gold` → `eval-calibrate` → `recall_floor > 0` → judge gate-flip. EP-14⑦ seeds the κ
+  floor EP-15 needs.
+- **U8 `ask`/RAG was blocked on fleet retrieval (PC-2); the merged hybrid store unblocks it**
+  — a re-sequencing win (Phase 3 can run before Phase 1).
+- **MM chat-prompt A/B, EN "production-grade", store live-validation** all need a corp day.
+
+## 7. Top bets (value ÷ effort)
+
+1. **`ask`/RAG over the store** — now offline-buildable, biggest *new* UX surface, leverages
+   what we just built.
+2. **Phase 0 truth/tidy** — near-free; removes actively-misleading docs.
+3. **EP-14 corp activation** — one session lights up ~10 dark features.
+4. **Close the flywheel** (delivered-posts ledger + harvest → EP-15) — makes quality
+   measurable/self-improving.
+5. **MM chat prompt** — turns the chat-ingest investment into delivered value.

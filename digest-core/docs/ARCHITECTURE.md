@@ -1041,8 +1041,13 @@ digest-core/
 ### ADR-006: Email addresses NOT masked locally
 - **Decision:** Email addresses remain visible in local artifacts and logs
 - **Rationale:** They are non-sensitive in corporate context; masking adds noise
-- **Masking boundary:** LLM Gateway applies `x-redaction-policy: strict` before inference
-- **Other PII:** phones, SSN, credit cards, names, IPs — masked in logs
+- **Masking boundary — CORRECTED 2026-06 (was fictional):** there is **no** gateway-side
+  redaction. `x-redaction-policy: strict` is **NOT sent** — the header was never wired
+  (verified). Evidence text (incl. emails/names) reaches the LLM gateway as-is; the corp
+  gateway's own non-logging policy is the only inference-time control. The PC-2
+  data-handling ADR (see `docs/planning/ROADMAP.md` Privacy stream) must formalize this.
+- **Other PII:** phones, SSN, credit cards, names, IPs — masked **in structured logs only**,
+  never in the evidence sent to the model.
 
 ### ADR-007: Russian as primary output language
 - **Decision:** Digest output in Russian, prompt switches to EN for qwen models
@@ -1175,6 +1180,12 @@ digest-core/
 
 ## 13. Known Technical Debt
 
+> ⚠ **STALE (~2026-03).** This table and §14 below predate the redesign / EP-program /
+> U-track / Mattermost-source / message-store work and overstate what is "open". For the
+> current forward plan and an accurate open-backlog inventory, see
+> [`docs/planning/ROADMAP.md`](../../docs/planning/ROADMAP.md). Verify any row here against
+> code before treating it as open.
+
 Сводка ниже отражает **текущий** `main` (~2026-03). Исторические строки Phase 0 в старых версиях этого файла описывали бэклог до мержа hardening — не путать с открытыми задачами.
 
 ### 13.1 Снято в коде (Phase 0)
@@ -1207,6 +1218,10 @@ digest-core/
 ---
 
 ## 14. Roadmap
+
+> ⚠ **HISTORICAL.** The phases below describe the email-only MVP horizon and are largely
+> delivered (MM ingest, api delivery, the message store, the terminal/UX program all
+> shipped since). The live forward roadmap is [`docs/planning/ROADMAP.md`](../../docs/planning/ROADMAP.md).
 
 ### Phase 0 — MVP Hardening + MM Delivery
 
@@ -1354,21 +1369,21 @@ digest-core/
 │                                                      │
 └──────────────────────────┬──────────────────────────┘
                            │
-                   MASKING BOUNDARY
+               NETWORK BOUNDARY (no local redaction)
                            │
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│              LLM GATEWAY (EXTERNAL)                  │
+│              LLM GATEWAY (EXTERNAL, corp)            │
 │                                                      │
-│  x-redaction-policy: strict                          │
-│  x-log-retention: none                               │
-│  x-trace-id: {trace_id}                             │
+│  x-trace-id: {trace_id}                              │
 │                                                      │
-│  All PII masked before inference:                    │
-│    [[REDACT:type=EMAIL;id=2a7c]]                    │
-│    [[REDACT:type=PHONE;id=8f3d]]                    │
-│                                                      │
-│  No payload logging on provider side                 │
+│  ⚠ CORRECTED 2026-06: evidence text is sent AS-IS    │
+│  (incl. emails/names). There is NO x-redaction-policy│
+│  header and NO local pre-inference masking — the     │
+│  [[REDACT:..]] scheme was never wired. The corp      │
+│  gateway's own non-logging policy is the only        │
+│  inference-time control. PC-2 ADR (ROADMAP Privacy)  │
+│  must formalize this.                                │
 └─────────────────────────────────────────────────────┘
 ```
 

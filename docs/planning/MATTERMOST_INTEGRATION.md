@@ -1,21 +1,18 @@
 # Mattermost Integration Plan
 
-> ## 🟡 Status: Planning document — not implementation guide
+> ## ⚠️ SUPERSEDED — historical planning doc (its "not implemented" list is now wrong)
 >
-> **Текущая реализация (Phase 0):** только incoming webhook delivery.
-> Класс [`MattermostDeliverer`](../../digest-core/src/digest_core/deliver/mattermost.py)
-> делает один `httpx.post()` на webhook URL из `MM_WEBHOOK_URL`. Это всё.
+> Live Mattermost source-of-truth:
+> [`MATTERMOST_INTEGRATION_DESIGN.md`](../../digest-core/docs/research/MATTERMOST_INTEGRATION_DESIGN.md).
+> Current state + forward plan: [`ROADMAP.md`](./ROADMAP.md).
 >
-> **Не реализовано** (всё описанное ниже):
-> - 🔴 Bot framework / slash commands (`/digest today`)
-> - 🔴 Чтение публичных каналов MM (LVL3)
-> - 🔴 Multi-DM / приватные сообщения как источник (LVL4)
-> - 🔴 Интерактивный бот с reactions / threading (LVL5)
-> - 🔴 Любая read-сторона интеграции с MM API
+> **What actually shipped** (this doc still calls it "🔴 not implemented"): the MM **read
+> side** — owner @-mentions (#133), allowlisted **channels** (#136), **consent-gated DMs**
+> (#138); plus **api-mode delivery** to an owner-only private channel (#137) with a
+> per-user slug (#139). Still open: an interactive **bot / slash commands** and **reaction
+> harvest** — see ROADMAP §4 (Phase 2 flywheel, Phase 4 reach).
 >
-> Канонический ADR: [`ARCHITECTURE.md` ADR-010](../../digest-core/docs/ARCHITECTURE.md).
-> Phase 0 = webhook (готово), Phase 1 = миграция на Bot API (запланировано).
-> Этот документ описывает желаемое состояние Phase 1+, не текущее.
+> The LVL-by-LVL prose below is the original desired state, kept for history only.
 
 Детальный план интеграции ActionPulse с Mattermost для расширения источников данных и создания интерактивного бота.
 
