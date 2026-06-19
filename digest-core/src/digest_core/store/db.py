@@ -173,6 +173,37 @@ class MessageStore:
             )
         raise ValueError(f"unknown search mode {mode!r} (keyword | semantic | hybrid)")
 
+    def context_passages(self, hits: Any, *, max_chars: int = 600) -> "list[Dict[str, Any]]":
+        """Grounding passages for a list of SearchHits (RAG / `ask`).
+
+        Per hit, return the fuller evidence text — the chunk text when the hit is
+        chunk-level (semantic/hybrid), else the message's normalized body — capped at
+        ``max_chars``, with the metadata a cited answer needs.
+        """
+        out: list[Dict[str, Any]] = []
+        for h in hits:
+            text = None
+            if getattr(h, "chunk_id", None):
+                row = self.conn.execute(
+                    "SELECT text FROM chunks WHERE chunk_id = ?", (h.chunk_id,)
+                ).fetchone()
+                text = row[0] if row else None
+            if text is None:
+                row = self.conn.execute(
+                    "SELECT body_normalized FROM messages WHERE id = ?", (h.message_id,)
+                ).fetchone()
+                text = row[0] if row else (h.snippet or "")
+            out.append(
+                {
+                    "message_id": h.message_id,
+                    "source": h.source,
+                    "received_at": h.received_at,
+                    "subject": h.subject or "",
+                    "text": (text or "")[:max_chars],
+                }
+            )
+        return out
+
     def stats(self) -> Dict[str, Any]:
         return _ingest.stats(self.conn)
 
