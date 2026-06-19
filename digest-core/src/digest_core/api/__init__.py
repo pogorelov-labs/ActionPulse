@@ -8,6 +8,6 @@ build on. Import is light: opening the store (and the gateway backend) is lazy.
 from __future__ import annotations
 
 from digest_core.api.errors import ApiError, CorpOnlyError, GatewayUnavailable
-from digest_core.api.inbox import InboxAPI
+from digest_core.api.inbox import CompareResult, InboxAPI
 
-__all__ = ["InboxAPI", "ApiError", "GatewayUnavailable", "CorpOnlyError"]
+__all__ = ["InboxAPI", "CompareResult", "ApiError", "GatewayUnavailable", "CorpOnlyError"]
