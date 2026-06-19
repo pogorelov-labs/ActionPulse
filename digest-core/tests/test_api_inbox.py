@@ -51,14 +51,17 @@ def test_open_and_retrieve_delegate(tmp_path, monkeypatch):
         assert api.timeline(days=30) == api.count_by_day(days=30)
 
 
-def test_keyword_offline_semantic_raises(tmp_path, monkeypatch):
+def test_keyword_offline_semantic_degrades(tmp_path, monkeypatch):
     with InboxAPI.open(_config(tmp_path, monkeypatch)) as api:
         api.store.upsert_messages([_msg("a@corp", "approve the budget")])
         assert {h.message_id for h in api.search("budget")} == {"urn:email:a@corp"}
+        # No gateway here → semantic/hybrid degrade to keyword (served method is visible).
+        degraded = api.search("budget", mode="semantic")
+        assert {h.message_id for h in degraded} == {"urn:email:a@corp"}
+        assert all(h.provenance["method"] == "keyword" for h in degraded)
+        # strict=True surfaces the failure instead of silently degrading.
         with pytest.raises(GatewayUnavailable):
-            api.search("budget", mode="semantic")
-        with pytest.raises(GatewayUnavailable):
-            api.search("budget", mode="hybrid")
+            api.search("budget", mode="hybrid", strict=True)
 
 
 def test_insight_parity(tmp_path, monkeypatch):

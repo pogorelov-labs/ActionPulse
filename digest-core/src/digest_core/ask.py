@@ -69,28 +69,19 @@ def _user_payload(question: str, passages: List[Dict[str, Any]]) -> str:
     return json.dumps({"question": question, "passages": numbered}, ensure_ascii=False, indent=1)
 
 
-def answer_question(
-    store: Any,
+def _ask_passages(
     question: str,
+    passages: List[Dict[str, Any]],
     *,
-    backend: Any = None,
-    config: Optional[Config] = None,
-    mode: Optional[str] = None,
-    top_k: int = DEFAULT_TOP_K,
-    source: Optional[str] = None,
-    since: Optional[str] = None,
+    config: Config,
+    system_prompt: str,
 ) -> AskResult:
-    """Retrieve from ``store`` and ask the corp LLM for a grounded, cited answer.
+    """Ask the corp LLM ONE grounded, cited question over ready-made ``passages``.
 
-    ``backend`` is the embedding client for semantic/hybrid retrieval (keyword needs
-    none). Raises ``AskUnavailable`` when the gateway can't answer (offline/auth).
+    The shared gateway/budget/parse core behind both ``answer_question`` (passages
+    from a search) and ``summarize_passages`` (passages from a thread). Raises
+    ``AskUnavailable`` when the gateway can't answer (offline/auth).
     """
-    config = config or Config()
-    mode = mode or config.store.search_default_mode
-    hits = store.search(
-        question, mode=mode, backend=backend, source=source, since=since, limit=top_k
-    )
-    passages = store.context_passages(hits) if hits else []
     if not passages:
         return AskResult(
             question=question,
@@ -111,7 +102,7 @@ def answer_question(
     gateway = LLMGateway(ask_llm, rate_broker=broker, stage="ask")
     try:
         verdict = gateway.judge(
-            _system_prompt(config.report.language),
+            system_prompt,
             _user_payload(question, passages),
             trace_id="ask",
         )
@@ -140,4 +131,58 @@ def answer_question(
         passages=passages,
         model=ask_llm.model,
         raw=verdict,
+    )
+
+
+def answer_question(
+    store: Any,
+    question: str,
+    *,
+    backend: Any = None,
+    config: Optional[Config] = None,
+    mode: Optional[str] = None,
+    top_k: int = DEFAULT_TOP_K,
+    source: Optional[str] = None,
+    since: Optional[str] = None,
+) -> AskResult:
+    """Retrieve from ``store`` and ask the corp LLM for a grounded, cited answer.
+
+    ``backend`` is the embedding client for semantic/hybrid retrieval (keyword needs
+    none). Raises ``AskUnavailable`` when the gateway can't answer (offline/auth).
+    """
+    config = config or Config()
+    mode = mode or config.store.search_default_mode
+    hits = store.search(
+        question, mode=mode, backend=backend, source=source, since=since, limit=top_k
+    )
+    passages = store.context_passages(hits) if hits else []
+    return _ask_passages(
+        question, passages, config=config, system_prompt=_system_prompt(config.report.language)
+    )
+
+
+SUMMARIZE_PROMPT_VERSION = "summarize_thread.v1"
+_SUMMARIZE_QUESTION = (
+    "Summarize this thread: the key points, any decisions, and what (if anything) is "
+    "awaited from me."
+)
+
+
+def _summarize_system_prompt(language: str) -> str:
+    prompt = (PROMPTS_DIR / f"{SUMMARIZE_PROMPT_VERSION}.txt").read_text(encoding="utf-8")
+    if language == "ru":
+        prompt += "\nAnswer in Russian (JSON keys stay English; values in Russian).\n"
+    return prompt
+
+
+def summarize_passages(
+    passages: List[Dict[str, Any]], *, config: Optional[Config] = None
+) -> AskResult:
+    """Summarize a thread's ready-made ``passages`` via the corp LLM (one grounded call)."""
+    config = config or Config()
+    return _ask_passages(
+        _SUMMARIZE_QUESTION,
+        passages,
+        config=config,
+        system_prompt=_summarize_system_prompt(config.report.language),
     )

@@ -4,8 +4,9 @@ One facade, one open ``MessageStore`` for the process lifetime (opening per call
 would re-run schema/migrate/PRAGMA every time). Offline verbs — retrieve / list /
 count / keyword search / insights / maintenance — need no network. Gateway verbs
 (semantic & hybrid search, ``ask``, ``related``, ``summarize_thread``, ``compare``,
-embeddings) are wired in the gateway-verbs phase and raise ``GatewayUnavailable``
-when the corp gateway is absent — they never hang.
+embeddings) lazily build the corp embedding/LLM client; when the gateway is absent
+they degrade honestly (search → keyword; ``compare`` cosine → None) or raise
+``GatewayUnavailable`` — they never hang.
 
     with InboxAPI.open(config) as api:
         api.search("budget")
@@ -15,15 +16,44 @@ when the corp gateway is absent — they never hang.
 
 from __future__ import annotations
 
+import re
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import structlog
 
 from digest_core.api.errors import ApiError, GatewayUnavailable
 from digest_core.config import Config
 from digest_core.store.db import MessageStore, StoreError
 from digest_core.store.retrieve import DayCount, MessageRecord, SenderCount, ThreadSummary
 from digest_core.store.search import SearchHit
+
+logger = structlog.get_logger(__name__)
+
+# Terms ignored when diffing two messages (bilingual EN+RU function words).
+_STOPWORDS = frozenset(
+    "the a an and or but for to of in on at by with from is are was were be been being this "
+    "that these those it its as if then than so we you i he she they them our your my me re fwd "
+    "и в во не на с со что как а но или для по от до из за то же бы ли о об к у не да".split()
+)
+_WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+
+
+def _salient_terms(text: str) -> set:
+    """Lowercased content words (len>=3, no stopwords/digits) for a keyword diff."""
+    return {w for w in _WORD_RE.findall((text or "").lower()) if w not in _STOPWORDS}
+
+
+@dataclass(frozen=True)
+class CompareResult:
+    message_id_a: str
+    message_id_b: str
+    cosine: Optional[float]  # None when either message has no stored vectors
+    shared_terms: List[str] = field(default_factory=list)
+    distinct_a: List[str] = field(default_factory=list)
+    distinct_b: List[str] = field(default_factory=list)
 
 
 class InboxAPI:
@@ -32,7 +62,7 @@ class InboxAPI:
     def __init__(self, store: MessageStore, config: Config) -> None:
         self._store = store
         self._config = config
-        self._backend: Any = None  # lazily built by gateway verbs (follow-up phase)
+        self._backend_client: Any = None  # lazily built EmbeddingsClient (gateway)
 
     @classmethod
     def open(cls, config: Optional[Config] = None) -> "InboxAPI":
@@ -95,22 +125,53 @@ class InboxAPI:
         source: Optional[str] = None,
         since: Optional[str] = None,
         limit: Optional[int] = None,
+        strict: bool = False,
     ) -> List[SearchHit]:
-        """Search the store. ``keyword`` is offline; ``semantic``/``hybrid`` need the
-        embedding gateway (corp network) and raise ``GatewayUnavailable`` when absent."""
+        """Search the store. ``keyword`` is offline; ``semantic``/``hybrid`` use the
+        embedding gateway and, when it is unreachable, DEGRADE to keyword (the served
+        method is visible in each hit's ``provenance['method']`` and logged) — unless
+        ``strict=True``, which raises ``GatewayUnavailable`` instead.
+        """
         if mode == "keyword":
             return self._store.search(
                 query, mode="keyword", source=source, since=since, limit=limit
             )
-        return self._search_gateway(query, mode=mode, source=source, since=since, limit=limit)
+        if mode not in ("semantic", "hybrid"):
+            raise ValueError(f"unknown search mode {mode!r} (keyword | semantic | hybrid)")
+        try:
+            return self._store.search(
+                query, mode=mode, backend=self._backend(), source=source, since=since, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 - gateway/embeddings failure → degrade or raise
+            if strict:
+                raise GatewayUnavailable(
+                    f"{mode} search needs the embedding gateway (corp network): {exc}"
+                ) from exc
+            logger.warning("api_search_degraded", requested=mode, served="keyword", error=str(exc))
+            return self._store.search(
+                query, mode="keyword", source=source, since=since, limit=limit
+            )
 
-    def _search_gateway(self, query: str, *, mode: str, source, since, limit) -> List[SearchHit]:
-        # Gateway-backed search is wired in the gateway-verbs phase; until then the
-        # local API serves keyword only.
-        raise GatewayUnavailable(
-            f"{mode} search needs the embedding gateway (corp network); "
-            "use mode='keyword' offline"
-        )
+    # -- gateway backend (lazy; corp network only) -------------------------
+
+    def _backend(self) -> Any:
+        """Build + cache the gateway EmbeddingsClient on first use. Constructing it is
+        offline-safe; the network failure surfaces on the first ``embed`` call."""
+        if self._backend_client is None:
+            from digest_core.llm.fleet import EmbeddingsClient
+            from digest_core.llm.rate_broker import RateBroker
+
+            cfg = self._config
+            broker = RateBroker(
+                fleet_rpm=cfg.llm.fleet_rpm,
+                burst=cfg.llm.fleet_burst,
+                default_rpm=cfg.llm.rate_limit_rpm,
+                stage_call_budgets=cfg.llm.stage_call_budgets,
+            )
+            self._backend_client = EmbeddingsClient(
+                cfg.llm, model=cfg.store.embedding_model, rate_broker=broker, stage="embeddings"
+            )
+        return self._backend_client
 
     # -- insights (offline) ------------------------------------------------
 
@@ -155,10 +216,109 @@ class InboxAPI:
     def _aliases(self) -> List[str]:
         return self._config.user_aliases()
 
-    # -- maintenance (offline) ---------------------------------------------
+    # -- reasoning (gateway; corp network) ---------------------------------
+
+    def related(self, message_id: str, *, limit: int = 10) -> List[SearchHit]:
+        """Messages similar to one you have, by stored chunk vectors. Offline when the
+        store is embedded; if the source isn't embedded it uses the gateway to embed its
+        body, and returns [] (logging) when that is unavailable."""
+        try:
+            return self._store.related(message_id, backend=self._backend(), limit=limit)
+        except Exception as exc:  # noqa: BLE001 - only the unembedded-source fallback hits the net
+            logger.warning("api_related_unavailable", message_id=message_id, error=str(exc))
+            return []
+
+    def ask(
+        self,
+        question: str,
+        *,
+        mode: str = "keyword",
+        top_k: int = 8,
+        source: Optional[str] = None,
+        since: Optional[str] = None,
+    ):
+        """Grounded, cited answer over your messages (corp LLM). Retrieval defaults to
+        keyword (offline); the answer itself always needs the gateway, so it raises
+        ``GatewayUnavailable`` offline. Returns an ``ask.AskResult``."""
+        from digest_core.ask import AskUnavailable, answer_question
+
+        backend = self._backend() if mode != "keyword" else None
+        try:
+            return answer_question(
+                self._store,
+                question,
+                backend=backend,
+                config=self._config,
+                mode=mode,
+                top_k=top_k,
+                source=source,
+                since=since,
+            )
+        except AskUnavailable as exc:
+            raise GatewayUnavailable(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - ask is corp-only; any failure ≈ gateway down
+            raise GatewayUnavailable(f"ask needs the corp gateway ({type(exc).__name__})") from exc
+
+    def summarize_thread(self, thread_id: str, *, limit: int = 200):
+        """One grounded summary of a thread (corp LLM), leading with anything awaiting you.
+        Returns an ``ask.AskResult``; raises ``ApiError`` if the thread is empty."""
+        from digest_core.ask import AskUnavailable, summarize_passages
+
+        records = self._store.get_thread(thread_id, limit=limit)
+        if not records:
+            raise ApiError(f"no messages in thread {thread_id!r}")
+        passages = [
+            {
+                "message_id": r.message_id,
+                "source": r.source,
+                "received_at": r.received_at,
+                "subject": r.subject,
+                "text": (r.body or "")[:600],
+            }
+            for r in records
+        ]
+        try:
+            return summarize_passages(passages, config=self._config)
+        except AskUnavailable as exc:
+            raise GatewayUnavailable(str(exc)) from exc
+
+    def compare(
+        self, message_id_a: str, message_id_b: str, *, top_terms: int = 15
+    ) -> CompareResult:
+        """Compare two messages: cosine over their stored vectors (None when either is
+        unembedded) + a shared/distinct keyword diff. Offline — no gateway call."""
+        from digest_core.store.search import message_cosine
+
+        ra = self._store.get_message(message_id_a)
+        rb = self._store.get_message(message_id_b)
+        if ra is None or rb is None:
+            raise ApiError("one or both messages not found")
+        cosine = message_cosine(
+            self._store.conn, message_id_a, message_id_b, model=self._config.store.embedding_model
+        )
+        ta = _salient_terms(f"{ra.subject} {ra.body}")
+        tb = _salient_terms(f"{rb.subject} {rb.body}")
+        return CompareResult(
+            message_id_a=message_id_a,
+            message_id_b=message_id_b,
+            cosine=cosine,
+            shared_terms=sorted(ta & tb)[:top_terms],
+            distinct_a=sorted(ta - tb)[:top_terms],
+            distinct_b=sorted(tb - ta)[:top_terms],
+        )
+
+    # -- maintenance (offline reads; embed/reembed need the gateway) -------
 
     def sweep_ttl(self, ttl_days: Optional[int] = None) -> int:
         return self._store.sweep_ttl(ttl_days)
+
+    def embed_backlog(self, *, batch_size: int = 128) -> Dict[str, int]:
+        """Embed chunks that have no vector yet (gateway)."""
+        return self._store.embed_backlog(self._backend(), batch_size=batch_size)
+
+    def reembed(self, *, force: bool = False, batch_size: int = 128) -> Dict[str, int]:
+        """Re-embed; ``force`` drops existing vectors first (model/dtype change). Gateway."""
+        return self._store.reembed(self._backend(), force=force, batch_size=batch_size)
 
     def vacuum(self) -> None:
         self._store.vacuum()
@@ -173,7 +333,7 @@ class InboxAPI:
         return self._store
 
     def close(self) -> None:
-        backend = self._backend
+        backend = self._backend_client
         if backend is not None:
             with suppress(Exception):
                 close = getattr(backend, "close", None)

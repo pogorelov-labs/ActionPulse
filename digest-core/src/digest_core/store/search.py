@@ -275,6 +275,23 @@ def _message_vector(conn, message_id: str, model: str):
     return np.mean(np.vstack(vecs), axis=0)
 
 
+def message_cosine(conn, id_a: str, id_b: str, *, model: str = "bge-m3") -> Optional[float]:
+    """Cosine similarity between two messages' mean-pooled stored chunk vectors.
+
+    OFFLINE (no gateway): returns None when either message has no stored vectors for
+    the model, or their dims disagree — the caller treats None as 'not comparable'.
+    """
+    import numpy as np
+
+    va = _message_vector(conn, id_a, model)
+    vb = _message_vector(conn, id_b, model)
+    if va is None or vb is None or va.shape != vb.shape:
+        return None
+    a = va / (np.linalg.norm(va) or 1.0)
+    b = vb / (np.linalg.norm(vb) or 1.0)
+    return float(a @ b)
+
+
 def related_to_message(
     conn,
     message_id: str,
