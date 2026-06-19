@@ -28,7 +28,7 @@ Bare `actionpulse` opens an arrow-key menu; "Run digest" asks exactly one follow
 
 ## What it is
 
-A single-tenant CLI tool. It reads your Exchange inbox, runs it through an 8-stage pipeline, and delivers the result to Mattermost via an **incoming webhook** (the target channel is chosen when the webhook is created in Mattermost).
+A single-tenant CLI tool. It reads your Exchange inbox — and, optionally, your Mattermost @-mentions / allowlisted channels / DMs — runs it through an 8-stage pipeline, and delivers the result to Mattermost via an **incoming webhook** (the target channel is chosen when the webhook is created in Mattermost). An opt-in encrypted store also enables cross-day sections, local `search`/`ask`, and an MCP server (below).
 
 **Not a summarizer** — the LLM extracts facts from evidence, it does not write on its own. Three output sections:
 - **My actions** — what is expected from you
@@ -87,21 +87,24 @@ The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, 
 If you see `No module named 'digest_core'`, the command ran under the system Python outside the project environment. Use `uv run python -m ...` (as in the examples above) or activate `.venv` manually.
 
 ### Mattermost integration (important)
-ActionPulse uses a Mattermost **incoming webhook** to **deliver** the finished digest (Stage 8). It does not read messages or DMs — the MVP uses no "reading" API/WebSocket.
+Mattermost is both a **delivery target** and an optional **ingest source**:
+- **Deliver** (default): an **incoming webhook** posts the finished digest (Stage 8). Write-only, no reading.
+- **Ingest** (opt-in, off by default): with a personal access token (`MM_PAT`) and `--sources ews,mm`, ActionPulse **reads** via the authenticated v4 REST API — your @-mentions, allowlisted channels, and (consent-gated, `mm_source.dm_scope`, default `off`) direct messages. DM bodies are never stored at rest (redacted; guardrail #9).
 
-Details: [`digest-core/CLAUDE.md`](digest-core/CLAUDE.md).
+So: enabling `dm_scope` *does* read DMs — by design, behind explicit consent. Details: [`digest-core/CLAUDE.md`](digest-core/CLAUDE.md).
 
 ---
 
 ## Architecture
 
 ```
-Exchange (EWS)
-    └── INGEST → NORMALIZE → THREADS → EVIDENCE → SELECT → LLM → ASSEMBLE → DELIVER
-                                                                               └── Mattermost (webhook)
+Exchange (EWS)  ─┐
+Mattermost (API) ─┴─ INGEST → NORMALIZE → THREADS → EVIDENCE → SELECT → LLM → ASSEMBLE → DELIVER
+   (opt-in source)                                                                          └── Mattermost (webhook)
+                  └─ (opt-in) encrypted store → search · ask · open-loops/pending · MCP server
 ```
 
-LLM: `qwen35-397b-a17b` via the corporate gateway, 15 RPM, **max 2 calls per run** (1 primary extraction + an optional quality retry, see ADR-008).
+LLM: `qwen35-397b-a17b` via the corporate gateway, 15 RPM. The extractor uses **2 calls per run** (1 primary + an optional quality retry); other stages have their own per-stage budgets (ADR-008 v2: `llm.stage_call_budgets`).
 
 Full stage contracts: [`digest-core/docs/ARCHITECTURE.md`](digest-core/docs/ARCHITECTURE.md).
 

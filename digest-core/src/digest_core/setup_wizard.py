@@ -231,6 +231,11 @@ def _write_config_yaml(
     mm_source["dm_allowlist"] = list(dm_allowlist or [])
     mm_source["dm_consent_acknowledged"] = bool(dm_consent_acknowledged)
     mm_source["dm_consent_acknowledged_at"] = dm_consent_acknowledged_at
+    # A chosen DM scope is inert unless MM ingest is enabled — flip the master switch so
+    # the consent the user just gave is not a silent no-op. (Ingest still needs MM_PAT in
+    # env and running with `--sources ews,mm`; the wizard surfaces that after the DM step.)
+    if dm_scope != "off":
+        mm_source["enabled"] = True
     config["mm_source"] = mm_source
 
     CONFIG_USER.parent.mkdir(parents=True, exist_ok=True)
@@ -713,6 +718,14 @@ def _ask_dm_partners(con, current: list[str]) -> list[str]:
     return normalize_partners(raw)
 
 
+def _dm_ingest_note(con) -> None:
+    """After a non-off DM scope: MM ingest is on, but two more things are needed."""
+    con.print(
+        "  [ap.dim]MM ingest is now enabled — it also needs MM_PAT (+ MM_BASE_URL) in your "
+        "env (~/.config/actionpulse/env) and running with `--sources ews,mm`.[/]"
+    )
+
+
 def _dm_step(existing_cfg: dict) -> DMResult:
     """Direct-messages (ingest) sub-section of the Mattermost step.
 
@@ -769,6 +782,7 @@ def _dm_step(existing_cfg: dict) -> DMResult:
                 f"  [ap.ok]✓[/] DM scope: [bold]Selected[/] ({len(partners)} partner"
                 f"{'s' if len(partners) != 1 else ''})"
             )
+            _dm_ingest_note(console)
         return DMResult(
             scope="selected",
             allowlist=partners,
@@ -786,6 +800,7 @@ def _dm_step(existing_cfg: dict) -> DMResult:
         console.print("  [ap.warn]⚠[/] Not confirmed — DMs stay OFF.")
         return DMResult(scope="off", allowlist=[])
     console.print("  [ap.ok]✓[/] DM scope: [bold]All DMs[/] [ap.warn](every conversation)[/]")
+    _dm_ingest_note(console)
     return DMResult(
         scope="all",
         allowlist=[],

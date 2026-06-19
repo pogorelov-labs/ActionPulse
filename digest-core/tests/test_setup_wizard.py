@@ -336,6 +336,30 @@ class TestWriteConfigYaml:
         model = MattermostSourceConfig(**block)
         assert model.dm_scope == "selected"
 
+    def test_dm_scope_flips_mm_ingest_enabled(self, tmp_path, monkeypatch):
+        # The example ships mm_source.enabled: false; choosing any DM scope must flip it
+        # true so the consent the user gave is not a silent no-op.
+        example = tmp_path / "config.example.yaml"
+        with open(example, "w") as f:
+            yaml.dump({"ews": {}, "llm": {}, "mm_source": {"enabled": False}}, f)
+        user_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("digest_core.setup_wizard.CONFIG_EXAMPLE", example)
+        monkeypatch.setattr("digest_core.setup_wizard.CONFIG_USER", user_config)
+        _write_config_yaml(
+            user_upn="user@corp.ru",
+            ews_endpoint="https://ews",
+            llm_endpoint="https://llm",
+            derived=_derive_from_email("user@corp.ru"),
+            verify_ca=None,
+            dm_scope="selected",
+            dm_allowlist=["@ann"],
+            dm_consent_acknowledged=True,
+            dm_consent_acknowledged_at="2026-06-18T12:00:00+00:00",
+        )
+        with open(user_config) as f:
+            config = yaml.safe_load(f)
+        assert config["mm_source"]["enabled"] is True  # flipped on by the chosen scope
+
 
 class TestDmSummaryValue:
     """The summary-table DM row text."""

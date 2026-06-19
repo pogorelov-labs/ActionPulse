@@ -193,4 +193,13 @@ def offer_install(console, *, assume_yes: bool = False) -> bool:
             InstallStatus.UPDATED,
         }
     console.print("  [ap.dim]Undo: actionpulse mcp uninstall --all[/]")
+    # The server exposes the store — which must be set up to expose anything.
+    from digest_core.ui.menu import load_env_file
+
+    load_env_file()
+    if not os.getenv("DIGEST_STORE_KEY"):
+        console.print(
+            "  [ap.warn]⚠[/] The store isn't set up yet — run `actionpulse store init` (and "
+            "`uv sync --extra store`, then enable it), or the server exposes nothing."
+        )
     return installed_any

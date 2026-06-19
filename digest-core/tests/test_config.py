@@ -298,6 +298,18 @@ def test_yaml_threading_env_still_wins(tmp_path, monkeypatch):
     assert cfg.threading.embedding_merge is False  # ENV beats YAML
 
 
+def test_threading_env_applies_without_yaml_block(tmp_path, monkeypatch):
+    """DIGEST_THREADING_* applies even when the YAML has NO `threading:` section
+    (config.example ships it commented) — the merge is unconditional, like `store`.
+    Regression: it used to be guarded on `"threading" in yaml_config` and silently dropped."""
+    custom = tmp_path / "no_threading.yaml"
+    custom.write_text("ews:\n  endpoint: x\n", encoding="utf-8")  # no threading block
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(custom))
+    monkeypatch.setenv("DIGEST_THREADING_EMBEDDING_MERGE", "true")
+    cfg = Config()
+    assert cfg.threading.embedding_merge is True  # env honored despite no YAML block
+
+
 class TestCoerceEnvValue:
     """Unit tests for the env-string → field-type coercion helper.
 
