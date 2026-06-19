@@ -70,7 +70,7 @@ Each stream: its objective, then ordered milestones with phase tags.
 
 ### Stream 6 · Privacy / Consent / Retention — *a defensible, documented posture*
 - **✓** Fail-closed DM-at-rest redaction (structural), consent gate + UX, retention knobs, secrets-ENV-only, log + dump redaction.
-- **A** **Write the PC-2 per-endpoint data-handling ADR** — the master gate. Draft the skeleton + technical facts now (from ADR-014/015); fill corp-policy specifics at the session.
+- **✓/B** PC-2 per-endpoint data-handling ADR — the master gate. **Drafted offline** (`digest-core/docs/PC2_DATA_HANDLING.md`: per-endpoint data-flow table + controls + default-deny framework); **fill the `<TBD>` corp-policy statements at the session**, then flip Status → ACCEPTED.
 - **A** Rotate the exposed MM PAT; add `pat` / `bearer` to log redaction; correct ARCHITECTURE §16 fictional-masking claim.
 - **B** PC-1 service-account model-access decision.
 - **D** Optional local-masking fallback.
@@ -96,7 +96,8 @@ Everything offline-buildable, front-loaded so the corp session is pure execution
 
 > **✓ Shipped (#175–#179):** cross-digest history browser · cost-cap enforcement (TD-006) ·
 > bearer/PAT log redaction · wizard MM-creds collection · shellcheck CI lane.
-> **Remaining in Phase A:** draft the **PC-2 ADR** + corp-activation runbook (S6/S8); rotate the
+> **Remaining in Phase A:** the **PC-2 ADR** is drafted (`digest-core/docs/PC2_DATA_HANDLING.md`) —
+> only the corp `<TBD>` answers remain (Phase B); corp-activation runbook (S8); rotate the
 > exposed PAT + §16 masking correction (S6); verify the flywheel on synthetic data (S4); the
 > subprocess/stdio MCP e2e (S7); docs relocation/consolidation (S8).
 

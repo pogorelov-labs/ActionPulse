@@ -12,7 +12,7 @@ architecture/roadmap see [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 | Precondition | Status | Effect |
 |---|---|---|
 | **PC-1** service-account role | ✅ **Personal** | Extractor = `qwen35-397b-a17b` @ **15 RPM** — already the config default, no change |
-| **PC-2** per-endpoint data-handling ADR | ⏳ unresolved | The **fleet stays off** (reranker / embeddings / judge) |
+| **PC-2** per-endpoint data-handling ADR ([draft](./PC2_DATA_HANDLING.md)) | ⏳ unresolved | The **fleet stays off** (reranker / embeddings / judge) until each endpoint is `CONFIRMED` in the ADR |
 
 The pipeline runs in the plan's **Conservative variant**: deterministic IDs,
 content-aware idempotency, per-session TLS, per-stage degradation, traceable

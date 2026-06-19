@@ -1040,7 +1040,7 @@ digest-core/
   redaction. `x-redaction-policy: strict` is **NOT sent** — the header was never wired
   (verified). Evidence text (incl. emails/names) reaches the LLM gateway as-is; the corp
   gateway's own non-logging policy is the only inference-time control. The PC-2
-  data-handling ADR (see `docs/planning/ROADMAP.md` Privacy stream) must formalize this.
+  data-handling ADR (`PC2_DATA_HANDLING.md`, DRAFT) formalizes this per endpoint.
 - **Other PII:** phones, SSN, credit cards, names, IPs — masked **in structured logs only**,
   never in the evidence sent to the model.
 
