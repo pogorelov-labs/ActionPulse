@@ -10,7 +10,7 @@ is a self-contained unit that reads from / writes to the context.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -41,6 +41,15 @@ from digest_core.ingest.source_adapter import (
     canonical_source,
     run_sources,
 )
+
+# Ingest-snapshot (de)serialization was extracted to ingest/snapshot.py (god-module split).
+# Re-exported under the historical _-prefixed names so run.py's pipeline + the many tests that
+# call ``runner._dump_ingest_snapshot`` / ``_serialize_message`` keep working unchanged.
+from digest_core.ingest.snapshot import DM_AT_REST_REDACTION as _DM_AT_REST_REDACTION  # noqa: F401
+from digest_core.ingest.snapshot import deserialize_message as _deserialize_message  # noqa: F401
+from digest_core.ingest.snapshot import dump_ingest_snapshot as _dump_ingest_snapshot
+from digest_core.ingest.snapshot import load_ingest_snapshot as _load_ingest_snapshot
+from digest_core.ingest.snapshot import serialize_message as _serialize_message  # noqa: F401
 from digest_core.llm.fleet import RerankerClient
 from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
@@ -2089,63 +2098,8 @@ def _sort_sections(sections: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 #: Marker substituted for a DM body in an at-rest snapshot (payload-free).
-_DM_AT_REST_REDACTION = "[DM content redacted at rest]"
-
-
-def _serialize_message(message: NormalizedMessage) -> Dict[str, Any]:
-    payload = asdict(message)
-    for key in ("datetime_received", "received_at"):
-        value = payload.get(key)
-        if isinstance(value, datetime):
-            payload[key] = value.isoformat()
-    # Privacy boundary (design §6, guardrail #9): never persist raw DM text at rest. A
-    # --dump-ingest snapshot is dev-only AND pruning is deliberately skipped for dumps, so
-    # an un-redacted DM dump would be un-pruned third-party PII. Use the SAME fail-closed
-    # predicate as the store (redact_mm_body_at_rest): only Mattermost OPEN ('O') / PRIVATE
-    # ('P') *channel* posts keep their body; DMs ('D'/'G') AND any unknown/missing channel
-    # type are redacted — a privacy gate on third-party content must not leak a body just
-    # because the type was indeterminate. Only the on-disk snapshot is touched (the live
-    # in-memory run is unaffected), so a replayed dump carries no DM content.
-    from digest_core.store.models import redact_mm_body_at_rest
-
-    if redact_mm_body_at_rest(payload.get("source"), payload.get("mm_channel_type")):
-        payload["text_body"] = _DM_AT_REST_REDACTION
-        payload["body_norm"] = _DM_AT_REST_REDACTION
-    return payload
-
-
-def _deserialize_message(payload: Dict[str, Any]) -> NormalizedMessage:
-    message_payload = dict(payload)
-    for key in ("datetime_received", "received_at"):
-        value = message_payload.get(key)
-        if isinstance(value, str):
-            message_payload[key] = datetime.fromisoformat(value)
-    return NormalizedMessage(**message_payload)
-
-
-def _dump_ingest_snapshot(
-    path: Path, messages: Sequence[NormalizedMessage], digest_date: str
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "meta": {
-            "source": "ews",
-            "digest_date": digest_date,
-            "fetch_timestamp": datetime.now(timezone.utc).isoformat(),
-            "count": len(messages),
-        },
-        "messages": [_serialize_message(message) for message in messages],
-    }
-    _write_json(path, payload)
-
-
-def _load_ingest_snapshot(path: Path) -> List[NormalizedMessage]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(payload, list):
-        messages = payload
-    else:
-        messages = payload.get("messages", [])
-    return [_deserialize_message(message) for message in messages]
+# --dump-ingest / --replay-ingest (de)serialization lives in ingest/snapshot.py now
+# (god-module split); re-exported near the top under the historical _-names.
 
 
 def _build_evidence_summary(
