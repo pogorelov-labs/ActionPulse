@@ -1443,12 +1443,12 @@ class Config(BaseSettings):
             self._merge_model(self.eval, yaml_config["eval"], env_prefix="EVAL")
         if "extract" in yaml_config:
             self._merge_model(self.extract, yaml_config["extract"], env_prefix="EXTRACT")
-        # PR12a `threading` section: was schema-only and silently ignored from
-        # YAML (no merge branch), so `embedding_merge` — a PC-2-gated /v1/embeddings
-        # egress flag — could only ever be set, with no effect, in config.yaml.
-        # env_prefix gives DIGEST_THREADING_* precedence over the YAML values.
-        if "threading" in yaml_config:
-            self._merge_model(self.threading, yaml_config["threading"], env_prefix="THREADING")
+        # Merge `threading` UNCONDITIONALLY (config.example ships it commented out, like
+        # `store`): _merge_model also applies the generic DIGEST_THREADING_<FIELD> env
+        # overrides, so DIGEST_THREADING_EMBEDDING_MERGE works for an operator who never
+        # wrote a threading block. Guarding on `"threading" in yaml_config` (the old
+        # behaviour) silently dropped those env overrides in a stock checkout.
+        self._merge_model(self.threading, yaml_config.get("threading", {}), env_prefix="THREADING")
 
     def _merge_model(
         self,
