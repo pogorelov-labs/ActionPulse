@@ -137,8 +137,37 @@ jobs:
       - name: Install dependencies (+ mcp + store extras)
         run: uv sync --all-groups --extra mcp --extra store
 
-      - name: Run MCP server tests (incl. real stdio round-trip)
+      - name: Run MCP server tests (tool bodies + in-memory protocol round-trip)
         run: uv run --extra mcp --extra store pytest tests/test_mcp_server.py tests/test_mcp_e2e.py -q
+        env:
+          PYTHONPATH: src
+
+  coverage:
+    # Coverage gate on the recently-shipped, highest-risk subsystems (store / api / mcp,
+    # scoped in pyproject [tool.coverage.run]). The floor (80) sits below the current ~86%
+    # so refactors keep headroom while a real regression fails the build. Installs both
+    # extras like the store/mcp lanes so those paths actually execute.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'digest-core/pyproject.toml'
+
+      - name: Install dependencies (+ store + mcp extras)
+        run: uv sync --all-groups --extra store --extra mcp
+
+      - name: Coverage gate (store/api/mcp, fail-under 80)
+        run: >-
+          uv run --extra store --extra mcp pytest tests/ -q
+          --ignore=tests/test_menu_pty.py --ignore=tests/test_reader.py
+          --cov --cov-report=term-missing --cov-fail-under=80
         env:
           PYTHONPATH: src
 
