@@ -42,8 +42,8 @@ consent-gated DM ingest, and the entire message store. **Unproven live:** the st
   (shadow→quarantine→repair), best-of-N, reranker tier, reference judge, gold/τ
   calibration harness. *Built but DARK — corp + calibration gated.*
 - **③ Remember & Retrieve** — the new store. SQLCipher-encrypted 30-day corpus → FTS5 +
-  brute-force-cosine + RRF hybrid search → (next) `ask`/RAG → cross-digest history.
-  *Newest; live-unproven, ask-layer unbuilt.*
+  brute-force-cosine + RRF hybrid search → `ask`/RAG (**SHIPPED #145**) → InboxAPI + MCP
+  surface (**SHIPPED**) → (next) cross-digest history browser. *Newest; live-unproven.*
 - **Spine (cross-cutting, strong):** privacy / consent / retention; delivery (webhook +
   owner-only api mode); observability / eval / calibration; terminal UX / setup.
 
@@ -81,10 +81,11 @@ features into real value — highest ROI.*
 reaction harvest; take api-delivery live; run **EP-15** calibration → set `recall_floor > 0`
 and flip the judge gate. *Trust becomes measured and self-improving.*
 
-**Phase 3 — The memory pillar** *(mostly offline, high UX payoff).* Ship `actionpulse ask
-"<question>"` as RAG over the store's hybrid search (the store **removed the old blocker** —
-no longer needs fleet retrieval/PC-2); add a store-backed "search across 30+ digests"
-history browser. *The surface the store was built for.*
+**Phase 3 — The memory pillar** *(mostly offline, high UX payoff).* `actionpulse ask
+"<question>"` (RAG over the store's hybrid search) **shipped (#145)** — together with the
+InboxAPI + MCP surface — so the old fleet-retrieval/PC-2 blocker is gone. **Remaining:** corp
+validation of the store on real mail + a store-backed "search across 30+ digests" history
+browser. *The surface the store was built for — now built, not yet proven live.*
 
 **Phase 4 — Reach & depth.** MM chat-tuned extraction prompt + corp A/B (convert the chat
 investment into delivered value); cadence / real-time "urgent nudge" (Track B REST poll);
@@ -104,8 +105,8 @@ recall_floor calibration + judge gate-flip (needs reactions + EP-14⑦); fleet l
 Actions" personalization (alias dict + RU declensions + dedicated section); EN-extraction
 quality unmeasured (C1/L2).
 
-**③ Remember & Retrieve** — **store corp validation** (checklist); **`ask`/RAG over store**
-(Phase 3 — newly unblocked); store-backed cross-digest history browser.
+**③ Remember & Retrieve** — **`ask`/RAG over store SHIPPED (#145)** + InboxAPI/MCP surface;
+**remaining:** store corp validation (checklist) + store-backed cross-digest history browser.
 
 **Delivery** — per-section threading + **`delivered-posts.jsonl` ledger** (EP-15 prereq);
 reaction harvest; least-privilege bot identity (decision); slash commands; overflow "and N
@@ -116,8 +117,8 @@ per-endpoint data-handling ADR (master gate); **PC-1** service-account model acc
 `--dump-ingest` retention hole (dev-only + DM exclusion); rotate exposed PAT + log-redaction;
 optional local masking fallback.
 
-**Terminal / UX / Setup** — **U8 "ask your inbox"** (now via the store); L2 corp EN
-validation; L3 docs translation; corp UX checks C2–C5; slash-command UX.
+**Terminal / UX / Setup** — **U8 "ask your inbox" SHIPPED** (`actionpulse ask`, #145); L2
+corp EN validation; L3 docs translation; corp UX checks C2–C5; slash-command UX.
 
 **Observability / Eval** — EP-11 continuous failure→gold→issue loop; OTel collector endpoint
 decision; TD-006 enforce `llm.cost_limit_per_run` (USD cap unenforced; token budget *is*
@@ -131,14 +132,15 @@ enforced).
 - **Calibration chain:** api-delivery-live → `delivered-posts.jsonl` → reaction harvest →
   `eval-gold` → `eval-calibrate` → `recall_floor > 0` → judge gate-flip. EP-14⑦ seeds the κ
   floor EP-15 needs.
-- **U8 `ask`/RAG was blocked on fleet retrieval (PC-2); the merged hybrid store unblocks it**
-  — a re-sequencing win (Phase 3 can run before Phase 1).
+- **U8 `ask`/RAG was blocked on fleet retrieval (PC-2); the merged hybrid store unblocked it
+  and `ask` shipped (#145)** — the re-sequencing win realized (Phase 3 ran before Phase 1).
 - **MM chat-prompt A/B, EN "production-grade", store live-validation** all need a corp day.
 
 ## 7. Top bets (value ÷ effort)
 
-1. **`ask`/RAG over the store** — now offline-buildable, biggest *new* UX surface, leverages
-   what we just built.
+1. **Store corp validation + cross-digest history browser** — `ask`/RAG already **shipped**
+   (#145); the remaining retrieve work is proving the store live + the history browser (the
+   biggest *new* UX surface left, leveraging what we just built).
 2. **Phase 0 truth/tidy** — near-free; removes actively-misleading docs.
 3. **EP-14 corp activation** — one session lights up ~10 dark features.
 4. **Close the flywheel** (delivered-posts ledger + harvest → EP-15) — makes quality

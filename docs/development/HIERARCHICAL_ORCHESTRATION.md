@@ -1,5 +1,14 @@
 # Hierarchical Orchestration: Автоматическое масштабирование
 
+> ## ⚠️ STALE — describes REMOVED code (do not rely on this)
+> The `hierarchical/` module was **deleted** during the multi-agent redesign (REDESIGN_PLAN
+> "hierarchical cleanup"). Only a dead no-op `HierarchicalConfig` remains in `config.py`;
+> none of the auto-activation, must-include, or merge behavior described below exists in the
+> codebase. This file is kept only as a historical design record and is a candidate for
+> `docs/legacy/`. For the current architecture see
+> [`digest-core/docs/ARCHITECTURE.md`](../../digest-core/docs/ARCHITECTURE.md) and
+> [`docs/planning/ROADMAP.md`](../planning/ROADMAP.md).
+
 ## Обзор
 
 Модуль **Hierarchical Orchestration** автоматически переключается в иерархический режим при больших объёмах писем, гарантируя включение обязательных чанков (mentions + last_update) и применяя merge-политику с citations.
