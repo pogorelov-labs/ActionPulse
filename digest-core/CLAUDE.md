@@ -44,7 +44,7 @@ make docker-run                       # Run with env vars and volume mounts
 ```
 1.INGEST (ews.py) → 2.NORMALIZE (html.py, quotes.py) → 3.THREADS (build.py)
 → 4.EVIDENCE (split.py, BUDGET OWNER ≤3000 tokens) → 5.SELECT (context.py)
-→ 6.LLM (gateway.py, qwen35-397b-a17b, max 2 calls/run) → 7.ASSEMBLE (jsonout.py, markdown.py)
+→ 6.LLM (gateway.py, qwen35-397b-a17b, extractor ≤2 calls; per-stage budgets ADR-008 v2) → 7.ASSEMBLE (jsonout.py, markdown.py)
 → 8.DELIVER (mattermost.py, webhook/bot)
 ```
 

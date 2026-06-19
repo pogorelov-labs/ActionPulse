@@ -38,32 +38,27 @@
 ## 3. System Context
 
 ```
-  IMPLEMENTED                                    PLANNED
-  ==========                                     =======
+                          ┌──────────────────────────────────────────────────┐
+  Exchange (EWS/NTLM) ───>│              digest-core (Python 3.11)            │
+                          │                                                  │
+  Mattermost (v4 API) ───>│  ingest → normalize → threads → evidence →       │
+   (opt-in source:        │    select → LLM extraction → assemble → deliver  │
+    @-mentions, channels,  │                                                  │
+    consent-gated DMs)     │  Outputs: digest-YYYY-MM-DD.{json,md}            │
+                          │   → Mattermost (incoming webhook OR authenticated │
+  Corp LLM Gateway   <──> │      api delivery) · Prometheus :9108 · logs      │
+  (qwen35-397b-a17b,      └───────────────────────┬──────────────────────────┘
+   15 RPM; corp-only)                             │ (opt-in, encrypted at rest)
+                          ┌───────────────────────▼──────────────────────────┐
+                          │  message store (SQLCipher + FTS5 + vectors)       │
+                          │   → search · ask · open-loops / pending · InboxAPI │
+                          │   → MCP server (actionpulse-mcp, stdio)           │
+                          └──────────────────────────────────────────────────┘
 
-┌─────────────┐     ┌──────────────────────────────────────────────────┐
-│  Exchange    │────>│                                                  │
-│  (EWS/NTLM) │     │              digest-core (Python 3.11)           │
-└─────────────┘     │                                                  │
-                    │  ingest → normalize → threads → evidence         │
-┌ ─ ─ ─ ─ ─ ─┐     │    → select → LLM extraction → assemble         │
-  Mattermost  ·--->│        → deliver (file + MM incoming webhook)    │
-  channel ingest   │                                                  │
-  (Phase 3)        │  Outputs:                                        │
-└ ─ ─ ─ ─ ─ ─┘     │    digest-YYYY-MM-DD.json + .md (file)           │
-                    │    Mattermost (webhook, Phase 0)                 │
-┌─────────────┐     │    Prometheus metrics (:9108)                    │
-│  Corp LLM   │<-->│    Structured logs (JSON)                        │
-│  Gateway    │     │    Health/readiness (:9109)                      │
-│             │     └──────────────────────────────────────────────────┘
-│qwen35-397b-a17b │             │                │
-│ 15 RPM limit│     ┌───────▼──┐      ┌──────▼──────┐
-└─────────────┘     │ File/S3  │      │  Mattermost │
-                    │ (MVP)    │      │  DM (webhook│
-                    └──────────┘      │  or bot API)│
-                                      └─────────────┘
-
-  ───── implemented    ─ ─ ─ planned (ingest only)
+  Network: EWS + LLM gateway are corp-only; Mattermost delivery works anywhere,
+  ingest is corp-only. Store + MCP are opt-in (default off). Gateway-backed features
+  (semantic/hybrid search, ask, reranker, judge) are gated on PC-2 (§16 / ROADMAP).
+  See ADR-012 (network), ADR-014 (store), ADR-015 (InboxAPI + MCP).
 ```
 
 ---
@@ -96,7 +91,7 @@ EWS Inbox
 │ 5.SELECT │──────────────────────────┐
 └──────────┘                          │
     │                                 ▼
-┌──────────┐   Digest (validated JSON) — max 2 LLM calls (1 primary + 1 quality retry, 15 RPM)
+┌──────────┐   Digest (validated JSON) — extractor ≤2 LLM calls (1 primary + 1 quality retry, 15 RPM; ADR-008 v2 per-stage budgets)
 │  6.LLM   │──────────────────────────┐
 └──────────┘                          │
     │                                 ▼

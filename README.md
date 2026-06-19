@@ -67,12 +67,16 @@ make setup
 After installation the **`actionpulse`** command is available everywhere (a launcher in `~/.local/bin`). Secrets load automatically from `~/.config/actionpulse/env` — no manual `source` needed:
 
 ```bash
-actionpulse               # interactive menu: Run · Read · Dry run · Diagnose · Settings · Show config
+actionpulse               # interactive menu: Run · Read · Dry run · Diagnose · Mattermost DMs · Maintenance · MCP · Settings
 actionpulse run --dry-run # ingest + normalize only, no LLM
 actionpulse run           # full pipeline + delivery
 actionpulse read          # browse the latest digest (or --date YYYY-MM-DD)
 actionpulse diagnose      # check environment & config
 actionpulse explain       # something failed? one LLM call explains the run (corp network)
+actionpulse search "..."  # search the encrypted store (keyword offline; semantic/hybrid corp)
+actionpulse ask "..."     # grounded, cited answer over your messages (RAG; corp network)
+actionpulse store init    # set up the encrypted store; then `store stats` / `reembed` / `purge`
+actionpulse mcp install   # expose the store to AI coding CLIs (Claude Code/opencode/qwen; macOS)
 actionpulse paths         # where everything lives (data home + the exceptions)
 actionpulse clean         # disk usage; --logs / --digests / --all to free space
 actionpulse setup         # re-run the configuration wizard
