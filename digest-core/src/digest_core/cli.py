@@ -404,24 +404,6 @@ def _open_store_or_exit():
         raise typer.Exit(1)
 
 
-def _store_embed_backend():
-    """Gateway EmbeddingsClient for semantic/hybrid query embedding (needs corp net)."""
-    from digest_core.config import Config
-    from digest_core.llm.fleet import EmbeddingsClient
-    from digest_core.llm.rate_broker import RateBroker
-
-    cfg = Config()
-    broker = RateBroker(
-        fleet_rpm=cfg.llm.fleet_rpm,
-        burst=cfg.llm.fleet_burst,
-        default_rpm=cfg.llm.rate_limit_rpm,
-        stage_call_budgets=cfg.llm.stage_call_budgets,
-    )
-    return EmbeddingsClient(
-        cfg.llm, model=cfg.store.embedding_model, rate_broker=broker, stage="embeddings"
-    )
-
-
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search text"),
@@ -644,20 +626,17 @@ def store_reembed(
     still has its stale vector, so a plain reembed finds no work and semantic search
     would return empty.
     """
-    store = _open_store_or_exit()
+    from digest_core.api import InboxAPI
+
+    api = InboxAPI(_open_store_or_exit(), Config())  # owns the embeddings wiring (from_config)
     try:
         try:
-            backend = _store_embed_backend()
-        except Exception as exc:  # noqa: BLE001
-            typer.echo(f"{FAIL} embeddings gateway unavailable: {exc}", err=True)
-            raise typer.Exit(1)
-        try:
-            result = store.reembed(backend, force=force)
+            result = api.reembed(force=force)
         except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
             typer.echo(f"{FAIL} reembed failed: {exc}", err=True)
             raise typer.Exit(1)
     finally:
-        store.close()
+        api.close()
     typer.echo(f"{OK} Embedded {result['embedded']} chunk(s); {result['pending']} still pending.")
 
 
@@ -1195,11 +1174,8 @@ def eval_judge_run(
     # The judge rides the gateway with a model override (R1) on its own RPM
     # bucket and stage budget; broker limits match the live run's ceilings.
     judge_llm = config.llm.model_copy(update={"model": config.judge.model})
-    broker = RateBroker(
-        fleet_rpm=config.llm.fleet_rpm,
-        burst=config.llm.fleet_burst,
-        default_rpm=config.llm.rate_limit_rpm,
-        stage_call_budgets={"judge": max(len(gold_set) * 2, 8)},
+    broker = RateBroker.from_config(
+        config.llm, stage_call_budgets={"judge": max(len(gold_set) * 2, 8)}
     )
     gateway = LLMGateway(judge_llm, rate_broker=broker, stage="judge")
     try:

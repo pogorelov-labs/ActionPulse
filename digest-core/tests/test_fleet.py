@@ -64,6 +64,30 @@ def test_embeddings_posts_to_derived_endpoint_and_parses(monkeypatch):
     assert url.endswith("/v1/embeddings")
 
 
+def test_rate_broker_from_config_wires_llm_fields():
+    from digest_core.config import Config
+
+    cfg = Config()
+    b = RateBroker.from_config(cfg.llm)
+    assert b._fleet_rpm == dict(cfg.llm.fleet_rpm)
+    assert b._burst == cfg.llm.fleet_burst
+    assert b._default_rpm == float(cfg.llm.rate_limit_rpm)
+    assert b._stage_call_budgets == dict(cfg.llm.stage_call_budgets)
+    # The override path (ask's dedicated budget) replaces the config's.
+    o = RateBroker.from_config(cfg.llm, stage_call_budgets={"ask": 2})
+    assert o._stage_call_budgets == {"ask": 2}
+
+
+def test_embeddings_client_from_config():
+    from digest_core.config import Config
+
+    cfg = Config()
+    c = EmbeddingsClient.from_config(cfg)
+    assert c.model == cfg.store.embedding_model
+    assert c._stage == "embeddings"
+    assert c._broker is not None  # built its own broker from the config
+
+
 def test_retry_after_seconds_parsing():
     assert _retry_after_seconds("30") == 30.0
     assert _retry_after_seconds(None) == 60.0

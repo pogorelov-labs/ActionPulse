@@ -308,12 +308,7 @@ def _init_context(
     }
 
     # One RateBroker per run, shared by the LLM gateway and (later) fleet clients (R1).
-    rate_broker = RateBroker(
-        fleet_rpm=config.llm.fleet_rpm,
-        burst=config.llm.fleet_burst,
-        default_rpm=config.llm.rate_limit_rpm,
-        stage_call_budgets=config.llm.stage_call_budgets,
-    )
+    rate_broker = RateBroker.from_config(config.llm)
 
     return RunContext(
         sink=sink or NullSink(),

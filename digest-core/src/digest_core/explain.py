@@ -137,12 +137,7 @@ def explain_run(
     language = config.report.language
 
     explain_llm = config.llm.model_copy(update={"max_output_tokens": EXPLAIN_MAX_OUTPUT_TOKENS})
-    broker = RateBroker(
-        fleet_rpm=config.llm.fleet_rpm,
-        burst=config.llm.fleet_burst,
-        default_rpm=config.llm.rate_limit_rpm,
-        stage_call_budgets={"explain": EXPLAIN_CALL_BUDGET},
-    )
+    broker = RateBroker.from_config(config.llm, stage_call_budgets={"explain": EXPLAIN_CALL_BUDGET})
     gateway = LLMGateway(explain_llm, rate_broker=broker, stage="explain")
     try:
         verdict = gateway.judge(

@@ -218,6 +218,19 @@ class FleetClient:
 class EmbeddingsClient(FleetClient):
     """``/v1/embeddings`` — dense vectors for cosine relevance/threading."""
 
+    @classmethod
+    def from_config(cls, config, *, stage: str = "embeddings") -> "EmbeddingsClient":
+        """Build the client + its RateBroker from a full ``Config`` (the store's
+        ``embedding_model`` + the shared fleet limits). Offline-safe construction — the
+        network failure surfaces on the first ``embed()``. This is the wiring the InboxAPI
+        and CLI hand-rolled identically; route both through here."""
+        return cls(
+            config.llm,
+            model=config.store.embedding_model,
+            rate_broker=RateBroker.from_config(config.llm),
+            stage=stage,
+        )
+
     def __init__(self, config: LLMConfig, *, model: str = "bge-m3", **kwargs: Any):
         super().__init__(config, **kwargs)
         self.model = model
