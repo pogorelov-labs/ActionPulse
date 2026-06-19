@@ -145,6 +145,16 @@ class TestWriteEnvFile:
         mode = oct(result.stat().st_mode)[-3:]
         assert mode == "600"
 
+    def test_writes_optional_secrets(self, tmp_path, monkeypatch):
+        env_dir = tmp_path / ".config" / "actionpulse"
+        monkeypatch.setattr("digest_core.setup_wizard.ENV_DIR", env_dir)
+        monkeypatch.setattr("digest_core.setup_wizard.ENV_PATH", env_dir / "env")
+        content = _write_env_file(
+            {"EWS_PASSWORD": "x", "DIGEST_STORE_KEY": "abc123", "MM_PAT": "pat-xyz"}
+        ).read_text()
+        assert "DIGEST_STORE_KEY=abc123" in content  # store key persists, not a bare comment
+        assert "MM_PAT=pat-xyz" in content
+
     def test_systemd_compatible_format(self, tmp_path, monkeypatch):
         """Env file must work with systemd EnvironmentFile=."""
         env_dir = tmp_path / ".config" / "actionpulse"
@@ -359,6 +369,58 @@ class TestWriteConfigYaml:
         with open(user_config) as f:
             config = yaml.safe_load(f)
         assert config["mm_source"]["enabled"] is True  # flipped on by the chosen scope
+
+    def _write_with_store(self, tmp_path, monkeypatch, store_enabled):
+        example = tmp_path / "config.example.yaml"
+        with open(example, "w") as f:
+            yaml.dump({"ews": {}, "llm": {}}, f)  # store commented/absent, like the real example
+        user_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("digest_core.setup_wizard.CONFIG_EXAMPLE", example)
+        monkeypatch.setattr("digest_core.setup_wizard.CONFIG_USER", user_config)
+        _write_config_yaml(
+            user_upn="u@corp.ru",
+            ews_endpoint="https://ews",
+            llm_endpoint="https://llm",
+            derived=_derive_from_email("u@corp.ru"),
+            verify_ca=None,
+            store_enabled=store_enabled,
+        )
+        with open(user_config) as f:
+            return yaml.safe_load(f)
+
+    def test_store_enabled_writes_block(self, tmp_path, monkeypatch):
+        assert self._write_with_store(tmp_path, monkeypatch, True)["store"]["enabled"] is True
+
+    def test_store_disabled_adds_no_block(self, tmp_path, monkeypatch):
+        assert "store" not in self._write_with_store(tmp_path, monkeypatch, False)
+
+
+class TestStoreStep:
+    """The optional encrypted-store enable step (non-interactive paths)."""
+
+    def test_non_tty_reuses_existing_key_and_keeps_state(self, monkeypatch):
+        from digest_core.setup_wizard import _store_step
+        from digest_core.store import HAS_SQLCIPHER
+
+        if not HAS_SQLCIPHER:
+            import pytest
+
+            pytest.skip("store extra not installed")
+        monkeypatch.setenv("DIGEST_STORE_KEY", "existing-key")
+        # non-tty (pytest) → keep current state, never regenerate the key (would orphan the DB)
+        enabled, key = _store_step({"store": {"enabled": True}})
+        assert enabled is True and key == "existing-key"
+
+    def test_non_tty_off_without_key_or_config(self, monkeypatch):
+        from digest_core.setup_wizard import _store_step
+        from digest_core.store import HAS_SQLCIPHER
+
+        if not HAS_SQLCIPHER:
+            import pytest
+
+            pytest.skip("store extra not installed")
+        monkeypatch.delenv("DIGEST_STORE_KEY", raising=False)
+        assert _store_step({}) == (False, None)
 
 
 class TestDmSummaryValue:
