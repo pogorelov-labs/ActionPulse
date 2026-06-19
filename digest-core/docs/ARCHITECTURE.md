@@ -1178,6 +1178,38 @@ digest-core/
 
 ---
 
+### ADR-015: Local API surface (InboxAPI) + MCP server + AI-CLI installer (opt-in)
+
+- **Decision:** A single local API facade `digest_core/api/InboxAPI` wraps the store's
+  retrieval, search, insight, and reasoning verbs; `digest_core/mcp/` exposes it to AI
+  coding CLIs over an **stdio MCP server** (`actionpulse-mcp`, the official `mcp` SDK /
+  FastMCP, opt-in `mcp` extra); and `actionpulse mcp install` registers that server into
+  Claude Code / opencode / qwen-code configs on macOS, with consent. The digest's
+  cross-day enrichment (`run._enrich_digest_from_store`) reads its insights through the
+  same facade — one surface, not ad-hoc `store.conn` access.
+- **Exposure = FULL CONTENT by default.** Tools/resources return message bodies and RAG
+  answers; `ACTIONPULSE_MCP_REDACT_BODIES=1` switches to metadata-only. This is a
+  conscious trade: an MCP client may route to a **cloud** model, so connecting the server
+  can egress corp message content to whatever model the CLI uses — a per-deployment
+  decision, NOT a default the rest of the system makes (extraction / `ask` reach only the
+  *corp* gateway). Store-mutating maintenance tools (sweep_ttl/embed/reembed/vacuum) are
+  OFF unless `ACTIONPULSE_MCP_ENABLE_MAINTENANCE=1`.
+- **Invariants preserved:** DM bodies stay redacted at rest (guardrail #9 / ADR-014), so
+  `get_message`/`get_thread`/resources never surface DM text. The store key is read from
+  the env (the 0600 `~/.config/actionpulse/env`) — NEVER written into a client config nor
+  accepted as a tool argument (a test asserts no tool takes a key). Gateway verbs degrade
+  honestly off-corp (search → keyword; `ask`/`summarize` → a clear `GatewayUnavailable`),
+  never hang.
+- **Installer safety:** idempotent (keyed on the fixed `actionpulse` server name),
+  byte-exact timestamped `.bak` before any write, atomic temp+rename, never clobbers a
+  sibling server or an unparseable config; macOS-gated; `--dry-run` previews the exact
+  JSON; the registered command carries no secret (the server self-loads the key).
+- **Consequence:** New deps in the `mcp` extra only (`mcp>=1.2`); the default install and
+  `make test` stay SDK-free (`_build_app` imports the SDK lazily; MCP-registration tests
+  skip without it, covered by a dedicated `test-mcp` CI lane).
+
+---
+
 ## 13. Known Technical Debt
 
 > ⚠ **STALE (~2026-03).** This table and §14 below predate the redesign / EP-program /

@@ -191,6 +191,28 @@ actionpulse store purge --ttl-days 30 --yes   # apply TTL now; `store drop` dele
 - **Replay has no raw body** — `--replay-ingest` snapshots are already normalized, so
   replayed rows store `body_raw == body_normalized`.
 
+## Local API + MCP server (opt-in)
+
+`digest_core/api/InboxAPI` is the single local surface over the store — retrieve
+(`get_message`/`get_thread`/`list_*`/`count_*`), search (keyword offline; semantic/hybrid
+gateway), reasoning (`ask`/`summarize_thread`/`compare`/`related`), insights
+(`open_loops`/`pending`). Gateway verbs degrade honestly off-corp. `run._enrich_digest_from_store`
+reads its cross-day insights through it. `digest_core/mcp/` exposes it to AI coding CLIs.
+
+```bash
+uv sync --extra mcp --extra store        # adds the MCP SDK (mcp>=1.2)
+actionpulse-mcp                          # run the stdio MCP server (reads the store)
+actionpulse mcp list                     # detect Claude Code / opencode / qwen-code + status
+actionpulse mcp install --dry-run --all  # preview the exact per-CLI JSON
+actionpulse mcp install                  # consented, macOS; `mcp uninstall` reverses it
+```
+
+- **Exposure = full content by default**; `ACTIONPULSE_MCP_REDACT_BODIES=1` → metadata-only.
+  Connecting the MCP to a cloud AI egresses corp content (ADR-015 — a deployment choice).
+  DM bodies stay redacted at rest. Maintenance tools need `ACTIONPULSE_MCP_ENABLE_MAINTENANCE=1`.
+- **Key never in client config**: the server self-loads `DIGEST_STORE_KEY` from
+  `~/.config/actionpulse/env`; the installer writes no secret. CI: `test-mcp` lane.
+
 ## Active Tech Debt
 
 Phase 0 hardening (prompts, path resolution, config precedence, LLM retry/degradation, Mattermost delivery, replay/diagnostics, E2E tests) is implemented on `main` as of 2026-03.
