@@ -33,7 +33,14 @@ from digest_core.evidence.repair import repair_weak_items
 from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
 from digest_core.ingest.envelope import messages_from_envelopes
-from digest_core.ingest.source_adapter import EWSSourceAdapter, SourceAdapter, run_sources
+from digest_core.ingest.source_adapter import (
+    EWS_SOURCE_NAMES,
+    MM_SOURCE_NAMES,
+    EWSSourceAdapter,
+    SourceAdapter,
+    canonical_source,
+    run_sources,
+)
 from digest_core.llm.fleet import RerankerClient
 from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
@@ -334,14 +341,6 @@ def _init_context(
     )
 
 
-#: Source names that map to the EWS adapter. "email" is the source TYPE,
-#: "ews" is the adapter name — both select the same live EWS source.
-_EWS_SOURCE_NAMES = frozenset({"ews", "email"})
-
-#: Source names that map to the Mattermost mentions adapter (P1b).
-_MM_SOURCE_NAMES = frozenset({"mm", "mattermost"})
-
-
 def _build_source_adapters(
     sources: Sequence[str],
     ingest: EWSIngest,
@@ -371,13 +370,13 @@ def _build_source_adapters(
     seen_ews = False
     seen_mm = False
     for name in sources or ["ews"]:
-        key = (name or "").strip().lower()
-        if key in _EWS_SOURCE_NAMES:
+        canonical = canonical_source(name)
+        if canonical == "ews":
             # One EWS source per run; "ews" and "email" are aliases for it.
             if not seen_ews:
                 strict_adapters.append(EWSSourceAdapter(ingest))
                 seen_ews = True
-        elif key in _MM_SOURCE_NAMES:
+        elif canonical == "mm":
             if not seen_mm:
                 lenient_adapters.append(_build_mm_adapter(config, sink, incremental=incremental))
                 seen_mm = True
@@ -386,7 +385,7 @@ def _build_source_adapters(
             # source is never silently dropped.
             raise ValueError(
                 f"Unknown ingest source {name!r}. Known sources: "
-                f"{sorted(_EWS_SOURCE_NAMES | _MM_SOURCE_NAMES)}."
+                f"{sorted(EWS_SOURCE_NAMES | MM_SOURCE_NAMES)}."
             )
     return strict_adapters, lenient_adapters
 

@@ -7,7 +7,34 @@ from digest_core.ingest.envelope import (
     messages_from_envelopes,
 )
 from digest_core.ingest.ews import NormalizedMessage
-from digest_core.ingest.source_adapter import EWSSourceAdapter, SourceAdapter, run_sources
+import pytest
+
+from digest_core.ingest.source_adapter import (
+    EWSSourceAdapter,
+    SourceAdapter,
+    build_adapter,
+    canonical_source,
+    run_sources,
+)
+
+
+def test_canonical_source_aliases():
+    assert canonical_source("ews") == "ews"
+    assert canonical_source(" Email ") == "ews"  # alias + case/space tolerant
+    assert canonical_source("mm") == "mm"
+    assert canonical_source("mattermost") == "mm"
+    assert canonical_source("slack") is None
+    assert canonical_source("") is None
+
+
+def test_build_adapter_unknown_raises_value_error():
+    # The unknown branch rejects BEFORE constructing any adapter (EWS/MM construction is
+    # corp-env-dependent — EWSIngest loads the CA, MM needs a PAT — so it's not unit-tested
+    # here; the api source-verb tests cover the real construction with fakes).
+    from digest_core.config import Config
+
+    with pytest.raises(ValueError):
+        build_adapter("slack", Config())
 
 
 def _msg(msg_id="m-1"):
