@@ -414,28 +414,27 @@ def search(
     Keyword search is fully offline. Semantic/hybrid embed the query via the corp
     gateway and need the corp network (or recorded fleet calls).
     """
+    from digest_core.api import GatewayUnavailable, InboxAPI
+    from digest_core.config import Config
+
     chosen = "keyword" if keyword else "semantic" if semantic else "hybrid" if hybrid else mode
-    store = _open_store_or_exit()
+    api = InboxAPI(_open_store_or_exit(), Config())  # InboxAPI owns the embeddings wiring
     try:
-        eff_mode = chosen or store.config.search_default_mode
-        backend = None
-        if eff_mode in ("semantic", "hybrid"):
-            try:
-                backend = _store_embed_backend()
-            except Exception as exc:  # noqa: BLE001 - actionable CLI error
-                typer.echo(
-                    f"{FAIL} {eff_mode} search needs the embeddings gateway: {exc}", err=True
-                )
-                raise typer.Exit(1)
+        eff_mode = chosen or api.store.config.search_default_mode
         try:
-            hits = store.search(
-                query, mode=eff_mode, backend=backend, source=source, since=since, limit=limit
+            # strict: an explicit semantic/hybrid request errors if the gateway is down,
+            # rather than silently degrading to keyword (the CLI's prior behavior).
+            hits = api.search(
+                query, mode=eff_mode, source=source, since=since, limit=limit, strict=True
             )
+        except GatewayUnavailable as exc:
+            typer.echo(f"{FAIL} {eff_mode} search needs the embeddings gateway: {exc}", err=True)
+            raise typer.Exit(1)
         except Exception as exc:  # noqa: BLE001 - clean CLI error, never a traceback
             typer.echo(f"{FAIL} search failed: {exc}", err=True)
             raise typer.Exit(1)
     finally:
-        store.close()
+        api.close()
 
     if json_out:
         import json as _json
@@ -483,29 +482,19 @@ def ask(
     answer from your retrieved messages (Extract-over-Generate). Needs the corp network;
     keyword `search` stays offline. DMs are never retrievable (redacted at rest).
     """
-    from digest_core.ask import AskUnavailable, answer_question
+    from digest_core.api import GatewayUnavailable, InboxAPI
+    from digest_core.config import Config
 
-    store = _open_store_or_exit()
+    api = InboxAPI(_open_store_or_exit(), Config())  # InboxAPI owns retrieval + the gateway call
     try:
-        eff_mode = mode or store.config.search_default_mode
-        backend = None
-        if eff_mode in ("semantic", "hybrid"):
-            try:
-                backend = _store_embed_backend()
-            except Exception as exc:  # noqa: BLE001 - actionable CLI error
-                typer.echo(
-                    f"{FAIL} {eff_mode} retrieval needs the embeddings gateway: {exc}", err=True
-                )
-                raise typer.Exit(1)
+        eff_mode = mode or api.store.config.search_default_mode
         try:
-            result = answer_question(
-                store, question, backend=backend, mode=eff_mode, top_k=k, source=source, since=since
-            )
-        except AskUnavailable as exc:
+            result = api.ask(question, mode=eff_mode, top_k=k, source=source, since=since)
+        except GatewayUnavailable as exc:
             typer.echo(f"{FAIL} {exc}", err=True)
             raise typer.Exit(1)
     finally:
-        store.close()
+        api.close()
 
     if json_out:
         import json as _json
