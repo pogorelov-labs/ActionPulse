@@ -1282,7 +1282,11 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
                 title=template.format(days=loop.age_days, subject=loop.subject or "—"),
                 evidence_id="carryover:"
                 + hashlib.sha256(loop.thread_id.encode("utf-8")).hexdigest()[:16],
-                confidence=0.6,
+                # At the display threshold (CONFIDENCE_DISPLAY_MAX) so renderers
+                # suppress the confidence badge — open loops are a strict-gated
+                # heuristic (addressed + quiet + you didn't reply last), not an
+                # extraction confidence, and the age is already in the title.
+                confidence=0.7,
                 source_ref={
                     "type": "carryover",
                     "msg_id": loop.last_msg_id,
