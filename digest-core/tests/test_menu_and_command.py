@@ -210,7 +210,24 @@ class TestRetrievalRows:
     def test_options_shown_with_store(self):
         keys = [k for k, _ in menu_mod._main_menu_options(True)]
         assert "search" in keys and "ask" in keys
-        assert len(keys) <= 12  # stays a tidy list (quick-select stays sane)
+        assert "history" in keys  # always present (reads artifacts, not store-gated)
+        assert len(keys) <= 13  # stays a tidy arrow-navigable list
+
+    def test_history_row_invokes_callback_browse_all(self, monkeypatch):
+        # History is unconditional + works with an empty query (Enter = browse all).
+        seq = iter(["history", "quit"])
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(seq, "quit"))
+        monkeypatch.setattr(menu_mod.Console, "input", lambda self, *a, **k: "", raising=False)
+        captured = []
+        run_menu(
+            on_run=lambda d, c: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            on_read=lambda date: None,
+            on_history=lambda q: captured.append(q),
+            console=_console(),
+        )
+        assert captured == [""]  # browse-all (empty query) still fires the callback
 
     def test_search_row_invokes_callback_with_query(self, monkeypatch):
         seq = iter(["search", "quit"])
