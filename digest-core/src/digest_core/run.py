@@ -971,11 +971,8 @@ def _ranker_weights_from_config(ranker_cfg: RankerConfig) -> Dict[str, float]:
 
 
 def _ranker_user_aliases(config: Config) -> List[str]:
-    aliases = [a for a in (config.ews.user_aliases or []) if a]
-    upn = (config.ews.user_upn or "").strip()
-    if upn and upn not in aliases:
-        aliases.append(upn)
-    return aliases
+    # Single source of truth lives on Config (shared with the InboxAPI insight verbs).
+    return config.user_aliases()
 
 
 def _maybe_rank_digest(
