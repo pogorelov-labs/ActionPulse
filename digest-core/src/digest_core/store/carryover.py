@@ -18,10 +18,11 @@ Heuristic + privacy notes:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Sequence
+
+from digest_core.store._rows import decode_json_list
 
 _DAY = 86400
 
@@ -41,14 +42,7 @@ class OpenLoop:
 def _recipients(to_json: str, cc_json: str) -> List[str]:
     out: List[str] = []
     for raw in (to_json, cc_json):
-        if not raw:
-            continue
-        try:
-            vals = json.loads(raw)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(vals, list):
-            out.extend(str(v).lower() for v in vals if v)
+        out.extend(decode_json_list(raw, lowercase=True, drop_empty=True))
     return out
 
 

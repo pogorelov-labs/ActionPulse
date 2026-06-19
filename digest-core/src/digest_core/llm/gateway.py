@@ -14,7 +14,7 @@ import structlog
 from jinja2 import Environment, FileSystemLoader
 from digest_core.config import LLMConfig, PROJECT_ROOT
 from digest_core.evidence.split import EvidenceChunk
-from digest_core.llm.schemas import Citation, Digest, EnhancedDigest, EnhancedDigestV3
+from digest_core.llm.schemas import Citation, EnhancedDigest, EnhancedDigestV3
 from digest_core.llm.date_utils import get_current_datetime_in_tz
 from digest_core.llm.degrade import extractive_fallback
 from digest_core.llm.prompt_registry import get_prompt_template_path
@@ -919,100 +919,6 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             else:
                 logger.debug(f"Dropping non-verbatim evidence span for {evidence_id}")
         return valid
-
-    def summarize_digest(self, digest_data: Digest, prompt_template: str, trace_id: str) -> str:
-        """Generate markdown summary of digest."""
-        logger.info("Starting LLM digest summarization", trace_id=trace_id)
-
-        # Prepare digest text
-        digest_text = self._prepare_digest_text(digest_data)
-
-        # Prepare messages
-        messages = [
-            {"role": "system", "content": prompt_template},
-            {"role": "user", "content": digest_text},
-        ]
-
-        # Make request
-        response_data = self._make_request_with_retry(messages, trace_id, digest_data.digest_date)
-
-        # Extract markdown content
-        content = (
-            response_data["data"].get("choices", [{}])[0].get("message", {}).get("content", "")
-        )
-
-        logger.info("LLM digest summarization completed", trace_id=trace_id)
-
-        return content
-
-    def _prepare_digest_text(self, digest_data: Digest) -> str:
-        """Prepare digest data for summarization."""
-        text_parts = [
-            f"Digest Date: {digest_data.digest_date}",
-            f"Trace ID: {digest_data.trace_id}",
-            "",
-        ]
-
-        for section in digest_data.sections:
-            text_parts.append(f"## {section.title}")
-            for item in section.items:
-                text_parts.append(f"- {item.title}")
-                if item.due:
-                    text_parts.append(f"  Due: {item.due}")
-                text_parts.append(f"  Evidence ID: {item.evidence_id}")
-                text_parts.append(f"  Confidence: {item.confidence}")
-            text_parts.append("")
-
-        return "\n".join(text_parts)
-
-    def _get_simplified_prompt(self, original_prompt: str) -> str:
-        """
-        Create a simplified version of the prompt for retry attempts.
-
-        Args:
-            original_prompt: Original complex prompt
-
-        Returns:
-            Simplified prompt with clearer instructions
-        """
-        # Extract just the core instructions and examples
-        simplified = """Ты — ассистент для суммаризации email-треда.
-
-ВАЖНО: Верни ТОЛЬКО валидный JSON без markdown:
-{
-  "thread_id": "ID",
-  "summary": "Краткое описание (максимум 600 символов)",
-  "pending_actions": [{"title": "Действие", "evidence_id": "id", "quote": "Цитата (максимум 300 символов)", "who_must_act": "user"}],
-  "deadlines": [{"title": "Дедлайн", "date_time": "2024-12-15T14:00:00", "evidence_id": "id", "quote": "Цитата"}],
-  "who_must_act": ["user"],
-  "open_questions": ["Вопрос?"],
-  "evidence_ids": ["id1", "id2"]
-}
-
-Правила:
-- Максимум 600 символов для summary
-- Максимум 300 символов для quote
-- Обрезай по границе предложения если нужно
-
-ПРИМЕР ПРАВИЛЬНОГО ВЫВОДА:
-{
-  "thread_id": "test",
-  "summary": "Короткое описание треда",
-  "pending_actions": [
-    {
-      "title": "Проверить отчет",
-      "evidence_id": "ev_123",
-      "quote": "Пожалуйста, проверьте отчет Q4.",
-      "who_must_act": "user"
-    }
-  ],
-  "deadlines": [],
-  "who_must_act": ["user"],
-  "open_questions": [],
-  "evidence_ids": ["ev_123"]
-}"""
-
-        return simplified
 
     def get_request_stats(self) -> Dict[str, Any]:
         """Get request statistics."""
