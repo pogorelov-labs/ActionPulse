@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
-from digest_core.api.errors import ApiError, GatewayUnavailable
+from digest_core.api.errors import ApiError, CorpOnlyError, GatewayUnavailable
 from digest_core.config import Config
 from digest_core.store.db import MessageStore, StoreError
 from digest_core.store.retrieve import DayCount, MessageRecord, SenderCount, ThreadSummary
@@ -56,6 +56,40 @@ class CompareResult:
     shared_terms: List[str] = field(default_factory=list)
     distinct_a: List[str] = field(default_factory=list)
     distinct_b: List[str] = field(default_factory=list)
+
+
+def _message_to_record(msg: Any) -> MessageRecord:
+    """Map a freshly-fetched ``NormalizedMessage`` to a ``MessageRecord`` (the same id +
+    DM-at-rest redaction the store would apply), so live and stored reads look identical."""
+    from digest_core.store.models import (
+        DM_AT_REST_REDACTION,
+        build_urn,
+        redact_mm_body_at_rest,
+    )
+
+    source = getattr(msg, "source", "email") or "email"
+    mm_ct = getattr(msg, "mm_channel_type", None)
+    body = getattr(msg, "text_body", "") or ""
+    if redact_mm_body_at_rest(source, mm_ct):
+        body = DM_AT_REST_REDACTION  # never surface a DM body, even on a live fetch (#9)
+    received = getattr(msg, "datetime_received", None)
+    return MessageRecord(
+        message_id=build_urn(source, msg.msg_id),
+        source=source,
+        thread_id=getattr(msg, "conversation_id", None),
+        received_at=received.isoformat() if received else "",
+        author_display=getattr(msg, "from_name", None) or "",
+        author_email=getattr(msg, "from_email", "") or getattr(msg, "sender_email", "") or "",
+        subject=getattr(msg, "subject", "") or "",
+        body=body,
+        importance=getattr(msg, "importance", "Normal") or "Normal",
+        is_flagged=bool(getattr(msg, "is_flagged", False)),
+        has_attachments=bool(getattr(msg, "has_attachments", False)),
+        attachment_types=list(getattr(msg, "attachment_types", []) or []),
+        to_recipients=list(getattr(msg, "to_recipients", []) or []),
+        cc_recipients=list(getattr(msg, "cc_recipients", []) or []),
+        mm_channel_type=mm_ct,
+    )
 
 
 class InboxAPI:
@@ -327,6 +361,81 @@ class InboxAPI:
 
     def checkpoint(self) -> None:
         self._store.checkpoint()
+
+    # -- sources (live EWS/MM; corp network) -------------------------------
+
+    def fetch_source(self, source: str, digest_date: str) -> List[MessageRecord]:
+        """Live-fetch a source's messages for a date (YYYY-MM-DD) WITHOUT persisting —
+        the read-shaped API never writes the store. Corp-network only; raises
+        ``CorpOnlyError`` when the adapter can't reach it. DM bodies stay redacted."""
+        adapter = self._source_adapter(source)
+        try:
+            messages = adapter.fetch(digest_date)
+        except Exception as exc:  # noqa: BLE001 - live fetch is corp-only; surface clearly
+            raise CorpOnlyError(f"{source} fetch failed (needs the corp network): {exc}") from exc
+        return [_message_to_record(m) for m in messages]
+
+    def list_containers(self, source: str) -> List[Dict[str, Any]]:
+        """Folders (EWS) or channels (MM) for a source. Corp-network for MM."""
+        s = (source or "").lower()
+        if s in ("mm", "mattermost"):
+            client = self._mm_client()
+            try:
+                channels = client.get_my_channels()
+            except Exception as exc:  # noqa: BLE001
+                raise CorpOnlyError(f"Mattermost channels unavailable: {exc}") from exc
+            return [
+                {
+                    "id": c.get("id"),
+                    "name": c.get("name"),
+                    "display_name": c.get("display_name"),
+                    "type": c.get("type"),
+                }
+                for c in channels
+            ]
+        if s in ("ews", "email"):
+            # EWS has no folder-enumeration API; report the configured folders.
+            return [{"name": f} for f in (self._config.ews.folders or [])]
+        raise ApiError(f"unknown source {source!r} (ews | mm)")
+
+    def get_reactions(self, post_id: str) -> List[Dict[str, Any]]:
+        """Mattermost reactions on a post (corp network) — for the feedback loop."""
+        client = self._mm_client()
+        try:
+            return client.get_post_reactions(post_id)
+        except Exception as exc:  # noqa: BLE001
+            raise CorpOnlyError(f"Mattermost reactions unavailable: {exc}") from exc
+
+    def _source_adapter(self, source: str):
+        s = (source or "").lower()
+        if s in ("ews", "email"):
+            from digest_core.ingest.ews import EWSIngest
+            from digest_core.ingest.source_adapter import EWSSourceAdapter
+
+            return EWSSourceAdapter(EWSIngest(self._config.ews, self._config.time))
+        if s in ("mm", "mattermost"):
+            from digest_core.ingest.mattermost import MattermostSourceAdapter
+
+            return MattermostSourceAdapter(
+                self._config.mm_source, self._config.time, incremental=False
+            )
+        raise ApiError(f"unknown source {source!r} (ews | mm)")
+
+    def _mm_client(self):
+        import httpx
+
+        from digest_core.ingest.mattermost import MattermostReadClient
+
+        mm = self._config.mm_source
+        base_url = mm.get_base_url()
+        if not base_url:
+            raise CorpOnlyError("Mattermost base URL not set (MM_BASE_URL / mm_source.base_url).")
+        try:
+            token = mm.get_token()  # raises ValueError if MM_PAT unset
+        except ValueError as exc:
+            raise CorpOnlyError(f"Mattermost PAT not set: {exc}") from exc
+        http = httpx.Client(timeout=httpx.Timeout(mm.timeout_s), verify=mm.verify_ssl)
+        return MattermostReadClient(base_url, token, http_client=http, per_page=mm.per_page)
 
     # -- lifecycle ---------------------------------------------------------
 
