@@ -1526,6 +1526,18 @@ class Config(BaseSettings):
 
         return Path(self.ews.resolved_sync_state_path()).expanduser().parent
 
+    def user_aliases(self) -> List[str]:
+        """The owner's identity tokens for addressed-to-me / open-loop matching.
+
+        EWS aliases plus the UPN (de-duplicated). Single source of truth shared by
+        the digest ranker (run.py) and the InboxAPI insight verbs.
+        """
+        aliases = [a for a in (self.ews.user_aliases or []) if a]
+        upn = (self.ews.user_upn or "").strip()
+        if upn and upn not in aliases:
+            aliases.append(upn)
+        return aliases
+
     def get_ews_password(self) -> str:
         """Get EWS password from environment.
 
