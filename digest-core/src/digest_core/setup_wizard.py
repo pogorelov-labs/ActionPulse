@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import typer
 import yaml
@@ -665,6 +666,10 @@ def _summary_table(
     table.add_row("LLM endpoint", env_values["LLM_ENDPOINT"])
     table.add_row("LLM token", _mask_secret(env_values["LLM_TOKEN"]))
     table.add_row("MM webhook", env_values["MM_WEBHOOK_URL"])
+    table.add_row(
+        "MM PAT (ingest/api)",
+        "set" if env_values.get("MM_PAT") else "[dim]— (webhook delivery only)[/]",
+    )
     table.add_row("MM DMs (ingest)", _dm_summary_value(dm_scope, dm_allowlist or []))
     table.add_row("Report language", report_language)
     table.add_row("CA certificate", verify_ca or "[dim]— (system trust store)[/]")
@@ -860,6 +865,37 @@ def _merge_aliases(aliases: list[str], det: Optional[DetectedEnv]) -> list[str]:
             merged.append(extra)
             seen.add(extra.lower())
     return merged
+
+
+def _derive_mm_base_url(webhook: str) -> Optional[str]:
+    """``scheme://host`` from a webhook URL (https://mm.corp/hooks/x → https://mm.corp)."""
+    try:
+        parsed = urlparse(webhook or "")
+    except ValueError:
+        return None
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+def _mm_creds_step(webhook: str, existing_pat: str, existing_base: str) -> tuple[str, str]:
+    """Optionally collect MM_PAT + MM_BASE_URL (Mattermost ingest / reaction harvest / api-mode
+    delivery). Webhook delivery needs neither, so this is opt-in. Non-TTY runs skip prompting and
+    preserve existing values (stable line protocol). Returns ``(mm_pat, mm_base_url)`` — existing
+    values when kept/skipped, "" when unset. The api-mode delivery CHANNEL is chosen at the corp
+    session (it needs the live API to list channels), so it's deliberately not prompted here."""
+    console.print(
+        "[dim]Optional: a Personal Access Token unlocks MM ingest, reaction harvest, and api-mode"
+        " delivery. Webhook delivery (above) needs none.[/]"
+    )
+    if not sys.stdin.isatty():
+        return existing_pat, existing_base
+    if not Confirm.ask("[ap.accent.bold]Set a Mattermost PAT now?[/]", default=bool(existing_pat)):
+        return existing_pat, existing_base
+    mm_pat = _ask_secret("Mattermost PAT", existing=existing_pat)
+    default_base = existing_base or _derive_mm_base_url(webhook)
+    mm_base_url = _ask("Mattermost base URL", default=default_base, validate=_validate_url)
+    return mm_pat, mm_base_url
 
 
 def _store_step(existing_cfg: dict) -> tuple[bool, Optional[str]]:
@@ -1075,6 +1111,11 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             " may be visible to the channel audience."
         )
 
+    # Optional MM credentials (ingest / reactions / api-delivery) — part of the MM step.
+    mm_pat, mm_base_url = _mm_creds_step(
+        mm_webhook, os.getenv("MM_PAT", ""), os.getenv("MM_BASE_URL", "")
+    )
+
     # Direct messages (ingest) — privacy ladder, consent-gated (part of the
     # Mattermost step; TOTAL_STEPS stays 7).
     dm = _dm_step(existing_cfg)
@@ -1121,12 +1162,13 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     }
     if store_key:
         env_values["DIGEST_STORE_KEY"] = store_key
-    # Preserve optional secrets a prior `store init` / setup / hand-edit left in the env
-    # file (the file is rewritten from scratch), so re-running the wizard never drops them.
-    for _opt in ("MM_PAT", "MM_BASE_URL"):
-        _val = os.getenv(_opt)
-        if _val:
-            env_values[_opt] = _val
+    # MM credentials: the collected values already fall back to any existing env (kept on a
+    # skip / Enter), so this both records new input and preserves prior secrets across re-runs
+    # (the env file is rewritten from scratch).
+    if mm_pat:
+        env_values["MM_PAT"] = mm_pat
+    if mm_base_url:
+        env_values["MM_BASE_URL"] = mm_base_url
     console.print()
     console.print(
         Panel(
