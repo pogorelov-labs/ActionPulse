@@ -1240,24 +1240,35 @@ def _llm_budget_summary(llm_trace: Dict[str, Any], llm_config) -> Dict[str, Any]
 
 
 def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
-    """Append a store-derived "Open loops" section to the digest (P3 memory pillar).
+    """Append store-derived cross-day sections to the digest (P3 memory pillar).
 
-    Owner-addressed messages from earlier days whose thread has gone quiet → likely
-    still waiting on you. Opt-in (``store.enabled`` + ``store.carryover``) and
-    NON-FATAL: any failure logs a warning and leaves the digest unchanged. The
-    synthetic items carry no real evidence chunk, so this runs AFTER citation
-    validation (they skip the gate) and before ASSEMBLE (so they render + sort in).
+    Two opt-in, non-fatal signals from the 30-day store:
+    * ``store.pending`` → "Awaiting your reply": prior-day messages that asked YOU
+      something (question/approval/request) and you have not answered since.
+    * ``store.carryover`` → "Open loops": threads you were in that have gone quiet.
+
+    A thread surfaced as Pending is removed from Open loops (Pending is the more
+    specific, more actionable signal). The synthetic items carry no real evidence
+    chunk, so this runs AFTER citation validation (they skip the gate) and before
+    ASSEMBLE (so they render + sort in). Any failure logs a warning and leaves the
+    digest unchanged (degrade-not-drop).
     """
     import hashlib
 
     cfg = getattr(ctx.config, "store", None)
-    if cfg is None or not (cfg.enabled and cfg.carryover):
+    if cfg is None or not cfg.enabled or not (cfg.carryover or cfg.pending):
         return
     try:
-        from digest_core.assemble.labels import OPEN_LOOPS, report_strings, section_title
+        from digest_core.assemble.labels import (
+            OPEN_LOOPS,
+            PENDING,
+            report_strings,
+            section_title,
+        )
         from digest_core.llm.schemas import Item, Section
         from digest_core.store import MessageStore
         from digest_core.store.carryover import find_open_loops
+        from digest_core.store.pending import find_pending_requests
 
         try:
             ref = datetime.fromisoformat(ctx.digest_date).replace(
@@ -1265,48 +1276,89 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
             )
         except ValueError:
             ref = datetime.now(timezone.utc)
+        aliases = _ranker_user_aliases(ctx.config)
+        language = ctx.config.report.language
+        strings = report_strings(language)
+
+        pending: list = []
+        loops: list = []
         with MessageStore.open(cfg) as store:
-            loops = find_open_loops(
-                store.conn,
-                user_aliases=_ranker_user_aliases(ctx.config),
-                now=ref,
-                lookback_days=cfg.carryover_lookback_days,
-                stale_days=cfg.carryover_stale_days,
-                max_items=cfg.carryover_max_items,
-            )
-        if not loops:
-            return
-        template = report_strings(ctx.config.report.language)["carryover_item"]
-        items = [
-            Item(
-                title=template.format(days=loop.age_days, subject=loop.subject or "—"),
-                evidence_id="carryover:"
-                + hashlib.sha256(loop.thread_id.encode("utf-8")).hexdigest()[:16],
-                # At the display threshold (CONFIDENCE_DISPLAY_MAX) so renderers
-                # suppress the confidence badge — open loops are a strict-gated
-                # heuristic (addressed + quiet + you didn't reply last), not an
-                # extraction confidence, and the age is already in the title.
-                confidence=0.7,
-                source_ref={
-                    "type": "carryover",
-                    "msg_id": loop.last_msg_id,
-                    "conversation_id": loop.thread_id,
-                    "source": loop.source,
-                    "age_days": loop.age_days,
-                    "msg_count": loop.msg_count,
-                },
-                source_subject=loop.subject or None,
-                source_from=loop.author or None,
-            )
-            for loop in loops
-        ]
-        digest.sections.append(
-            Section(title=section_title(OPEN_LOOPS, ctx.config.report.language), items=items)
-        )
-        ctx.run_meta["carryover_items"] = len(items)
-        logger.info("digest_carryover_added", count=len(items), trace_id=ctx.trace_id)
+            if cfg.pending:
+                pending = find_pending_requests(
+                    store.conn,
+                    user_aliases=aliases,
+                    now=ref,
+                    lookback_days=cfg.pending_lookback_days,
+                    max_items=cfg.pending_max_items,
+                )
+            if cfg.carryover:
+                loops = find_open_loops(
+                    store.conn,
+                    user_aliases=aliases,
+                    now=ref,
+                    lookback_days=cfg.carryover_lookback_days,
+                    stale_days=cfg.carryover_stale_days,
+                    max_items=cfg.carryover_max_items,
+                )
+        # Dedup: a thread already surfaced as Pending is not also an Open loop.
+        pending_threads = {p.thread_id for p in pending}
+        loops = [loop for loop in loops if loop.thread_id not in pending_threads]
+
+        def _evidence_id(prefix: str, key: str) -> str:
+            return prefix + ":" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+        # confidence at the display threshold (CONFIDENCE_DISPLAY_MAX) so renderers
+        # suppress the badge — these are strict-gated heuristics, not extraction
+        # confidences, and the age is already in each title.
+        if pending:
+            template = strings["pending_item"]
+            items = [
+                Item(
+                    title=template.format(days=p.age_days, subject=p.subject or "—"),
+                    evidence_id=_evidence_id("pending", p.thread_id),
+                    confidence=0.7,
+                    source_ref={
+                        "type": "pending",
+                        "msg_id": p.asked_msg_id,
+                        "conversation_id": p.thread_id,
+                        "source": p.source,
+                        "age_days": p.age_days,
+                        "kind": p.kind,
+                    },
+                    source_subject=p.subject or None,
+                    source_from=p.author or None,
+                )
+                for p in pending
+            ]
+            digest.sections.append(Section(title=section_title(PENDING, language), items=items))
+            ctx.run_meta["pending_items"] = len(items)
+            logger.info("digest_pending_added", count=len(items), trace_id=ctx.trace_id)
+
+        if loops:
+            template = strings["carryover_item"]
+            items = [
+                Item(
+                    title=template.format(days=loop.age_days, subject=loop.subject or "—"),
+                    evidence_id=_evidence_id("carryover", loop.thread_id),
+                    confidence=0.7,
+                    source_ref={
+                        "type": "carryover",
+                        "msg_id": loop.last_msg_id,
+                        "conversation_id": loop.thread_id,
+                        "source": loop.source,
+                        "age_days": loop.age_days,
+                        "msg_count": loop.msg_count,
+                    },
+                    source_subject=loop.subject or None,
+                    source_from=loop.author or None,
+                )
+                for loop in loops
+            ]
+            digest.sections.append(Section(title=section_title(OPEN_LOOPS, language), items=items))
+            ctx.run_meta["carryover_items"] = len(items)
+            logger.info("digest_carryover_added", count=len(items), trace_id=ctx.trace_id)
     except Exception as exc:  # noqa: BLE001 - degrade-not-drop: never fail the digest
-        logger.warning("digest_carryover_failed", error=str(exc), trace_id=ctx.trace_id)
+        logger.warning("digest_store_enrich_failed", error=str(exc), trace_id=ctx.trace_id)
 
 
 def _record_delivered_posts(ctx: RunContext, digest: Digest, receipt: Dict[str, Any]) -> None:

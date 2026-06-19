@@ -28,6 +28,9 @@ UNCONFIRMED = "unconfirmed"
 # Store-derived cross-day carryover (P3 memory pillar): owner-addressed messages
 # from earlier days whose thread has gone quiet → likely still waiting on you.
 OPEN_LOOPS = "open_loops"
+# Store-derived pending requests (P3): a message from an earlier day that asked
+# YOU something (question / approval / request) and you have not replied since.
+PENDING = "pending"
 
 SECTION_TITLES: dict[str, dict[str, str]] = {
     "en": {
@@ -37,6 +40,7 @@ SECTION_TITLES: dict[str, dict[str, str]] = {
         STATUS: "Status",
         UNCONFIRMED: "Unconfirmed",
         OPEN_LOOPS: "Open loops",
+        PENDING: "Awaiting your reply",
     },
     "ru": {
         MY_ACTIONS: "Мои действия",
@@ -45,18 +49,21 @@ SECTION_TITLES: dict[str, dict[str, str]] = {
         STATUS: "Статус",
         UNCONFIRMED: "Не подтверждено",
         OPEN_LOOPS: "Открытые вопросы",
+        PENDING: "Ждут вашего ответа",
     },
 }
 
 # Sort weights by key (unknown sections sort last, preserving prior behavior).
 # Urgent leads so time-critical items surface first, then My actions, the
-# cross-day Open loops, FYI, and the Unconfirmed quarantine stays last.
+# cross-day Awaiting-your-reply asks, the softer Open loops, FYI, and the
+# Unconfirmed quarantine stays last.
 SECTION_ORDER_BY_KEY: dict[str, int] = {
     URGENT: 0,
     MY_ACTIONS: 1,
-    OPEN_LOOPS: 2,
-    FYI: 3,
-    UNCONFIRMED: 4,
+    PENDING: 2,
+    OPEN_LOOPS: 3,
+    FYI: 4,
+    UNCONFIRMED: 5,
 }
 
 _TITLE_TO_KEY: dict[str, str] = {}
@@ -155,6 +162,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "partial_generic_title": "PARTIAL REPORT",
         "partial_generic_body": "This digest was produced in fallback mode (extractive).",
         "carryover_item": 'Awaiting you {days}d — "{subject}"',
+        "pending_item": 'Reply needed {days}d — "{subject}"',
     },
     "ru": {
         "digest_header": "Дайджест действий",
@@ -213,6 +221,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "partial_generic_title": "ЧАСТИЧНЫЙ ОТЧЁТ",
         "partial_generic_body": "Данный дайджест создан в резервном режиме (extractive fallback).",
         "carryover_item": "Ожидает вас {days}д — «{subject}»",
+        "pending_item": "Нужен ответ {days}д — «{subject}»",
     },
 }
 
