@@ -544,6 +544,14 @@ def _banner(console: Console) -> None:
     console.print()
 
 
+def _mcp_menu(console: Console) -> None:
+    """Register the MCP server into AI coding CLIs (Claude Code / opencode / qwen-code)."""
+    from digest_core.mcp.commands import offer_install
+
+    console.print()
+    offer_install(console)
+
+
 def run_menu(
     *,
     on_run: Callable[[bool, Optional[RunChoice]], None],
@@ -573,6 +581,7 @@ def run_menu(
         ("diagnose", "Diagnose — check environment & config"),
         ("mm_dm", "Mattermost DMs — scope · partners"),
         ("maintenance", "Maintenance — disk usage · cleanup · logging"),
+        ("mcp", "MCP server — register into AI coding CLIs"),
         ("settings", "Settings — run the setup wizard"),
         ("config", "Show current config (masked)"),
         ("quit", "Quit"),
@@ -628,6 +637,9 @@ def run_menu(
             elif choice == "maintenance":
                 _maintenance(out)
                 continue  # the screen has its own loop; no Enter gate needed
+            elif choice == "mcp":
+                _mcp_menu(out)
+                continue  # the screen prints its own result; no Enter gate needed
             elif choice == "settings":
                 on_settings()
             elif choice == "config":

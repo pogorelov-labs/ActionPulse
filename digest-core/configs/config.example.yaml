@@ -164,6 +164,13 @@ retention:
 #   pending_lookback_days: 7
 #   pending_max_items: 5
 
+# Local API + MCP server (opt-in; no YAML — it's a separate stdio server over the store).
+#   uv sync --extra mcp --extra store   # install the MCP SDK
+#   actionpulse mcp install             # register actionpulse-mcp into Claude Code/opencode/qwen (macOS)
+# Env flags (not config.yaml): ACTIONPULSE_MCP_REDACT_BODIES=1 (metadata-only),
+# ACTIONPULSE_MCP_ENABLE_MAINTENANCE=1 (expose ttl/embed/vacuum), ACTIONPULSE_MCP_ENABLE_FETCH=1
+# (expose live source fetch). DIGEST_STORE_KEY is read from ~/.config/actionpulse/env. See ADR-015.
+
 # Embedding-assisted thread merging (REDESIGN PR12a, cosine tier). OFF by
 # default: enabling sends thread-representative text to /v1/embeddings —
 # live use is gated by PC-2; offline replay via the fleet sidecar is safe.

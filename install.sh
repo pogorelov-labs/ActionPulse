@@ -363,6 +363,8 @@ summary() {
     printf '    %sactionpulse%s            %s# interactive menu (run · settings · …)%s\n' \
         "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
     printf '    %sactionpulse%s run --dry-run\n' "$C_CYN" "$C_RST"
+    printf '    %sactionpulse%s mcp install   %s# expose your inbox to AI coding CLIs (opt-in, macOS)%s\n' \
+        "$C_CYN" "$C_RST" "$C_DIM" "$C_RST"
     say ""
     note "Secrets load automatically from $env_short — no manual source needed."
     if ! launcher_on_path; then

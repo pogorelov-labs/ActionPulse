@@ -1125,4 +1125,16 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             expand=False,
         )
     )
+
+    # Optional: offer to register the MCP server into detected AI coding CLIs.
+    # TTY-guarded so non-interactive runs (and tests) never prompt or write configs.
+    if sys.stdin.isatty():
+        try:
+            from digest_core.mcp.commands import offer_install
+
+            console.print()
+            offer_install(console)
+        except Exception:  # noqa: BLE001 - an optional offer must never break setup
+            pass
+
     return True

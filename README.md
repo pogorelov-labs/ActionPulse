@@ -107,6 +107,21 @@ Full stage contracts: [`digest-core/docs/ARCHITECTURE.md`](digest-core/docs/ARCH
 
 ---
 
+## AI assistant access (MCP)
+
+ActionPulse ships a local **MCP server** (`actionpulse-mcp`, opt-in) that exposes your encrypted message store — search, retrieve, threads, `ask`, `compare`, open-loops / pending — to AI coding CLIs (Claude Code, opencode, qwen-code) over stdio.
+
+```bash
+cd digest-core
+uv sync --extra mcp --extra store        # add the MCP SDK + the store
+actionpulse mcp list                     # detect installed CLIs + registration status
+actionpulse mcp install                  # register the server (macOS; consented)
+```
+
+Full content is exposed by default; set `ACTIONPULSE_MCP_REDACT_BODIES=1` for metadata-only. Connecting the server to a cloud AI sends inbox content there — a deployment decision (ADR-015). The store key is never written into a client config. The setup wizard also offers to register it after setup.
+
+---
+
 ## Principles
 
 | | |

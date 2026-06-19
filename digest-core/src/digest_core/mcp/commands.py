@@ -152,3 +152,45 @@ def mcp_uninstall(
         raise typer.Exit(0)
     for d in targets:
         _report(uninstall(d.spec), dry_run=False)
+
+
+def offer_install(console, *, assume_yes: bool = False) -> bool:
+    """Themed, interactive 'register the MCP server into detected AI CLIs' offer.
+
+    Used by the setup wizard (TTY-guarded by the caller) and the launcher menu — a
+    discoverable path beyond typing ``actionpulse mcp install``. macOS only; a no-op
+    when nothing is detected. Returns True if anything was installed/updated.
+    """
+    from rich.prompt import Confirm
+
+    if sys.platform != "darwin":
+        console.print(
+            "  [ap.dim]MCP install is macOS-only for now — see `actionpulse mcp list`.[/]"
+        )
+        return False
+    detected = [d for d in detect_all() if d.installed]
+    if not detected:
+        console.print("  [ap.dim]No supported AI coding CLIs found (claude, opencode, qwen).[/]")
+        return False
+    names = ", ".join(d.spec.display for d in detected)
+    console.print(f"  [ap.accent]Found AI coding CLIs:[/] {names}")
+    console.print(
+        "  [ap.dim]The MCP server exposes your local message store to these CLIs (full"
+        " content); a .bak of each config is made first.[/]"
+    )
+    if not (assume_yes or Confirm.ask("  Register the ActionPulse MCP server?", default=False)):
+        console.print("  [ap.dim]Skipped — run `actionpulse mcp install` anytime.[/]")
+        return False
+    entry = build_server_entry()
+    installed_any = False
+    for d in detected:
+        res = install(d.spec, entry)
+        mark = "[ap.err]✗[/]" if res.status in _SKIPPED else "[ap.ok]✓[/]"
+        bak = f"  [ap.dim](backup: {res.backup.name})[/]" if res.backup else ""
+        console.print(f"  {mark} {d.spec.display}: {_VERB[res.status][0]}{bak}")
+        installed_any = installed_any or res.status in {
+            InstallStatus.INSTALLED,
+            InstallStatus.UPDATED,
+        }
+    console.print("  [ap.dim]Undo: actionpulse mcp uninstall --all[/]")
+    return installed_any
