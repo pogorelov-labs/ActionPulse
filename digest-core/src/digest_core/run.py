@@ -1239,6 +1239,76 @@ def _llm_budget_summary(llm_trace: Dict[str, Any], llm_config) -> Dict[str, Any]
     }
 
 
+def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
+    """Append a store-derived "Open loops" section to the digest (P3 memory pillar).
+
+    Owner-addressed messages from earlier days whose thread has gone quiet → likely
+    still waiting on you. Opt-in (``store.enabled`` + ``store.carryover``) and
+    NON-FATAL: any failure logs a warning and leaves the digest unchanged. The
+    synthetic items carry no real evidence chunk, so this runs AFTER citation
+    validation (they skip the gate) and before ASSEMBLE (so they render + sort in).
+    """
+    import hashlib
+
+    cfg = getattr(ctx.config, "store", None)
+    if cfg is None or not (cfg.enabled and cfg.carryover):
+        return
+    try:
+        from digest_core.assemble.labels import OPEN_LOOPS, report_strings, section_title
+        from digest_core.llm.schemas import Item, Section
+        from digest_core.store import MessageStore
+        from digest_core.store.carryover import find_open_loops
+
+        try:
+            ref = datetime.fromisoformat(ctx.digest_date).replace(
+                hour=23, minute=59, second=59, tzinfo=timezone.utc
+            )
+        except ValueError:
+            ref = datetime.now(timezone.utc)
+        with MessageStore.open(cfg) as store:
+            loops = find_open_loops(
+                store.conn,
+                user_aliases=_ranker_user_aliases(ctx.config),
+                now=ref,
+                lookback_days=cfg.carryover_lookback_days,
+                stale_days=cfg.carryover_stale_days,
+                max_items=cfg.carryover_max_items,
+            )
+        if not loops:
+            return
+        template = report_strings(ctx.config.report.language)["carryover_item"]
+        items = [
+            Item(
+                title=template.format(days=loop.age_days, subject=loop.subject or "—"),
+                evidence_id="carryover:"
+                + hashlib.sha256(loop.thread_id.encode("utf-8")).hexdigest()[:16],
+                # At the display threshold (CONFIDENCE_DISPLAY_MAX) so renderers
+                # suppress the confidence badge — open loops are a strict-gated
+                # heuristic (addressed + quiet + you didn't reply last), not an
+                # extraction confidence, and the age is already in the title.
+                confidence=0.7,
+                source_ref={
+                    "type": "carryover",
+                    "msg_id": loop.last_msg_id,
+                    "conversation_id": loop.thread_id,
+                    "source": loop.source,
+                    "age_days": loop.age_days,
+                    "msg_count": loop.msg_count,
+                },
+                source_subject=loop.subject or None,
+                source_from=loop.author or None,
+            )
+            for loop in loops
+        ]
+        digest.sections.append(
+            Section(title=section_title(OPEN_LOOPS, ctx.config.report.language), items=items)
+        )
+        ctx.run_meta["carryover_items"] = len(items)
+        logger.info("digest_carryover_added", count=len(items), trace_id=ctx.trace_id)
+    except Exception as exc:  # noqa: BLE001 - degrade-not-drop: never fail the digest
+        logger.warning("digest_carryover_failed", error=str(exc), trace_id=ctx.trace_id)
+
+
 def _record_delivered_posts(ctx: RunContext, digest: Digest, receipt: Dict[str, Any]) -> None:
     """Record the post_id↔evidence map for the reactions flywheel (EP-15).
 
@@ -1508,6 +1578,10 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         # U4: items gain subject/author from the message behind their msg_id —
         # the artifact stays self-contained for the reader (no snapshot join).
         _enrich_items_from_messages(digest, normalized_messages)
+
+        # P3 memory pillar: append a store-derived "Open loops" section (cross-day
+        # carryover). Opt-in (store.carryover) and non-fatal.
+        _enrich_digest_from_store(ctx, digest)
 
         # Stage 7: ASSEMBLE
         _stage_assemble(ctx, digest)

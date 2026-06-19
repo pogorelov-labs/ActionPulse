@@ -1160,6 +1160,25 @@ class StoreConfig(BaseModel):
         ge=1,
         description="Soft cap above which brute-force cosine streams the matrix in blocks.",
     )
+    carryover: bool = Field(
+        default=False,
+        description=(
+            "Add a store-derived 'Open loops' section to the digest — owner-addressed"
+            " messages from earlier days whose thread has gone quiet (cross-day continuity)."
+            " Opt-in; needs store.enabled and a few days of stored history."
+        ),
+    )
+    carryover_lookback_days: int = Field(
+        default=7, ge=1, description="Prior days of stored messages to scan for open loops."
+    )
+    carryover_stale_days: int = Field(
+        default=2,
+        ge=1,
+        description="A thread quiet for >= this many days counts as an unresolved open loop.",
+    )
+    carryover_max_items: int = Field(
+        default=5, ge=1, description="Max open-loop items added to the digest."
+    )
 
     def resolved_db_path(self) -> str:
         """Effective DB path: explicit config wins, else ``<data home>/var/store``."""

@@ -45,13 +45,13 @@ class TestNormalization:
 
 
 class TestSortWeights:
-    """Urgent leads, then My actions, FYI, Unconfirmed — same in both languages."""
+    """Urgent leads, then My actions, Open loops, FYI, Unconfirmed — same in both languages."""
 
     def test_order_is_language_independent(self):
-        ru = ["Срочное", "Мои действия", "К сведению", "Не подтверждено"]
-        en = ["Urgent", "My actions", "FYI", "Unconfirmed"]
-        assert [L.section_sort_weight(t) for t in ru] == [0, 1, 2, 3]
-        assert [L.section_sort_weight(t) for t in en] == [0, 1, 2, 3]
+        ru = ["Срочное", "Мои действия", "Открытые вопросы", "К сведению", "Не подтверждено"]
+        en = ["Urgent", "My actions", "Open loops", "FYI", "Unconfirmed"]
+        assert [L.section_sort_weight(t) for t in ru] == [0, 1, 2, 3, 4]
+        assert [L.section_sort_weight(t) for t in en] == [0, 1, 2, 3, 4]
 
     def test_unknown_sorts_last(self):
         assert L.section_sort_weight("Статус") == 99  # not in order map, same as pre-L1
