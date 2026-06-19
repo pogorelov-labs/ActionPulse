@@ -93,10 +93,12 @@ run). Read top-to-bottom; **Phase B is the pivot.**
 
 ### Phase A — Finish & prepare offline *(now; no corp network; ~days)*
 Everything offline-buildable, front-loaded so the corp session is pure execution.
-- **Activation prep:** draft **PC-2 ADR** (S6); polish the corp-activation runbook (S8); verify the flywheel chain on synthetic data (S4).
-- **Security hygiene:** rotate the PAT + log-redaction; §16 masking correction (S6).
-- **New value:** cross-digest **history browser** (S3 + S5) — the one feature worth building before the corp day.
-- **Loose ends:** wizard MM_PAT/api-delivery prompts (S5); install.sh shellcheck + subprocess MCP e2e + cost-cap (S7); docs relocation/consolidation (S8).
+
+> **✓ Shipped (#175–#179):** cross-digest history browser · cost-cap enforcement (TD-006) ·
+> bearer/PAT log redaction · wizard MM-creds collection · shellcheck CI lane.
+> **Remaining in Phase A:** draft the **PC-2 ADR** + corp-activation runbook (S6/S8); rotate the
+> exposed PAT + §16 masking correction (S6); verify the flywheel on synthetic data (S4); the
+> subprocess/stdio MCP e2e (S7); docs relocation/consolidation (S8).
 
 ### Phase B — The corp activation cycle *(the pivot; 1 supervised session + ~2 weeks passive)*
 The single sequence that converts the dark inventory to live.
