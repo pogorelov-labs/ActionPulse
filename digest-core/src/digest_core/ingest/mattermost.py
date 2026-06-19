@@ -201,6 +201,15 @@ class MattermostReadClient:
         teams = self._get("/users/me/teams")
         return list(teams or [])
 
+    def get_post_reactions(self, post_id: str) -> List[dict]:
+        """GET /posts/{id}/reactions — reactions on a delivered digest post (read-only).
+
+        The EP-15 feedback signal (``feedback.reactions``). MM returns ``null`` when a
+        post has no reactions, normalized here to ``[]``.
+        """
+        data = self._get(f"/posts/{post_id}/reactions")
+        return list(data) if isinstance(data, list) else []
+
     def get_my_channels(self) -> List[dict]:
         """Collect the owner's channels across all their teams.
 
