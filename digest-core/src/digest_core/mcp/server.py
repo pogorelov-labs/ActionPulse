@@ -162,9 +162,19 @@ def _tool_stats() -> Dict[str, Any]:
     return _get_api().stats()
 
 
-def _tool_related(message_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """Messages semantically similar to a given one (uses stored vectors)."""
-    return [_hit_dict(h) for h in _get_api().related(message_id, limit=limit)]
+def _tool_related(message_id: str, limit: int = 10) -> Dict[str, Any]:
+    """Messages similar to a given one (uses stored vectors). Needs the gateway only if the
+    source isn't embedded yet; ``degraded: true`` means the gateway was unreachable, so the
+    empty result reflects that — not that nothing is similar."""
+    try:
+        hits = _get_api().related(message_id, limit=limit)
+        return {"results": [_hit_dict(h) for h in hits], "degraded": False}
+    except GatewayUnavailable:
+        return {
+            "results": [],
+            "degraded": True,
+            "reason": "gateway unavailable to embed this message",
+        }
 
 
 def _ask_disabled_under_redact() -> Dict[str, Any]:

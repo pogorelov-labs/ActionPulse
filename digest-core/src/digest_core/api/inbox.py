@@ -17,11 +17,12 @@ they degrade honestly (search → keyword; ``compare`` cosine → None) or raise
 from __future__ import annotations
 
 import re
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import httpx
 import structlog
 
 from digest_core.api.errors import ApiError, CorpOnlyError, GatewayUnavailable
@@ -270,12 +271,18 @@ class InboxAPI:
     def related(self, message_id: str, *, limit: int = 10) -> List[SearchHit]:
         """Messages similar to one you have, by stored chunk vectors. Offline when the
         store is embedded; if the source isn't embedded it uses the gateway to embed its
-        body, and returns [] (logging) when that is unavailable."""
+        body. Raises ``GatewayUnavailable`` (not ``[]``) when that on-the-fly embed can't
+        reach the gateway — an empty list reads as "nothing similar", which would mask a
+        connectivity failure. Genuine errors (bad id, store fault) propagate unmasked."""
         try:
             return self._store.related(message_id, backend=self._backend(), limit=limit)
-        except Exception as exc:  # noqa: BLE001 - only the unembedded-source fallback hits the net
-            logger.warning("api_related_unavailable", message_id=message_id, error=str(exc))
-            return []
+        except GatewayUnavailable:
+            raise
+        except (httpx.HTTPError, ConnectionError, TimeoutError) as exc:
+            logger.warning("api_related_gateway_unavailable", message_id=message_id, error=str(exc))
+            raise GatewayUnavailable(
+                f"related needs the gateway to embed this message: {type(exc).__name__}"
+            ) from exc
 
     def ask(
         self,
@@ -396,11 +403,11 @@ class InboxAPI:
         """Folders (EWS) or channels (MM) for a source. Corp-network for MM."""
         s = (source or "").lower()
         if s in ("mm", "mattermost"):
-            client = self._mm_client()
-            try:
-                channels = client.get_my_channels()
-            except Exception as exc:  # noqa: BLE001
-                raise CorpOnlyError(f"Mattermost channels unavailable: {exc}") from exc
+            with self._mm_client() as client:
+                try:
+                    channels = client.get_my_channels()
+                except Exception as exc:  # noqa: BLE001
+                    raise CorpOnlyError(f"Mattermost channels unavailable: {exc}") from exc
             return [
                 {
                     "id": c.get("id"),
@@ -417,11 +424,11 @@ class InboxAPI:
 
     def get_reactions(self, post_id: str) -> List[Dict[str, Any]]:
         """Mattermost reactions on a post (corp network) — for the feedback loop."""
-        client = self._mm_client()
-        try:
-            return client.get_post_reactions(post_id)
-        except Exception as exc:  # noqa: BLE001
-            raise CorpOnlyError(f"Mattermost reactions unavailable: {exc}") from exc
+        with self._mm_client() as client:
+            try:
+                return client.get_post_reactions(post_id)
+            except Exception as exc:  # noqa: BLE001
+                raise CorpOnlyError(f"Mattermost reactions unavailable: {exc}") from exc
 
     def _source_adapter(self, source: str):
         s = (source or "").lower()
@@ -438,9 +445,11 @@ class InboxAPI:
             )
         raise ApiError(f"unknown source {source!r} (ews | mm)")
 
+    @contextmanager
     def _mm_client(self):
-        import httpx
-
+        """A Mattermost read client whose underlying ``httpx.Client`` is closed on exit.
+        The long-lived MCP server holds one InboxAPI, so a per-call client that is never
+        closed leaks a connection pool (sockets/fds) on every source verb."""
         from digest_core.ingest.mattermost import MattermostReadClient
 
         mm = self._config.mm_source
@@ -451,8 +460,8 @@ class InboxAPI:
             token = mm.get_token()  # raises ValueError if MM_PAT unset
         except ValueError as exc:
             raise CorpOnlyError(f"Mattermost PAT not set: {exc}") from exc
-        http = httpx.Client(timeout=httpx.Timeout(mm.timeout_s), verify=mm.verify_ssl)
-        return MattermostReadClient(base_url, token, http_client=http, per_page=mm.per_page)
+        with httpx.Client(timeout=httpx.Timeout(mm.timeout_s), verify=mm.verify_ssl) as http:
+            yield MattermostReadClient(base_url, token, http_client=http, per_page=mm.per_page)
 
     # -- lifecycle ---------------------------------------------------------
 

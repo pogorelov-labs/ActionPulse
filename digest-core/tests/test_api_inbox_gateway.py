@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from digest_core.api import ApiError, GatewayUnavailable, InboxAPI
@@ -31,6 +32,13 @@ class FailingEmbed:
         raise RuntimeError("gateway down")
 
 
+class GatewayDownEmbed:
+    """Simulates a real unreachable gateway (a network error, not a logic bug)."""
+
+    def embed(self, texts):
+        raise httpx.ConnectError("connection refused")
+
+
 def _config(tmp_path, monkeypatch):
     monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
     cfg = Config()
@@ -47,6 +55,17 @@ def _msg(msg_id, body, *, thread=None, subject="S"):
         subject=subject,
         text_body=body,
     )
+
+
+def test_related_raises_gateway_unavailable_when_embed_unreachable(tmp_path, monkeypatch):
+    """related() needs the gateway only to embed an UN-embedded source. When that embed
+    can't reach the gateway it raises GatewayUnavailable — NOT [] (which an agent reads as
+    'nothing similar', masking the connectivity failure)."""
+    with InboxAPI.open(_config(tmp_path, monkeypatch)) as api:
+        api.store.upsert_messages([_msg("a@corp", "approve the budget")])  # not embedded
+        api._backend_client = GatewayDownEmbed()
+        with pytest.raises(GatewayUnavailable):
+            api.related("urn:email:a@corp")
 
 
 def test_search_degrades_to_keyword_when_gateway_down(tmp_path, monkeypatch):

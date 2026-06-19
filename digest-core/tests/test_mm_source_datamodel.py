@@ -190,6 +190,15 @@ def test_serialize_redacts_dm_body_at_rest():
         assert payload["mm_channel_type"] == ctype
 
 
+def test_serialize_redacts_unknown_mm_channel_type_fail_closed():
+    """Fail-closed: an mm message with an unknown/missing channel type (e.g. lost in a
+    rebuild/replay) must still be redacted — the gate can't leak on an indeterminate type."""
+    for ctype in ("X", None):
+        payload = runner._serialize_message(_dm_dump_msg(ctype))
+        assert payload["text_body"] == runner._DM_AT_REST_REDACTION
+        assert payload["body_norm"] == runner._DM_AT_REST_REDACTION
+
+
 def test_serialize_keeps_channel_and_mention_bodies():
     """Public/private channel posts (O/P) are email-equivalent — NOT redacted."""
     for ctype in ("O", "P"):

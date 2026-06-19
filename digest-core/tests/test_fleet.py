@@ -15,6 +15,7 @@ from digest_core.llm.fleet import (
     EmbeddingsClient,
     RerankerClient,
     TokenizerClient,
+    _retry_after_seconds,
     derive_fleet_endpoint,
 )
 from digest_core.llm.rate_broker import RateBroker
@@ -61,6 +62,35 @@ def test_embeddings_posts_to_derived_endpoint_and_parses(monkeypatch):
     assert client.embed(["a", "b"]) == [[0.1, 0.2], [0.3]]
     url = client._client.post.call_args[0][0]
     assert url.endswith("/v1/embeddings")
+
+
+def test_retry_after_seconds_parsing():
+    assert _retry_after_seconds("30") == 30.0
+    assert _retry_after_seconds(None) == 60.0
+    assert _retry_after_seconds("") == 60.0
+    # RFC-9110 HTTP-date form must NOT raise — falls back to the default.
+    assert _retry_after_seconds("Wed, 21 Oct 2026 07:28:00 GMT") == 60.0
+
+
+def test_429_with_date_retry_after_penalizes_without_valueerror(monkeypatch):
+    """A 429 carrying a date-form Retry-After must penalize the bucket and re-raise the
+    429 — not raise ValueError inside the handler (which would skip the penalty)."""
+    monkeypatch.setenv("LLM_TOKEN", "t")
+    broker = Mock()
+    client = EmbeddingsClient(_config(), rate_broker=broker)
+    err_resp = Mock()
+    err_resp.status_code = 429
+    err_resp.headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+    resp = Mock()
+    resp.raise_for_status = Mock(
+        side_effect=httpx.HTTPStatusError("429", request=Mock(), response=err_resp)
+    )
+    client._client = Mock()
+    client._client.post = Mock(return_value=resp)
+
+    with pytest.raises(httpx.HTTPStatusError):  # the 429 still propagates
+        client.embed(["x"])
+    broker.penalize.assert_called_once_with("bge-m3", 60.0)
 
 
 def test_reranker_reorders_results_by_index(monkeypatch):

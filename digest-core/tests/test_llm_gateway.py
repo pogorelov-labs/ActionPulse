@@ -48,6 +48,20 @@ def gateway(monkeypatch):
     return LLMGateway(config)
 
 
+def test_transport_error_is_retried(gateway):
+    """A transport-level error (read timeout / connection reset) is wrapped as retryable
+    and retried — ADR-008's '1 internal retry for transient errors'. A bare httpx error
+    would otherwise escape unretried (the loop only retries RetryableLLMError)."""
+    valid = _mock_response('{"sections": [{"title": "T", "items": []}]}')
+    gateway.client.post = Mock(side_effect=[httpx.ReadTimeout("timeout"), valid])
+
+    result = gateway.extract_actions([], "Return strict JSON", "trace")
+
+    assert result["sections"] == [{"title": "T", "items": []}]
+    assert result["_meta"]["retry_count"] == 1
+    assert gateway.client.post.call_count == 2
+
+
 def test_invalid_json_retry(gateway):
     """Invalid JSON should trigger one retry and then return parsed sections."""
     invalid_response = _mock_response("{invalid json")

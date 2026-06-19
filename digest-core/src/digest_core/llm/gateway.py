@@ -487,6 +487,12 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
 
         try:
             response = self.client.post(self.config.endpoint, json=payload, headers=headers)
+        except httpx.TransportError as exc:
+            # Transport-level failure (timeout, connection reset, protocol error) — the most
+            # likely real gateway failure, and transient. Wrap as retryable so the retry loop
+            # honors ADR-008's "1 internal retry for transient errors"; the bare error would
+            # otherwise escape unretried, since the loop only retries RetryableLLMError.
+            raise RetryableLLMError(f"LLM gateway transport error: {exc}", 5.0) from exc
         finally:
             self._emit_lane(in_flight=0)
         self.last_latency_ms = int((time.time() - start_time) * 1000)

@@ -91,6 +91,9 @@ class EWSConfig(BaseModel):
     folders: List[str] = Field(default=["Inbox"], description="Folders to process")
     lookback_hours: int = Field(default=24, description="Hours to look back")
     page_size: int = Field(default=100, description="Page size for pagination")
+    timeout_s: float = Field(
+        default=120.0, description="Per-request EWS HTTP timeout in seconds (exchangelib)"
+    )
     # U5: unset resolves into the data home (var/state) — the old cwd-relative
     # ".state/" default silently reset the incremental watermark whenever the
     # user ran from a different directory. An explicit value still wins.

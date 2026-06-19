@@ -2104,17 +2104,17 @@ def _serialize_message(message: NormalizedMessage) -> Dict[str, Any]:
         value = payload.get(key)
         if isinstance(value, datetime):
             payload[key] = value.isoformat()
-    # Privacy boundary (design §6, guardrail #9): never persist raw DM (1:1 'D' /
-    # group 'G') text at rest. A --dump-ingest snapshot is dev-only AND pruning is
-    # deliberately skipped for dumps, so an un-redacted DM dump would be un-pruned
-    # third-party PII. Redact the verbatim body for DM-sourced messages (source=mm
-    # + channel type 'D'/'G'); @-mentions and public/private *channel* posts (O/P)
-    # are email-equivalent work artifacts and are kept. The check is mechanical on
-    # channel type, so it intentionally also covers own-posts-only DM dumps — a
-    # dump is not a place for ANY DM body. Only the on-disk snapshot is touched
-    # (the live in-memory run is unaffected); replaying a redacted dump therefore
-    # carries no DM content, which is the intended privacy posture.
-    if payload.get("source") == "mm" and payload.get("mm_channel_type") in ("D", "G"):
+    # Privacy boundary (design §6, guardrail #9): never persist raw DM text at rest. A
+    # --dump-ingest snapshot is dev-only AND pruning is deliberately skipped for dumps, so
+    # an un-redacted DM dump would be un-pruned third-party PII. Use the SAME fail-closed
+    # predicate as the store (redact_mm_body_at_rest): only Mattermost OPEN ('O') / PRIVATE
+    # ('P') *channel* posts keep their body; DMs ('D'/'G') AND any unknown/missing channel
+    # type are redacted — a privacy gate on third-party content must not leak a body just
+    # because the type was indeterminate. Only the on-disk snapshot is touched (the live
+    # in-memory run is unaffected), so a replayed dump carries no DM content.
+    from digest_core.store.models import redact_mm_body_at_rest
+
+    if redact_mm_body_at_rest(payload.get("source"), payload.get("mm_channel_type")):
         payload["text_body"] = _DM_AT_REST_REDACTION
         payload["body_norm"] = _DM_AT_REST_REDACTION
     return payload
