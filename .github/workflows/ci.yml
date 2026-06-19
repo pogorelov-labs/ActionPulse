@@ -137,8 +137,8 @@ jobs:
       - name: Install dependencies (+ mcp + store extras)
         run: uv sync --all-groups --extra mcp --extra store
 
-      - name: Run MCP server tests
-        run: uv run --extra mcp --extra store pytest tests/test_mcp_server.py -q
+      - name: Run MCP server tests (incl. real stdio round-trip)
+        run: uv run --extra mcp --extra store pytest tests/test_mcp_server.py tests/test_mcp_e2e.py -q
         env:
           PYTHONPATH: src
 
