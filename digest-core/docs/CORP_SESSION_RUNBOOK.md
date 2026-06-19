@@ -59,17 +59,51 @@ python -m digest_core.cli mm-ping
 
 ```bash
 cd digest-core
-python -m digest_core.cli setup
+python -m digest_core.cli setup           # или make setup (сначала uv sync), или actionpulse → Settings
 ```
 
-Мастер (вывод теперь на английском) сначала автообнаружит логин/имя/email
-(скан метаданных Keychain), затем задаст **7 вопросов** (корпоративный email,
-EWS endpoint, EWS пароль, LLM endpoint, LLM токен, Mattermost webhook URL,
-**язык отчёта** — стрелочное меню ↑↓/jk на TTY, `en` по умолчанию / `ru`) и сгенерирует:
-- `~/.config/actionpulse/env` (chmod 600, systemd-compatible)
-- `configs/config.yaml`
+Мастер (вывод на английском) сначала автообнаружит логин/имя/email (скан метаданных
+Keychain — отключается флагом `--no-autodetect`), затем проведёт по шагам. Пишет
+**только** два файла: `~/.config/actionpulse/env` (chmod 600, secrets, systemd-compatible)
+и `configs/config.yaml` (несекретное). **Золотое правило соблюдено:** ни один секрет
+не попадает в YAML.
 
-Безопасно перезапускать: `python -m digest_core.cli setup` читает существующие значения как дефолты.
+**Что спрашивает (по порядку), и что отвечать на корп-машине:**
+
+| Шаг | Вопрос | Куда пишет | Ответ |
+|-----|--------|-----------|-------|
+| 1 | Corporate email (UPN) | `EWS_USER_UPN` (env) + выводит `ews.user_*` | твой корп-email; из него выводятся endpoint/login/aliases |
+| 2 | EWS endpoint URL | `EWS_ENDPOINT` (env), `ews.endpoint` | авто (Keychain+DNS) или `https://owa.<домен>/EWS/Exchange.asmx` |
+| 3 | EWS password | `EWS_PASSWORD` (env) | секрет; Enter — оставить текущий при повторном запуске |
+| 4 | LLM gateway endpoint | `LLM_ENDPOINT` (env), `llm.endpoint` | OpenAI-фронт шлюза: `https://<gw>/v1/chat/completions` |
+| 5 | LLM token (Bearer) | `LLM_TOKEN` (env) | секрет |
+| 6 | Mattermost webhook URL | `MM_WEBHOOK_URL` (env) | incoming webhook канала-получателя |
+| 6a | «Это приватный DM/канал?» | `deliver.mattermost.acknowledged_private` | y если личный канал (иначе каждый прогон предупреждает) |
+| 6b | (опц., TTY) MM PAT + base URL | `MM_PAT`, `MM_BASE_URL` (env) | **нужно для MM-ingest и api-доставки/реакций**; для webhook-only — пропустить |
+| 6c | DM consent ladder | `mm_source.dm_*` | `off` (умолч.) · `own_posts_only` · `selected`+allowlist · `all` — две верхние требуют consent (PII третьих лиц) |
+| 7 | Report language | `report.language` | стрелочное меню ↑↓/jk; `en` (умолч.) / `ru` |
+| опц. | Encrypted store | `DIGEST_STORE_KEY` (env), `store.enabled` | y чтобы включить 30-дн. зашифрованный стор; ключ **переиспользуется**, не регенерируется |
+| опц. | TLS · Corporate CA | `ews.verify_ca` | авто-детект пути / экспорт цепочки из Keychain (macOS) / ручной путь |
+| опц. | MCP register (после записи, macOS) | конфиги Claude/opencode/qwen | y чтобы зарегистрировать `actionpulse-mcp` в AI-CLI |
+
+Перед записью — таблица **Review** (секреты маскируются: пароль `••••`, токен `••••XXXX`,
+MM PAT как `set`) и вопрос `Save the configuration?`. На TTY после записи мастер
+предлагает тест webhook'а.
+
+**Чего мастер НЕ спрашивает — правит вручную в `configs/config.yaml` при необходимости:**
+- `time.user_timezone` / `time.window` — **дефолт `Europe/Moscow` / `calendar_day`**; если
+  машина/ящик в другом поясе, дата дайджеста уедет — проверь и поправь.
+- `deliver.mattermost.auth_mode` — дефолт `webhook`; для **захвата post_id и реакций**
+  (флайвил) переключи на `api` (+ `delivery_target` / `channel_name`).
+- `ews.folders` — дефолт `["Inbox"]`; добавь общие папки, если нужно.
+- `mm_source.channel_allowlist` — список публичных каналов для ingest.
+- `retention` / `memory.dedup_*` / `reranker` / `judge` — «тёмный» инвентарь, включается
+  после PC-2 (см. §10).
+
+> **Идемпотентность:** повторный `setup` читает текущие значения как дефолты и сохраняет
+> секреты. **Исключение:** `ews.user_aliases` перезаписываются (email + автодетект +
+> машинный логин) — алиасы, добавленные руками в YAML, потеряются; добавляй их **после**
+> финального setup.
 
 **Альтернатива без TTY (systemd pre-provision, CI):**
 ```bash
@@ -286,6 +320,45 @@ tar czf ~/actionpulse-corpus-$(date +%Y-%m-%d).tar.gz \
 
 > Для разовой валидации C1–C3 (EN-default + terminal design) список выноса
 > шире — см. §9.4.
+
+### 5.1 Логи и debug-bundle (для разбора снаружи)
+
+**Где логи.** Структурированные JSON-логи пишутся в
+`<data-home>/var/logs/run-<timestamp>.log` (путь печатается **первой строкой**
+прогона). На TTY в терминал идёт build-log на stderr (`✓ INGEST …`), а JSON —
+только в файл. Под systemd — ещё и в journal:
+```bash
+journalctl --user -u 'actionpulse-digest@*' -f                    # live во время прогона
+journalctl --user -u 'actionpulse-digest@*' --since today -p err  # только ошибки
+tail -f <data-home>/var/logs/run-*.log | jq .                     # live JSON из файла
+```
+Тоггл — `observability.log_to_file` (дефолт **on**). Логи **не** чистятся ретеншеном
+(он трогает только дайджесты) — при необходимости `actionpulse clean --logs`.
+
+**Редакция (что гарантировано).** Процессор structlog маскирует секреты/PII **до**
+сериализации в JSON: имена полей (`password`/`token`/`secret`/`key`/`pat`/`mm_pat`/
+`authorization`/`bearer`/`access_token`/`email`/…) и значения по паттернам (`Bearer …`,
+email, SSN, номер карты) → `[[REDACTED]]`. **Тела писем/сообщений не логируются вообще** —
+только счётчики и id. OTel-трейсинг (если включён) — тоже без контента.
+
+**Чистый bundle наружу — `export-diagnostics` (предпочтительно):**
+```bash
+actionpulse export-diagnostics --date $(date +%Y-%m-%d) --out /tmp/actionpulse
+#   или: actionpulse export-diagnostics --trace-id <id> --out /tmp/actionpulse
+```
+Кладёт `diagnostic-<trace>-<date>.tar.gz`: редактированный `run.log`,
+**санитизированный** конфиг (секреты → `[[REDACTED]]`), метрики стадий, LLM-трейс
+(модель/токены/finish-reason, без контента) и `env-info.txt` (только python/платформа/
+версии пакетов — без env-дампа).
+
+> ⚠️ В bundle **входят сами дайджесты** (`digest-*.json`/`.md`) — а это извлечённый
+> контент (темы/цитаты), т.е. сам продукт. Обращайся с архивом как с экспортом почты:
+> шифруй при передаче, ограничь получателей.
+>
+> `run --collect-logs` и `diagnose` зовут shell-скрипт `collect_diagnostics.sh`, который
+> кладёт ещё env и `.state`. Секреты там теперь редактируются корректно (env-переменные
+> `*PASSWORD/TOKEN/SECRET/KEY/PAT/WEBHOOK_URL` и YAML-значения), но для выноса наружу
+> предпочитай `export-diagnostics`: чище и не тянет `.state`.
 
 ---
 

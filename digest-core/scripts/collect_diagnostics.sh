@@ -69,7 +69,7 @@ cd "$PROJECT_ROOT"
 # Copy config files and sanitize them
 if [ -f "configs/config.yaml" ]; then
     # Remove sensitive data from config
-    sed -E 's/(password|token|secret|key):\s*[^[:space:]]+/&_REDACTED/g' "configs/config.yaml" > "$TEMP_DIR/config/sanitized.yaml"
+    sed -E 's/([A-Za-z_]*(password|token|secret|key)[A-Za-z_]*:)[[:space:]]*[^[:space:]].*/\1 REDACTED/' "configs/config.yaml" > "$TEMP_DIR/config/sanitized.yaml"
     echo "✓ Configuration collected (sanitized)"
 else
     echo "✗ config.yaml not found"
@@ -95,7 +95,7 @@ echo "Collecting system information..."
     echo "Python path: $(which python3)"
     echo ""
     echo "=== Environment Variables (sanitized) ==="
-    env | grep -E "^(EWS_|LLM_|DIGEST_)" | sed -E 's/(password|token|secret|key)=[^[:space:]]+/\1=REDACTED/g' || true
+    env | grep -E "^(EWS_|LLM_|DIGEST_|MM_)" | sed -E 's/^([A-Za-z0-9_]*(PASSWORD|TOKEN|SECRET|KEY|PAT|WEBHOOK_URL))=.*/\1=REDACTED/' || true
     echo ""
     echo "=== Disk Space ==="
     df -h
