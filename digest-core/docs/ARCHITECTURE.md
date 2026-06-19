@@ -1409,8 +1409,8 @@ digest-core/
 │  header and NO local pre-inference masking — the     │
 │  [[REDACT:..]] scheme was never wired. The corp      │
 │  gateway's own non-logging policy is the only        │
-│  inference-time control. PC-2 ADR (ROADMAP Privacy)  │
-│  must formalize this.                                │
+│  inference-time control — formalized per endpoint    │
+│  in PC2_DATA_HANDLING.md (PC-2 ADR, DRAFT).          │
 └─────────────────────────────────────────────────────┘
 ```
 
