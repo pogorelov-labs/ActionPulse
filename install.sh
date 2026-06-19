@@ -69,10 +69,10 @@ case "$(locale charmap 2>/dev/null || true)" in
 esac
 
 if [ "$UTF8_OK" = 1 ]; then
-    G_OK="✓" G_FAIL="✗" G_WARN="⚠" G_PULSE="⌁" G_ARROW="→"
+    G_OK="✓" G_FAIL="✗" G_WARN="⚠" G_PULSE="⌁"
     SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 else
-    G_OK="OK" G_FAIL="X" G_WARN="!" G_PULSE="~" G_ARROW="->"
+    G_OK="OK" G_FAIL="X" G_WARN="!" G_PULSE="~"
     SPIN_FRAMES=(- \\ \| /)
 fi
 
@@ -342,6 +342,7 @@ summary() {
     local dir_short env_short
     dir_short="$INSTALL_DIR"
     case "$dir_short" in "$HOME"/*) dir_short="~${dir_short#"$HOME"}" ;; esac
+    # shellcheck disable=SC2088  # display string: the literal ~ is what we want the user to see
     env_short="~/.config/actionpulse/env"
 
     say ""
@@ -368,6 +369,7 @@ summary() {
     say ""
     note "Secrets load automatically from $env_short — no manual source needed."
     if ! launcher_on_path; then
+        # shellcheck disable=SC2088  # display message, not a path to expand
         warn "~/.local/bin is not on your PATH yet."
         note "Add it, then restart the shell:"
         note "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc && exec \$SHELL"
@@ -407,6 +409,7 @@ main() {
             INSTALL_DIR="$REPLY_VALUE"
         fi
     fi
+    # shellcheck disable=SC2088  # the case matches a literal ~ the user may type for --dir
     case "$INSTALL_DIR" in
         "~"|"~/"*) INSTALL_DIR="$HOME${INSTALL_DIR#"~"}" ;;
     esac

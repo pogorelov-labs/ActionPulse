@@ -2,9 +2,6 @@
 # Environment diagnostics script
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
 echo "Digest-core environment diagnostics..."
 echo "======================================"
 

@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - 'digest-core/**'
+      - 'install.sh'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
     paths:
       - 'digest-core/**'
+      - 'install.sh'
       - '.github/workflows/ci.yml'
 
 defaults:
@@ -39,6 +41,24 @@ jobs:
 
       - name: Black format check
         run: uv run black --check src/ tests/
+
+  shellcheck:
+    # The bootstrap install.sh + shell scripts are otherwise untested. shellcheck (preinstalled
+    # on ubuntu runners) catches real quoting/word-split bugs at warning severity. Runs from the
+    # repo root (the workflow default is digest-core) so install.sh resolves.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck shell scripts
+        run: >-
+          shellcheck --severity=warning --shell=bash
+          install.sh
+          digest-core/deploy/install-systemd.sh
+          digest-core/scripts/*.sh
 
   terminal-matrix:
     # Degradation-matrix guard (TERMINAL_DESIGN.md §7, roadmap T7): the

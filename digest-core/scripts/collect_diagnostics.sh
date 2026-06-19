@@ -215,6 +215,6 @@ echo "3. Include any specific error messages or issues you encountered"
 echo ""
 echo "Archive contents:"
 tar -tzf "$ARCHIVE_PATH" | head -20
-if [ $(tar -tzf "$ARCHIVE_PATH" | wc -l) -gt 20 ]; then
+if [ "$(tar -tzf "$ARCHIVE_PATH" | wc -l)" -gt 20 ]; then
     echo "... and $(($(tar -tzf "$ARCHIVE_PATH" | wc -l) - 20)) more files"
 fi
