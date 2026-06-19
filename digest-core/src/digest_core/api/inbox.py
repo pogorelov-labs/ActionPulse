@@ -36,6 +36,8 @@ logger = structlog.get_logger(__name__)
 _STOPWORDS = frozenset(
     "the a an and or but for to of in on at by with from is are was were be been being this "
     "that these those it its as if then than so we you i he she they them our your my me re fwd "
+    # apostrophe tails the len>=3 tokenizer leaves behind (don't->don, wasn't->wasn, ...)
+    "don won isn aren wasn weren hasn haven didn doesn couldn wouldn shouldn ain "
     "и в во не на с со что как а но или для по от до из за то же бы ли о об к у не да".split()
 )
 _WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)

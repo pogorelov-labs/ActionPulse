@@ -6,8 +6,11 @@ lazily so a default install without the ``mcp`` extra never imports it.
 
 Exposure policy:
 * FULL CONTENT by default — tools/resources return message bodies and RAG answers.
-  Set ``ACTIONPULSE_MCP_REDACT_BODIES=1`` to return metadata-only (subjects/authors/
-  dates; empty bodies/snippets/passages). DM bodies are ALWAYS redacted at rest (#9).
+  ``ACTIONPULSE_MCP_REDACT_BODIES=1`` → metadata-only: bodies/snippets/passages emptied,
+  ``compare`` term lists blanked, and ``ask``/``summarize_thread`` disabled (their output
+  is body-DERIVED — a synthesized answer or verbatim quotes). DM bodies are ALWAYS redacted
+  at rest (#9). Invariant under redact: nothing body-derived (verbatim or synthesized)
+  crosses the wire — only metadata (subjects/authors/dates/counts/cosine/ids).
 * Store-MUTATING maintenance (sweep_ttl / embed_backlog / reembed / vacuum) is OFF
   unless ``ACTIONPULSE_MCP_ENABLE_MAINTENANCE=1`` — an autonomous agent should not
   prune or re-embed your store unprompted.
@@ -23,7 +26,7 @@ import os
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
-from digest_core.api import InboxAPI
+from digest_core.api import GatewayUnavailable, InboxAPI
 from digest_core.config import Config
 
 _api: Optional[InboxAPI] = None
@@ -83,13 +86,24 @@ def _tool_search(
     source: Optional[str] = None,
     since: Optional[str] = None,
     limit: int = 20,
-) -> List[Dict[str, Any]]:
-    """Search your messages. mode: keyword (offline) | semantic | hybrid (needs the
-    corp gateway; falls back to keyword when it's unreachable). since is YYYY-MM-DD."""
-    return [
-        _hit_dict(h)
-        for h in _get_api().search(query, mode=mode, source=source, since=since, limit=limit)
-    ]
+) -> Dict[str, Any]:
+    """Search your messages. mode: keyword (offline) | semantic | hybrid (needs the corp
+    gateway). When the gateway is unreachable, semantic/hybrid DEGRADE to keyword and the
+    response says so in ``served_mode``/``degraded`` (so an empty result is not mistaken
+    for 'nothing matches'). since is YYYY-MM-DD."""
+    api = _get_api()
+    served = mode
+    try:
+        hits = api.search(query, mode=mode, source=source, since=since, limit=limit, strict=True)
+    except GatewayUnavailable:
+        served = "keyword"
+        hits = api.search(query, mode="keyword", source=source, since=since, limit=limit)
+    return {
+        "requested_mode": mode,
+        "served_mode": served,
+        "degraded": served != mode,
+        "results": [_hit_dict(h) for h in hits],
+    }
 
 
 def _tool_get_message(message_id: str) -> Optional[Dict[str, Any]]:
@@ -149,21 +163,41 @@ def _tool_related(message_id: str, limit: int = 10) -> List[Dict[str, Any]]:
     return [_hit_dict(h) for h in _get_api().related(message_id, limit=limit)]
 
 
+def _ask_disabled_under_redact() -> Dict[str, Any]:
+    return {
+        "answered": False,
+        "answer": "Disabled: ACTIONPULSE_MCP_REDACT_BODIES is set, and a grounded answer "
+        "(plus verbatim citation quotes) would carry message-body content.",
+        "citations": [],
+        "passages": [],
+    }
+
+
 def _tool_ask(
     question: str, top_k: int = 8, source: Optional[str] = None, since: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Grounded, cited answer over your messages. Needs the corp gateway (errors off-corp)."""
+    """Grounded, cited answer over your messages. Needs the corp gateway (errors off-corp).
+    Disabled (no gateway call) when ACTIONPULSE_MCP_REDACT_BODIES is set."""
+    if _redact_bodies():
+        return _ask_disabled_under_redact()
     return _ask_dict(_get_api().ask(question, top_k=top_k, source=source, since=since))
 
 
 def _tool_summarize_thread(thread_id: str) -> Dict[str, Any]:
-    """Summarize a thread, leading with anything awaiting your reply. Needs the corp gateway."""
+    """Summarize a thread, leading with anything awaiting your reply. Needs the corp gateway.
+    Disabled when ACTIONPULSE_MCP_REDACT_BODIES is set."""
+    if _redact_bodies():
+        return _ask_disabled_under_redact()
     return _ask_dict(_get_api().summarize_thread(thread_id))
 
 
 def _tool_compare(message_id_a: str, message_id_b: str) -> Dict[str, Any]:
     """Compare two messages: vector cosine (null if unembedded) + shared/distinct key terms."""
-    return asdict(_get_api().compare(message_id_a, message_id_b))
+    d = asdict(_get_api().compare(message_id_a, message_id_b))
+    if _redact_bodies():
+        # the term lists are salient words pulled from the bodies → blank under redact
+        d["shared_terms"] = d["distinct_a"] = d["distinct_b"] = []
+    return d
 
 
 def _tool_open_loops(
@@ -294,4 +328,11 @@ def run_server() -> None:
     from digest_core.ui.menu import load_env_file
 
     load_env_file()  # DIGEST_STORE_KEY from ~/.config/actionpulse/env — never from config
-    _build_app().run()
+    app = _build_app()
+    try:
+        app.run()
+    finally:
+        global _api
+        if _api is not None:
+            _api.close()  # checkpoint WAL + close the gateway client on shutdown
+            _api = None

@@ -62,7 +62,9 @@ def test_tool_bodies_serialize(api):
     )
     rec = server._tool_get_message("urn:email:a@corp")
     assert rec["subject"] == "S" and rec["message_id"] == "urn:email:a@corp"
-    assert server._tool_search("budget")[0]["message_id"] == "urn:email:a@corp"
+    search = server._tool_search("budget")
+    assert search["served_mode"] == "keyword" and search["degraded"] is False
+    assert search["results"][0]["message_id"] == "urn:email:a@corp"
     assert server._tool_stats()["messages"] == 1
     assert server._tool_list_threads()[0]["thread_id"] == "T"
     assert isinstance(server._tool_open_loops(), list)
@@ -78,11 +80,21 @@ def test_compare_tool_returns_dict(api):
     assert "budget" in cmp["shared_terms"] and "plan" in cmp["shared_terms"]
 
 
-def test_redact_bodies_flag(api, monkeypatch):
-    api.store.upsert_messages([_msg("a@corp", "secret body text here")])
+def test_redact_bodies_flag_no_body_derived_content(api, monkeypatch):
+    api.store.upsert_messages(
+        [_msg("a@corp", "secret budget body here"), _msg("b@corp", "secret budget review")]
+    )
     monkeypatch.setenv("ACTIONPULSE_MCP_REDACT_BODIES", "1")
     rec = server._tool_get_message("urn:email:a@corp")
     assert rec["body"] == "" and "secret" not in str(rec)
+    # compare term lists are pulled from bodies → blanked under redact (cosine/ids survive)
+    cmp = server._tool_compare("urn:email:a@corp", "urn:email:b@corp")
+    assert cmp["shared_terms"] == [] and cmp["distinct_a"] == [] and cmp["distinct_b"] == []
+    assert "budget" not in str(cmp) and "secret" not in str(cmp)
+    # ask/summarize produce body-derived answers + verbatim quotes → disabled under redact
+    ask = server._tool_ask("what about the budget?")
+    assert ask["answered"] is False and ask["citations"] == [] and ask["passages"] == []
+    assert "Disabled" in ask["answer"] and "secret" not in str(ask)
 
 
 def test_ask_tool_empty_store_no_gateway(api):
