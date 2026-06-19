@@ -9,6 +9,10 @@
 > **Визит EP-14 (validation pack):** этот runbook — базовая процедура (§0–§5).
 > Пробы флота (reranker/judge/best-of-N, ①–⑧) и их read-out'ы — в
 > **`VISIT_CHECKLIST_EP14.md`** рядом: сначала пройди §1–§3 здесь, затем пробы там.
+>
+> **Activation cycle (Phase B → C):** to turn on the built-but-dark inventory (store / fleet /
+> flywheel), follow the threaded sequence in **§10** — it gates on the PC-2 ADR
+> (`PC2_DATA_HANDLING.md`) and links the store + EP-14 checklists.
 
 ---
 
@@ -526,6 +530,43 @@ tar czf ~/actionpulse-c1c3-$(date +%Y-%m-%d).tar.gz \
 
 ---
 
+## 10. Activation cycle — turning on the dark inventory (Phase B → C)
+
+§0–§9 set up and run the **Conservative** deployment (extractor `/v1/chat` only; fleet off; store
+keyword-only; webhook delivery). This section threads the **activation cycle** that flips the
+built-but-dark inventory to live — the single highest-value corp sequence (see
+[`docs/planning/STATUS.md`](../../docs/planning/STATUS.md) for what each unlock buys). §0–§9 are the
+~30-min session; this arc adds a ~1–2-week api-delivery window + an offline calibration pass. Run
+in order — each step links its detailed checklist.
+
+0. **PC-2 first (the gate).** Before content reaches a new endpoint, get the platform team's written
+   logging / retention / residency statement per endpoint and fill the `<TBD>`s in
+   [`PC2_DATA_HANDLING.md`](./PC2_DATA_HANDLING.md); mark each endpoint **CONFIRMED**. No flag flips
+   until its endpoint is confirmed. (PC-1 service-account role is already ✅ Personal — §"today".)
+1. **Prove ingest live.** §1–§3 exercise EWS; additionally prove **MM ingest** (never run in prod):
+   `actionpulse run --sources ews,mm` (needs `MM_PAT` + `MM_BASE_URL` — the wizard collects them now,
+   §0.3). Confirm both sources land messages.
+2. **Store live-validation.** Enable the store (`store.enabled`), run, then `actionpulse store reembed`
+   against the real gateway and exercise `search` / `ask` / `history` on real mail — follow
+   [`STORE_VALIDATION_CHECKLIST.md`](./STORE_VALIDATION_CHECKLIST.md). (`reembed` hits `/v1/embeddings`
+   → that endpoint must be CONFIRMED in PC-2.)
+3. **Quality validation (EP-14).** Run the fleet probes + read-outs in
+   [`VISIT_CHECKLIST_EP14.md`](./VISIT_CHECKLIST_EP14.md): items/section, `support_recall`,
+   weak/quarantined counts, the verbatim-quote invariant; EN-vs-RU per §9.1.
+4. **Flip the fleet — per CONFIRMED endpoint only.** With evidence from 2–3 and the PC-2 rows
+   confirmed, set `reranker.enabled` / `enable_relevance` / `judge.enabled` /
+   `threading.embedding_merge`. Each rides its own RPM bucket + stage budget; any failure
+   degrades-not-drops.
+5. **api-mode delivery (~1–2 weeks).** Configure the owner-only channel id + PAT (`auth_mode=api`);
+   each run records delivered post-ids to the `delivered-posts` ledger. Let recipients react ✓/✗ over
+   the window — this is the flywheel's fuel.
+6. **Close the flywheel (Phase C — offline after harvest).** `actionpulse reactions harvest` →
+   `eval-gold` → `eval-calibrate` → set `recall_floor > 0` and flip the judge gate. Trust goes from
+   *annotate-only* to **measured & gated**; publish the first real P/R/F1.
+
+> **Order matters:** step 0 gates everything; 2 needs 0's embeddings row; 4 needs 0 + the 2–3
+> evidence; 6 needs 5's reactions. Steps 5–6 span the ~2-week window + an offline calibration pass.
+
 ## Чеклист корп-сессии (quick ref)
 
 ```
@@ -544,6 +585,19 @@ tar czf ~/actionpulse-c1c3-$(date +%Y-%m-%d).tar.gz \
 □  (однократно) §9 — C1–C3: EN vs RU прогоны + llm-rec-en.json + visual/ + вердикты
 □  (однократно) §9.4 — C4: U2 live-телеметрия + U4 reader на реальном прогоне
 □  (бонус) systemd timer установлен
+```
+
+### Activation cycle (§10) — quick ref
+
+```
+□  PC-2: per-endpoint statements filled → each CONFIRMED in PC2_DATA_HANDLING.md   (gate)
+□  ingest live: actionpulse run --sources ews,mm — both sources land
+□  store: store.enabled → run → store reembed → search/ask/history (STORE_VALIDATION_CHECKLIST)
+□  EP-14 quality pack passed (VISIT_CHECKLIST_EP14)
+□  fleet flipped (only CONFIRMED endpoints): reranker / enable_relevance / judge / embedding_merge
+□  api-mode delivery live (owner channel + PAT) → delivered-posts ledger fills (~1–2 wks)
+□  flywheel closed: reactions harvest → eval-gold → eval-calibrate → recall_floor>0 + judge gate
+□  PC-2 Status → ACCEPTED; first real P/R/F1 published
 ```
 
 Время: ~30 мин при удачном раскладе, ~45 мин с отладкой.
