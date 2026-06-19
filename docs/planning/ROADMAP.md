@@ -3,6 +3,9 @@
 > **What this is:** the *forward* product plan — current state, the coherent product
 > shape, and what we build next. Updated **2026-06-19**.
 >
+> **Where we are now** (stream-by-stream % built vs live, the dark inventory, the critical path)
+> → [`STATUS.md`](./STATUS.md).
+>
 > **Source-of-truth map** (don't trust prose over code):
 > - Contracts / ADRs / pipeline → `digest-core/docs/ARCHITECTURE.md` (verify §13/§14 against code — they lag).
 > - Requirements / principles / unified data schema v3.0 → `docs/planning/BUSINESS_REQUIREMENTS.md`.
