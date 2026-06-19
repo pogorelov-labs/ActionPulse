@@ -1179,6 +1179,20 @@ class StoreConfig(BaseModel):
     carryover_max_items: int = Field(
         default=5, ge=1, description="Max open-loop items added to the digest."
     )
+    pending: bool = Field(
+        default=False,
+        description=(
+            "Add a store-derived 'Awaiting your reply' section — messages from earlier"
+            " days that asked YOU something (question/approval/request) and you have not"
+            " replied since. Content-aware (reads stored bodies); opt-in, needs store.enabled."
+        ),
+    )
+    pending_lookback_days: int = Field(
+        default=7, ge=1, description="Prior days of stored messages to scan for pending requests."
+    )
+    pending_max_items: int = Field(
+        default=5, ge=1, description="Max pending-request items added to the digest."
+    )
 
     def resolved_db_path(self) -> str:
         """Effective DB path: explicit config wins, else ``<data home>/var/store``."""

@@ -157,6 +157,12 @@ retention:
 #   carryover_lookback_days: 7   # how many prior days to scan
 #   carryover_stale_days: 2      # thread quiet >= N days → an open loop
 #   carryover_max_items: 5       # cap on open-loop items added to the digest
+#   # "Awaiting your reply" section: prior-day messages that asked YOU something
+#   # (question/approval/request) and you have not answered since. Reads stored
+#   # bodies for cue detection; the digest item stays metadata-only. DMs excluded.
+#   pending: false
+#   pending_lookback_days: 7
+#   pending_max_items: 5
 
 # Embedding-assisted thread merging (REDESIGN PR12a, cosine tier). OFF by
 # default: enabling sends thread-representative text to /v1/embeddings —
