@@ -1239,6 +1239,35 @@ def _llm_budget_summary(llm_trace: Dict[str, Any], llm_config) -> Dict[str, Any]
     }
 
 
+def _record_delivered_posts(ctx: RunContext, digest: Digest, receipt: Dict[str, Any]) -> None:
+    """Record the post_id↔evidence map for the reactions flywheel (EP-15).
+
+    Only api-mode delivery captures ``post_ids``; coarse (per-digest) until per-section
+    threaded delivery lands. Non-fatal — recording feedback metadata never breaks a run.
+    """
+    post_ids = receipt.get("post_ids") if isinstance(receipt, dict) else None
+    if not post_ids:
+        return
+    try:
+        from digest_core.feedback.delivered_ledger import record_delivery
+
+        evidence_ids = [
+            eid
+            for section in (getattr(digest, "sections", None) or [])
+            for item in (getattr(section, "items", None) or [])
+            if (eid := getattr(item, "evidence_id", None)) and eid != "system"
+        ]
+        record_delivery(
+            ctx.config.resolved_state_dir(),
+            post_ids=list(post_ids),
+            evidence_ids=evidence_ids,
+            channel_id=str(receipt.get("channel_id", "")),
+            digest_date=ctx.digest_date,
+        )
+    except Exception as exc:  # noqa: BLE001 - feedback metadata is best-effort
+        logger.warning("delivered_ledger_record_failed", error=str(exc), trace_id=ctx.trace_id)
+
+
 def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
     """Stage 8: DELIVER — send digest to Mattermost if enabled."""
     delivery_receipt: Dict[str, Any] = {}
@@ -1258,6 +1287,7 @@ def _stage_deliver(ctx: RunContext, digest: Digest) -> Dict[str, Any]:
         except Exception as exc:
             delivery_receipt = {"status": "warning", "error": str(exc)}
             logger.warning("Mattermost delivery failed", trace_id=ctx.trace_id, error=str(exc))
+        _record_delivered_posts(ctx, digest, delivery_receipt)
         _finish_stage(ctx, "deliver", deliver_start)
         _emit(
             ctx,

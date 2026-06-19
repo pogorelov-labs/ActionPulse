@@ -683,6 +683,71 @@ def store_drop(yes: bool = typer.Option(False, "--yes", help="Skip the confirmat
     typer.echo(f"{OK} Deleted the store ({removed} file(s)).")
 
 
+reactions_app = typer.Typer(help="EP-15 reaction feedback on delivered digests (corp-only).")
+app.add_typer(reactions_app, name="reactions")
+
+
+@reactions_app.command("harvest")
+def reactions_harvest(
+    date: str = typer.Option(None, "--date", help="Only posts for this digest date (YYYY-MM-DD)"),
+    out: str = typer.Option(
+        None, "--out", help="Write the per-evidence ack/nack summary JSON here"
+    ),
+):
+    """Harvest Mattermost reactions on delivered digest posts → ack/nack per evidence id.
+
+    Reads the delivered-posts ledger (written by api-mode delivery) and queries the MM
+    API — corp network only (ADR-012). Feeds EP-15 calibration of the citation gate.
+    """
+    import httpx
+
+    from digest_core.config import Config
+    from digest_core.feedback.delivered_ledger import read_ledger
+    from digest_core.feedback.reactions import harvest_reactions, summarize
+    from digest_core.ingest.mattermost import MattermostReadClient
+
+    config = Config()
+    entries = read_ledger(config.resolved_state_dir(), digest_date=date)
+    if not entries:
+        typer.echo(
+            f"{FAIL} No delivered posts in the ledger. Deliver a digest with "
+            "deliver.mattermost.auth_mode=api first (only api mode captures post ids).",
+            err=True,
+        )
+        raise typer.Exit(1)
+    mm = config.mm_source
+    base_url = mm.get_base_url()
+    if not base_url:
+        typer.echo(f"{FAIL} Mattermost base URL not set (${mm.base_url_env}).", err=True)
+        raise typer.Exit(1)
+    try:
+        token = mm.get_token()
+    except ValueError as exc:
+        typer.echo(f"{FAIL} {exc}", err=True)
+        raise typer.Exit(1)
+    client = MattermostReadClient(
+        base_url,
+        token,
+        http_client=httpx.Client(timeout=httpx.Timeout(mm.timeout_s), verify=mm.verify_ssl),
+        per_page=mm.per_page,
+    )
+    try:
+        records = harvest_reactions(client, entries)
+    except Exception as exc:  # noqa: BLE001 - corp-only; surface a clean message
+        typer.echo(f"{FAIL} reaction harvest failed (needs the corp network): {exc}", err=True)
+        raise typer.Exit(1)
+    summary = summarize(records)
+    t = summary["totals"]
+    typer.echo(
+        f"{OK} {summary['reactions']} reaction(s) over {len(entries)} post(s): "
+        f"{t['ack']} ack / {t['nack']} nack / {t['other']} other; "
+        f"{len(summary['by_evidence'])} evidence id(s) with signal."
+    )
+    if out:
+        Path(out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        typer.echo(f"  wrote per-evidence summary → {out}")
+
+
 @app.command()
 def diagnose():
     """Run environment diagnostics.
