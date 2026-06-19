@@ -44,6 +44,14 @@ class _FakeAdapter:
 
 
 class _FakeMM:
+    # _mm_client is a context manager (closes the httpx client on exit); the fake
+    # mirrors that so `with self._mm_client() as client:` works.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
     def get_my_channels(self):
         return [{"id": "c1", "name": "general", "display_name": "General", "type": "O"}]
 

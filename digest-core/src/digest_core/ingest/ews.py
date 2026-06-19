@@ -34,6 +34,29 @@ logger = structlog.get_logger()
 #: retry events can report an honest "retry n/8".
 FETCH_MAX_ATTEMPTS = 8
 
+#: Transient fetch failures worth retrying. exchangelib raises its OWN exception
+#: hierarchy (TransportError/RateLimitError/ErrorServerBusy/…) which does NOT subclass
+#: the builtin ConnectionError/TimeoutError — so a server-busy/throttle blip would abort
+#: the run on the first attempt unless we name them explicitly. The exchangelib names are
+#: imported defensively so a library version that drops one can't break module import.
+_RETRYABLE_FETCH_ERRORS: tuple = (ConnectionError, TimeoutError)
+try:  # pragma: no cover - exchangelib is always present in real EWS runs
+    from exchangelib.errors import (
+        ErrorServerBusy,
+        ErrorTimeoutExpired,
+        RateLimitError,
+        TransportError,
+    )
+
+    _RETRYABLE_FETCH_ERRORS = _RETRYABLE_FETCH_ERRORS + (
+        TransportError,
+        RateLimitError,
+        ErrorServerBusy,
+        ErrorTimeoutExpired,
+    )
+except ImportError:  # pragma: no cover
+    pass
+
 
 def _emit_fetch_retry(retry_state: "tenacity.RetryCallState") -> None:
     """tenacity ``before_sleep`` for the fetch: make the backoff legible.
@@ -305,6 +328,9 @@ class EWSIngest:
         # Scoped to exchangelib's protocol — it does NOT touch the LLM gateway or
         # Mattermost httpx clients (PR3: no process-global verify=False monkeypatch).
         BaseProtocol.SSL_CONTEXT = self.ssl_context
+        # Bound the per-request HTTP wait so an unreachable EWS can't stall the run on
+        # exchangelib's library default; configurable via DIGEST_EWS_TIMEOUT_S.
+        BaseProtocol.TIMEOUT = self.config.timeout_s
 
         # Create configuration with NTLM auth and explicit service endpoint
         config_obj = Configuration(
@@ -338,7 +364,7 @@ class EWSIngest:
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(FETCH_MAX_ATTEMPTS),
         wait=tenacity.wait_exponential(multiplier=0.5, max=60),
-        retry=tenacity.retry_if_exception_type((ConnectionError, TimeoutError)),
+        retry=tenacity.retry_if_exception_type(_RETRYABLE_FETCH_ERRORS),
         before_sleep=_emit_fetch_retry,
     )
     def _fetch_messages_with_retry(

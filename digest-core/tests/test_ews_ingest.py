@@ -89,6 +89,21 @@ def test_calendar_day_window(ingester, time_config):
     assert end_time == expected_end
 
 
+def test_retryable_fetch_errors_include_exchangelib_transients():
+    """The fetch retry must cover exchangelib's own transient transport errors, not just
+    the builtin ConnectionError/TimeoutError (those do NOT subclass exchangelib's)."""
+    from exchangelib.errors import ErrorServerBusy, RateLimitError, TransportError
+
+    from digest_core.ingest.ews import _RETRYABLE_FETCH_ERRORS
+
+    for exc in (ConnectionError, TimeoutError, TransportError, RateLimitError, ErrorServerBusy):
+        assert issubclass(exc, _RETRYABLE_FETCH_ERRORS)
+
+
+def test_ews_config_has_timeout_default():
+    assert EWSConfig().timeout_s == 120.0
+
+
 def test_rolling_24h_window(ingester):
     """Test rolling 24h window calculation."""
     rolling = TimeConfig(user_timezone="UTC", mailbox_tz="UTC", window="rolling_24h")

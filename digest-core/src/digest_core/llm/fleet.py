@@ -60,6 +60,19 @@ def _request_hash(endpoint_name: str, model: str, payload: Dict[str, Any]) -> st
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def _retry_after_seconds(value: Optional[str], default: float = 60.0) -> float:
+    """Parse a numeric ``Retry-After`` header; fall back to ``default`` when absent or in
+    the RFC-9110 HTTP-date form. Mirrors the gateway's parser so a non-numeric value can't
+    raise ``ValueError`` *inside* the 429 handler (which would mask the 429 and skip the
+    bucket penalty, then immediately hammer the just-throttled model)."""
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 class FleetClient:
     """Base for fleet endpoints: shared broker + per-endpoint record/replay.
 
@@ -157,8 +170,9 @@ class FleetClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and self._broker is not None:
-                retry_after = exc.response.headers.get("Retry-After")
-                self._broker.penalize(model, float(retry_after) if retry_after else 60.0)
+                self._broker.penalize(
+                    model, _retry_after_seconds(exc.response.headers.get("Retry-After"))
+                )
             raise
         finally:
             self._emit_lane(model, in_flight=0)
