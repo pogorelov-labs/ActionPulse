@@ -8,7 +8,7 @@ building them.
 
 from __future__ import annotations
 
-from typing import List, Protocol, runtime_checkable
+from typing import List, Optional, Protocol, runtime_checkable
 
 import structlog
 
@@ -16,6 +16,21 @@ from digest_core.ingest.envelope import Envelope, envelopes_from_messages
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
 
 logger = structlog.get_logger()
+
+#: User-facing source names and their aliases. The single source of truth for the
+#: name→adapter dispatch that run.py and the InboxAPI used to each re-spell inline.
+EWS_SOURCE_NAMES = frozenset({"ews", "email"})
+MM_SOURCE_NAMES = frozenset({"mm", "mattermost"})
+
+
+def canonical_source(name: str) -> Optional[str]:
+    """Map a source name/alias to its canonical key (``"ews"`` | ``"mm"``), or ``None``."""
+    key = (name or "").strip().lower()
+    if key in EWS_SOURCE_NAMES:
+        return "ews"
+    if key in MM_SOURCE_NAMES:
+        return "mm"
+    return None
 
 
 @runtime_checkable
@@ -35,6 +50,22 @@ class EWSSourceAdapter:
 
     def fetch(self, digest_date: str) -> List[NormalizedMessage]:
         return self._ingest.fetch_messages(digest_date, self._ingest.time_config)
+
+
+def build_adapter(source: str, config, *, incremental: bool = False) -> SourceAdapter:
+    """Build ONE source adapter from a Config (the InboxAPI's read-shaped path).
+
+    EWS constructs its own ``EWSIngest``; Mattermost builds a non-stateful read adapter.
+    Raises ``ValueError`` for an unknown source. run.py keeps its own builder — it owns the
+    strict/lenient split, the live ProgressSink, and the per-source watermark."""
+    canonical = canonical_source(source)
+    if canonical == "ews":
+        return EWSSourceAdapter(EWSIngest(config.ews, config.time))
+    if canonical == "mm":
+        from digest_core.ingest.mattermost import MattermostSourceAdapter
+
+        return MattermostSourceAdapter(config.mm_source, config.time, incremental=incremental)
+    raise ValueError(f"unknown source {source!r} (ews | mm)")
 
 
 def run_sources(

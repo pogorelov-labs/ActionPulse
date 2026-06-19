@@ -391,8 +391,10 @@ class InboxAPI:
 
     def list_containers(self, source: str) -> List[Dict[str, Any]]:
         """Folders (EWS) or channels (MM) for a source. Corp-network for MM."""
-        s = (source or "").lower()
-        if s in ("mm", "mattermost"):
+        from digest_core.ingest.source_adapter import canonical_source
+
+        canonical = canonical_source(source)
+        if canonical == "mm":
             with self._mm_client() as client:
                 try:
                     channels = client.get_my_channels()
@@ -407,7 +409,7 @@ class InboxAPI:
                 }
                 for c in channels
             ]
-        if s in ("ews", "email"):
+        if canonical == "ews":
             # EWS has no folder-enumeration API; report the configured folders.
             return [{"name": f} for f in (self._config.ews.folders or [])]
         raise ApiError(f"unknown source {source!r} (ews | mm)")
@@ -421,19 +423,12 @@ class InboxAPI:
                 raise CorpOnlyError(f"Mattermost reactions unavailable: {exc}") from exc
 
     def _source_adapter(self, source: str):
-        s = (source or "").lower()
-        if s in ("ews", "email"):
-            from digest_core.ingest.ews import EWSIngest
-            from digest_core.ingest.source_adapter import EWSSourceAdapter
+        from digest_core.ingest.source_adapter import build_adapter
 
-            return EWSSourceAdapter(EWSIngest(self._config.ews, self._config.time))
-        if s in ("mm", "mattermost"):
-            from digest_core.ingest.mattermost import MattermostSourceAdapter
-
-            return MattermostSourceAdapter(
-                self._config.mm_source, self._config.time, incremental=False
-            )
-        raise ApiError(f"unknown source {source!r} (ews | mm)")
+        try:
+            return build_adapter(source, self._config)
+        except ValueError as exc:  # keep the InboxAPI's ApiError contract for unknown sources
+            raise ApiError(str(exc)) from exc
 
     @contextmanager
     def _mm_client(self):
