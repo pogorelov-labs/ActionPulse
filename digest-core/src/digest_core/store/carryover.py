@@ -69,9 +69,14 @@ def find_open_loops(
     aliases = {a.lower() for a in (user_aliases or []) if a}
     if not aliases:
         return []
-    now = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     now_epoch = int(now.timestamp())
-    today_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
+    # Start of the reference day in *now's own* timezone. The digest window is a
+    # user-local calendar day, so callers pass a local-tz instant; forcing UTC here
+    # would mis-place "today" by the offset, leaking an early-local-day message (already
+    # "yesterday" in UTC) into the prior-day candidates → a duplicate vs the digest.
+    today_start = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     lookback_start = today_start - lookback_days * _DAY
     stale_cutoff = now_epoch - stale_days * _DAY
 

@@ -140,9 +140,13 @@ def find_pending_requests(
     aliases = {a.lower() for a in (user_aliases or []) if a}
     if not aliases:
         return []
-    now = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     now_epoch = int(now.timestamp())
-    today_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
+    # Start of the reference day in *now's own* timezone (see find_open_loops): the digest
+    # window is a user-local calendar day, so forcing UTC here would mis-place "today" by
+    # the offset and double-surface an early-local-day ask that is "yesterday" in UTC.
+    today_start = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     lookback_start = today_start - lookback_days * _DAY
 
     # Your latest message epoch per thread → an ask is "unanswered" only if you have

@@ -63,6 +63,23 @@ def test_classify_ask_kinds():
     assert classify_ask("", "FYI, the report is attached.") is None
 
 
+def test_find_pending_uses_local_day_boundary(tmp_path, monkeypatch):
+    """An ask early on the digest's LOCAL day (already 'yesterday' in UTC) belongs to today,
+    not the prior-day pending list. Regression for the UTC-midnight today_start bug."""
+    from zoneinfo import ZoneInfo
+
+    moscow = ZoneInfo("Europe/Moscow")  # UTC+3
+    with _open(tmp_path, monkeypatch) as store:
+        # 01:00 on 2026-06-19 Moscow == 22:00 on 2026-06-18 UTC.
+        early_local = datetime(2026, 6, 19, 1, 0, tzinfo=moscow)
+        store.upsert_messages(
+            [_msg("p1", thread="A", to=["me@corp"], when=early_local, body="Please approve")]
+        )
+        now = datetime(2026, 6, 19, 23, 59, 59, tzinfo=moscow)
+        pend = find_pending_requests(store.conn, user_aliases=["me@corp"], now=now)
+    assert pend == []  # part of today (local), so not yet "pending from a prior day"
+
+
 def test_find_pending_basic_and_exclusions(tmp_path, monkeypatch):
     with _open(tmp_path, monkeypatch) as store:
         store.upsert_messages(
