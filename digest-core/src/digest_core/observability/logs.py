@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from pathlib import Path
+import re
 import sys
 from typing import Any, Dict, Optional
 import uuid
@@ -132,24 +133,36 @@ def _resolve_log_dir() -> Path:
 def _redact_sensitive_data(logger, method_name, event_dict):
     """Redact sensitive data from log entries."""
 
-    # Fields to redact
+    # Field NAMES whose value is masked outright (exact key match — substrings like "pat"
+    # would wrongly hit "path"). Covers the credential keys this app actually logs by name.
     sensitive_fields = [
         "password",
         "token",
         "secret",
         "key",
         "auth",
+        "authorization",
+        "pat",
+        "mm_pat",
+        "llm_token",
+        "ews_password",
+        "api_key",
+        "access_token",
+        "bearer",
         "email",
         "phone",
         "ssn",
         "credit_card",
     ]
 
-    # Patterns to redact
+    # Patterns masked inside any string VALUE (a token can leak in a message/header repr,
+    # not just as a named field). The bearer pattern is the key add — Authorization headers
+    # are the main leak vector; it keeps the "Bearer " prefix and masks only the secret.
     sensitive_patterns = [
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",  # Email
-        r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
-        r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b",  # Credit card
+        (r"(?i)(bearer\s+)[A-Za-z0-9._\-]{8,}", r"\1[[REDACTED]]"),  # Authorization: Bearer <tok>
+        (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[[REDACTED]]"),  # Email
+        (r"\b\d{3}-\d{2}-\d{4}\b", "[[REDACTED]]"),  # SSN
+        (r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "[[REDACTED]]"),  # Credit card
     ]
 
     # Redact sensitive fields
@@ -157,14 +170,12 @@ def _redact_sensitive_data(logger, method_name, event_dict):
         if field in event_dict:
             event_dict[field] = "[[REDACTED]]"
 
-    # Redact sensitive patterns in string values
+    # Redact sensitive patterns in string values (each pattern composes on the prior result).
     for key, value in event_dict.items():
         if isinstance(value, str):
-            for pattern in sensitive_patterns:
-                import re
-
-                if re.search(pattern, value):
-                    event_dict[key] = re.sub(pattern, "[[REDACTED]]", value)
+            for pattern, replacement in sensitive_patterns:
+                if re.search(pattern, event_dict[key]):
+                    event_dict[key] = re.sub(pattern, replacement, event_dict[key])
 
     return event_dict
 
