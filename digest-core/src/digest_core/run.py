@@ -1263,9 +1263,7 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
             section_title,
         )
         from digest_core.llm.schemas import Item, Section
-        from digest_core.store import MessageStore
-        from digest_core.store.carryover import find_open_loops
-        from digest_core.store.pending import find_pending_requests
+        from digest_core.api import InboxAPI
 
         try:
             ref = datetime.fromisoformat(ctx.digest_date).replace(
@@ -1273,25 +1271,22 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
             )
         except ValueError:
             ref = datetime.now(timezone.utc)
-        aliases = _ranker_user_aliases(ctx.config)
         language = ctx.config.report.language
         strings = report_strings(language)
 
+        # Read both cross-day insights through the single InboxAPI surface (it resolves
+        # the owner aliases from Config — the same source the ranker uses).
         pending: list = []
         loops: list = []
-        with MessageStore.open(cfg) as store:
+        with InboxAPI.open(ctx.config) as api:
             if cfg.pending:
-                pending = find_pending_requests(
-                    store.conn,
-                    user_aliases=aliases,
+                pending = api.pending(
                     now=ref,
                     lookback_days=cfg.pending_lookback_days,
                     max_items=cfg.pending_max_items,
                 )
             if cfg.carryover:
-                loops = find_open_loops(
-                    store.conn,
-                    user_aliases=aliases,
+                loops = api.open_loops(
                     now=ref,
                     lookback_days=cfg.carryover_lookback_days,
                     stale_days=cfg.carryover_stale_days,

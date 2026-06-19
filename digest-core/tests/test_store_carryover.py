@@ -147,10 +147,11 @@ def test_enrich_digest_non_fatal_on_store_error(tmp_path, monkeypatch):
 
     class _Boom:
         @classmethod
-        def open(cls, cfg):
+        def open(cls, config=None):
             raise RuntimeError("disk full")
 
-    monkeypatch.setattr("digest_core.store.MessageStore", _Boom)
+    # The enrich path now reads through InboxAPI; a failure to open must degrade-not-drop.
+    monkeypatch.setattr("digest_core.api.InboxAPI", _Boom)
     digest = _digest()
     runner._enrich_digest_from_store(ctx, digest)  # must NOT raise
     assert [s.title for s in digest.sections] == ["My actions"]
