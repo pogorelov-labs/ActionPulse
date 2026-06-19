@@ -498,7 +498,7 @@ def _banner() -> None:
     body = Text.assemble(
         title,
         "\n",
-        ("7 questions · secrets hidden while typing · safe to re-run", "dim"),
+        ("~7 core questions + optional steps · secrets hidden · safe to re-run", "dim"),
     )
     console.print()
     console.print(
@@ -913,7 +913,7 @@ def _store_step(existing_cfg: dict) -> tuple[bool, Optional[str]]:
 
 
 def run_setup(no_autodetect: bool = False) -> None:
-    """Interactive setup: 7 questions, 0 text editors, auto-detected defaults."""
+    """Interactive setup: ~7 core questions (+ optional steps), 0 text editors, auto-detected defaults."""
     try:
         _banner()
 
