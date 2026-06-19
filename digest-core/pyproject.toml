@@ -57,6 +57,7 @@ mcp = [
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
   "ruff>=0.4",
   "black>=24.0",
   "hypothesis>=6.155.2",
@@ -71,6 +72,18 @@ packages = ["src/digest_core"]
 markers = [
     "slow: tests that are intentionally slower than the rest of the suite",
 ]
+
+# Coverage is measured on the recently-shipped, highest-risk subsystems (store / api / mcp)
+# via `make coverage`. Scoped — not the whole package — so the number is meaningful and the
+# `--cov-fail-under` gate stays honest. See the Makefile `coverage` target.
+[tool.coverage.run]
+branch = true
+source = ["digest_core.store", "digest_core.api", "digest_core.mcp"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [tool.black]
 line-length = 100

@@ -97,6 +97,31 @@ def test_redact_bodies_flag_no_body_derived_content(api, monkeypatch):
     assert "Disabled" in ask["answer"] and "secret" not in str(ask)
 
 
+def test_dm_body_never_crosses_tool_boundary(api):
+    """Always-on at-rest DM redaction must hold through the MCP tool surface — independent of
+    ACTIONPULSE_MCP_REDACT_BODIES, a DM body must never appear in get_message/search output.
+    Closes the #156 gap: the redaction tests had only ever seeded email bodies, so a DM-body
+    leak through the tool serializers would have passed unnoticed."""
+    dm = NormalizedMessage(
+        msg_id="dm1",
+        conversation_id="d-1",
+        datetime_received=_d(2),
+        sender_email="alice@corp",
+        subject="",
+        text_body="private counterparty secret text",
+        to_recipients=["me@corp"],
+        source="mm",
+        mm_channel_type="D",
+    )
+    api.store.upsert_messages([dm])
+    rec = server._tool_get_message("urn:mm:dm1")
+    assert rec is not None  # the message exists…
+    assert "counterparty" not in str(rec) and "secret" not in str(rec)  # …but its body doesn't
+    # DM bodies create no chunk rows at rest → keyword/semantic search cannot surface the text.
+    res = server._tool_search("counterparty")
+    assert "counterparty" not in str(res) and "secret" not in str(res)
+
+
 def test_ask_tool_empty_store_no_gateway(api):
     res = server._tool_ask("anything at all")
     assert res["answered"] is False

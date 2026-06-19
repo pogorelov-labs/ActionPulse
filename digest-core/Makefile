@@ -1,4 +1,4 @@
-.PHONY: setup test test-store lint format run docker docker-run package bundle ci smoke diagnose env-check clean
+.PHONY: setup test test-store test-all coverage lint format run docker docker-run package bundle ci smoke diagnose env-check clean
 
 setup:
 	@echo "Installing dependencies with uv..."
@@ -20,6 +20,21 @@ test:
 # from source — needs `brew install sqlcipher openssl@3`.
 test-store:
 	PYTHONPATH=src uv run --extra store pytest tests/ -q
+
+# The full suite WITH both optional extras (store + mcp), matching what CI's test-store /
+# test-mcp lanes exercise. Plain `make test` SKIPS all store/MCP/InboxAPI tests (the driver
+# guards make them green-but-unrun), so this is the honest pre-push gate. Needs the store
+# build deps on macOS (`brew install sqlcipher openssl@3`).
+test-all:
+	PYTHONPATH=src uv run --extra store --extra mcp pytest tests/ -q
+
+# Coverage of the recently-shipped, highest-risk subsystems (store / api / mcp — scoped in
+# pyproject [tool.coverage.run]). Floor is below the current ~86% so refactors have headroom
+# while a real regression still fails the gate.
+coverage:
+	PYTHONPATH=src uv run --extra store --extra mcp pytest tests/ -q \
+		--ignore=tests/test_menu_pty.py --ignore=tests/test_reader.py \
+		--cov --cov-report=term-missing --cov-fail-under=80
 
 lint:
 	uv run ruff check src/ tests/
@@ -56,7 +71,9 @@ bundle:
 eval-replay:
 	PYTHONPATH=src uv run python -m digest_core.cli eval-replay
 
-ci: lint test eval-replay
+# The documented pre-push gate. Uses test-all (both extras) so it has PARITY with CI's
+# store/mcp lanes — `make ci` no longer gives false confidence by silently skipping them.
+ci: lint test-all eval-replay
 
 smoke:
 	python -m digest_core.cli run --dry-run --window calendar_day
