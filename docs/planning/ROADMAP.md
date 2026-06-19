@@ -56,8 +56,8 @@ Each stream: its objective, then ordered milestones with phase tags.
 - **D** Embedding thread-merge live (C6 cosine-threshold calibration); deeper retrieval ranking.
 
 ### Stream 4 · Deliver + reactions flywheel — *a closed, self-improving trust loop*
-- **✓** Webhook + api-mode delivery; **delivered-ledger wired** into `run.py`; **`reactions harvest`** command; `eval-gold` / `eval-calibrate` — the engine is built.
-- **A** Verify the `ledger → harvest → eval-gold → eval-calibrate` chain end-to-end on **synthetic** data (prove the engine before fueling it).
+- **✓** Webhook + api-mode delivery; **delivered-ledger wired** into `run.py` (now carries `trace_id`); **`reactions harvest --gold-out`** bridges harvest → the `eval-gold` JSONL (one shared emoji vocab, no silent drop); `eval-gold` / `eval-calibrate` — the engine is built **and connected**.
+- **✓** Synthetic end-to-end verification of `ledger → harvest → bridge → eval-gold → eval-calibrate` (`test_flywheel_harvest_to_calibrate_end_to_end`) — the engine is proven before fueling.
 - **B** Deliver in **api-mode for ~1–2 weeks** → reactions accumulate via the ledger.
 - **C** Harvest → calibrate → `recall_floor > 0` + judge flip — **the loop closes** (feeds Stream 2 / C).
 - **D** Least-privilege **bot** delivery identity; slash commands; per-section threading; overflow "and N more" cap.

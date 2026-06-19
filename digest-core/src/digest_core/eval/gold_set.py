@@ -1,9 +1,13 @@
 """Gold-set bootstrapped from exported Mattermost emoji reactions (PR10).
 
-The MM incoming-webhook is outbound-only, so reactions cannot be read live — they
-are exported to a JSONL out-of-band and ingested here. Each gold label is keyed by
-``(trace_id, item_key)``; item_key relies on PR1's stable content-hash evidence ids
-so a reaction maps back to the exact delivered item.
+The JSONL is produced by ``reactions harvest --gold-out`` (auth_mode=api reads
+reactions live via the PAT) or exported out-of-band for a webhook deployment. Each
+gold label is keyed by ``(trace_id, item_key)``; item_key relies on PR1's stable
+content-hash evidence ids so a reaction maps back to the exact delivered item.
+
+Emoji → label uses the *same* :func:`feedback.reactions.classify` vocabulary the
+harvest side uses — one source of truth, so a reaction counted ack/nack on harvest
+is never silently dropped here.
 """
 
 from __future__ import annotations
@@ -13,8 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
-POSITIVE_EMOJI = {"+1", "thumbsup", "white_check_mark", "heavy_check_mark", "ok_hand"}
-NEGATIVE_EMOJI = {"-1", "thumbsdown", "x", "no_entry", "no_entry_sign"}
+from digest_core.feedback.reactions import classify as _classify_reaction
 
 GoldKey = Tuple[str, str]
 
@@ -25,10 +28,12 @@ def item_key(evidence_id: str, title: str) -> str:
 
 
 def _emoji_label(emoji: str) -> Optional[bool]:
-    name = (emoji or "").strip().strip(":").lower()
-    if name in POSITIVE_EMOJI:
+    """Gold label from a Mattermost ``emoji_name`` via the canonical reaction
+    vocabulary: ack → ``True``, nack → ``False``, anything else → ``None`` (ignored)."""
+    signal = _classify_reaction(emoji)
+    if signal == "ack":
         return True
-    if name in NEGATIVE_EMOJI:
+    if signal == "nack":
         return False
     return None
 

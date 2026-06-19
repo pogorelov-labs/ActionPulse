@@ -560,9 +560,11 @@ in order — each step links its detailed checklist.
 5. **api-mode delivery (~1–2 weeks).** Configure the owner-only channel id + PAT (`auth_mode=api`);
    each run records delivered post-ids to the `delivered-posts` ledger. Let recipients react ✓/✗ over
    the window — this is the flywheel's fuel.
-6. **Close the flywheel (Phase C — offline after harvest).** `actionpulse reactions harvest` →
-   `eval-gold` → `eval-calibrate` → set `recall_floor > 0` and flip the judge gate. Trust goes from
-   *annotate-only* to **measured & gated**; publish the first real P/R/F1.
+6. **Close the flywheel (Phase C — offline after harvest).**
+   `actionpulse reactions harvest --gold-out gold.jsonl` (the bridge: emits the per-reaction JSONL
+   directly) → `eval-gold --reactions gold.jsonl` → `eval-calibrate` → set `recall_floor > 0` and
+   flip the judge gate. Trust goes from *annotate-only* to **measured & gated**; publish the first
+   real P/R/F1.
 
 > **Order matters:** step 0 gates everything; 2 needs 0's embeddings row; 4 needs 0 + the 2–3
 > evidence; 6 needs 5's reactions. Steps 5–6 span the ~2-week window + an offline calibration pass.
@@ -596,7 +598,7 @@ in order — each step links its detailed checklist.
 □  EP-14 quality pack passed (VISIT_CHECKLIST_EP14)
 □  fleet flipped (only CONFIRMED endpoints): reranker / enable_relevance / judge / embedding_merge
 □  api-mode delivery live (owner channel + PAT) → delivered-posts ledger fills (~1–2 wks)
-□  flywheel closed: reactions harvest → eval-gold → eval-calibrate → recall_floor>0 + judge gate
+□  flywheel closed: reactions harvest --gold-out → eval-gold --reactions → eval-calibrate → recall_floor>0 + judge gate
 □  PC-2 Status → ACCEPTED; first real P/R/F1 published
 ```
 
