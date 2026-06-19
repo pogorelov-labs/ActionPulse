@@ -2,7 +2,7 @@
 LLM degradation strategies - extractive fallback when LLM fails.
 """
 
-from typing import List, Dict, Any
+from typing import List
 import structlog
 from digest_core.evidence.split import EvidenceChunk
 from digest_core.llm.schemas import EnhancedDigest, ActionItem, DeadlineMeeting
@@ -138,62 +138,3 @@ def extractive_fallback(
         total_emails_processed=len(evidence_chunks),
         emails_with_actions=len(my_actions) + len(others_actions),
     )
-
-
-def build_digest_with_fallback(
-    evidence_chunks: List[EvidenceChunk],
-    digest_date: str,
-    trace_id: str,
-    llm_callable,
-    *,
-    enable_degrade: bool = True,
-    degrade_mode: str = "extractive",
-) -> Dict[str, Any]:
-    """
-    Build digest with LLM, fallback to extraction on failure.
-
-    Args:
-        evidence_chunks: Evidence chunks
-        digest_date: Digest date
-        trace_id: Trace ID
-        llm_callable: Function to call LLM
-        enable_degrade: Enable degradation
-        degrade_mode: Degradation mode (extractive | empty)
-
-    Returns:
-        Dict with digest, partial flag, and reason
-    """
-    try:
-        # Try LLM first
-        digest = llm_callable(evidence_chunks, digest_date, trace_id)
-
-        return {"digest": digest, "partial": False, "reason": None}
-
-    except Exception as llm_err:
-        logger.error("LLM digest generation failed", error=str(llm_err), trace_id=trace_id)
-
-        if not enable_degrade:
-            raise
-
-        # Use fallback
-        if degrade_mode == "extractive":
-            fallback_digest = extractive_fallback(
-                evidence_chunks, digest_date, trace_id, reason="llm_failed"
-            )
-        else:
-            # Empty mode
-            fallback_digest = EnhancedDigest(
-                schema_version="2.0",
-                prompt_version="empty_fallback",
-                digest_date=digest_date,
-                trace_id=trace_id,
-                my_actions=[],
-                others_actions=[],
-                deadlines_meetings=[],
-                risks_blockers=[],
-                fyi=[],
-                total_emails_processed=len(evidence_chunks),
-                emails_with_actions=0,
-            )
-
-        return {"digest": fallback_digest, "partial": True, "reason": "llm_failed"}

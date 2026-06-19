@@ -11,11 +11,11 @@ colleague text (guardrail #9) — the row's metadata is kept, the body never was
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from digest_core.store._rows import decode_json_list
 from digest_core.store.search import _since_epoch  # shared YYYY-MM-DD -> epoch parse
 
 _DAY = 86400
@@ -71,13 +71,7 @@ class DayCount:
 
 
 def _json_list(raw) -> List[str]:
-    if not raw:
-        return []
-    try:
-        vals = json.loads(raw)
-    except (ValueError, TypeError):
-        return []
-    return [str(v) for v in vals] if isinstance(vals, list) else []
+    return decode_json_list(raw)
 
 
 def _row_to_record(row) -> MessageRecord:
