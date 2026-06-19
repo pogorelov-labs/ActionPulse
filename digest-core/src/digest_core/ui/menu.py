@@ -552,6 +552,41 @@ def _mcp_menu(console: Console) -> None:
     offer_install(console)
 
 
+def _main_menu_options(store_enabled: bool) -> list[tuple[str, str]]:
+    """The launcher rows. Search/Ask appear ONLY when the encrypted store is enabled —
+    they are meaningless without it, and a dead row would mislead (the headline UX gap:
+    the store's retrieval pillar was invisible to menu-driven users)."""
+    options = [
+        ("run", "Run digest — pick period, full pipeline + delivery"),
+        ("read", "Read digest — topics · authors · quotes"),
+    ]
+    if store_enabled:
+        options += [
+            ("search", "Search messages — keyword · semantic · hybrid"),
+            ("ask", "Ask your inbox — grounded, cited answer (RAG)"),
+        ]
+    options += [
+        ("dry", "Dry run — ingest only, no LLM"),
+        ("diagnose", "Diagnose — check environment & config"),
+        ("mm_dm", "Mattermost DMs — scope · partners"),
+        ("maintenance", "Maintenance — disk usage · cleanup · logging"),
+        ("mcp", "MCP server — register into AI coding CLIs"),
+        ("settings", "Settings — run the setup wizard"),
+        ("config", "Show current config (masked)"),
+        ("quit", "Quit"),
+    ]
+    return options
+
+
+def _prompt_query(console: Console, label: str) -> Optional[str]:
+    """One-line query prompt for the search/ask rows; empty/EOF/Ctrl+C backs out."""
+    try:
+        raw = console.input(f"[ap.accent.bold]{label}[/] [ap.dim](Enter — back)[/]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return raw or None
+
+
 def run_menu(
     *,
     on_run: Callable[[bool, Optional[RunChoice]], None],
@@ -559,6 +594,9 @@ def run_menu(
     on_settings: Callable[[], None],
     on_read: Callable[[Optional[str]], None],
     on_explain: Optional[Callable[[], None]] = None,
+    on_search: Optional[Callable[[str], None]] = None,
+    on_ask: Optional[Callable[[str], None]] = None,
+    store_enabled: bool = False,
     console: Optional[Console] = None,
 ) -> int:
     """Drive the launcher menu loop. Callbacks isolate the menu from the CLI
@@ -574,18 +612,9 @@ def run_menu(
     out = console or get_console()
     _banner(out)
 
-    options = [
-        ("run", "Run digest — pick period, full pipeline + delivery"),
-        ("read", "Read digest — topics · authors · quotes"),
-        ("dry", "Dry run — ingest only, no LLM"),
-        ("diagnose", "Diagnose — check environment & config"),
-        ("mm_dm", "Mattermost DMs — scope · partners"),
-        ("maintenance", "Maintenance — disk usage · cleanup · logging"),
-        ("mcp", "MCP server — register into AI coding CLIs"),
-        ("settings", "Settings — run the setup wizard"),
-        ("config", "Show current config (masked)"),
-        ("quit", "Quit"),
-    ]
+    # Search/Ask are gated on the store being enabled AND the callbacks being wired.
+    show_retrieval = store_enabled and on_search is not None and on_ask is not None
+    options = _main_menu_options(show_retrieval)
     while True:
         try:
             # Esc dismisses the menu (cancel_value): a cancel gesture must
@@ -627,6 +656,14 @@ def run_menu(
                 continue
             elif choice == "read":
                 on_read(None)
+            elif choice == "search" and on_search is not None:
+                query = _prompt_query(out, "Search messages")
+                if query:
+                    on_search(query)
+            elif choice == "ask" and on_ask is not None:
+                query = _prompt_query(out, "Ask your inbox")
+                if query:
+                    on_ask(query)
             elif choice == "dry":
                 on_run(True, None)
             elif choice == "diagnose":

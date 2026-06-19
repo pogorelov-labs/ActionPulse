@@ -15,7 +15,7 @@ from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
 from digest_core.mcp.commands import mcp_app
 from digest_core.ui import resolve_sink
-from digest_core.ui.glyphs import FAIL, OK
+from digest_core.ui.glyphs import FAIL, OK, WARN
 from digest_core.ui.menu import RunChoice, load_env_file, run_menu, stdin_is_tty
 from digest_core.config import Config
 
@@ -75,12 +75,37 @@ def _main(ctx: typer.Context) -> None:
 
         return wrapped
 
+    # Surface Search/Ask in the menu only when the store is enabled (else they're dead rows).
+    try:
+        store_enabled = Config().store.enabled
+    except Exception:  # noqa: BLE001 - a bad config must not break the launcher
+        store_enabled = False
+
     code = run_menu(
         on_run=_safe(_menu_run),
         on_diagnose=_safe(diagnose),
         on_settings=_safe(lambda: setup(no_autodetect=False)),
         on_read=_safe(lambda date: read(date=date, out=None)),
         on_explain=_safe(lambda: explain(trace_id=None, date=None)),
+        # All typer params passed explicitly (calling a command function directly leaves
+        # unpassed Option/Argument defaults as their info objects — the read/explain pattern).
+        on_search=_safe(
+            lambda q: search(
+                query=q,
+                mode=None,
+                keyword=False,
+                semantic=False,
+                hybrid=False,
+                source=None,
+                since=None,
+                limit=None,
+                json_out=False,
+            )
+        ),
+        on_ask=_safe(
+            lambda q: ask(question=q, k=8, mode=None, source=None, since=None, json_out=False)
+        ),
+        store_enabled=store_enabled,
     )
     raise typer.Exit(code)
 
@@ -198,7 +223,7 @@ def run(
 
             # Exit with code 2 if citation validation failed
             if validate_citations and not run_result.citation_validation_ok:
-                typer.echo("⚠ Citation validation failed", err=True)
+                typer.echo(f"{WARN} Citation validation failed", err=True)
                 exit_code = 2
             else:
                 exit_code = 0  # Success
@@ -211,11 +236,11 @@ def run(
                 collect_script = script_dir / "collect_diagnostics.sh"
                 if collect_script.exists():
                     subprocess.run([str(collect_script)], check=True)
-                    typer.echo("✓ Diagnostics collected successfully")
+                    typer.echo(f"{OK} Diagnostics collected successfully")
                 else:
-                    typer.echo("⚠ Diagnostics script not found", err=True)
+                    typer.echo(f"{WARN} Diagnostics script not found", err=True)
             except Exception as e:
-                typer.echo(f"⚠ Failed to collect diagnostics: {e}", err=True)
+                typer.echo(f"{WARN} Failed to collect diagnostics: {e}", err=True)
 
         sys.exit(exit_code)
     except KeyboardInterrupt:
@@ -801,7 +826,7 @@ def diagnose():
                 "Note: full shell-based diagnostics require a git checkout (digest-core/scripts/)."
             )
 
-        typer.echo("✓ Diagnostics completed")
+        typer.echo(f"{OK} Diagnostics completed")
 
     except Exception as e:
         typer.echo(f"Error running diagnostics: {e}", err=True)
@@ -876,7 +901,7 @@ def setup(
         help="Skip local autodetection (login, RealName, Keychain emails, network domains).",
     ),
 ):
-    """Interactive setup: configure ActionPulse in 7 questions, no text editor needed.
+    """Interactive setup: configure ActionPulse in ~7 core questions (plus optional steps), no text editor needed.
 
     On first run the wizard auto-detects the machine login, real name, corp
     email candidates (Keychain metadata scan, local-only) and network domains,
@@ -894,7 +919,7 @@ def setup(
     run_setup(no_autodetect=no_autodetect)
 
 
-@app.command("eval-prompt")
+@app.command("eval-prompt", hidden=True)
 def eval_prompt(
     digest: str = typer.Option(..., "--digest", help="Path to digest-YYYY-MM-DD.json to evaluate"),
     ingest_snapshot: str = typer.Option(
@@ -1001,7 +1026,7 @@ def eval_prompt(
         raise typer.Exit(1)
 
 
-@app.command("eval-replay")
+@app.command("eval-replay", hidden=True)
 def eval_replay(
     corpus_dir: str = typer.Option(
         None, "--corpus-dir", help="Corpus dir (default: digest_core/eval/corpus)"
@@ -1046,7 +1071,7 @@ def eval_replay(
     raise typer.Exit(0 if ok else 2)
 
 
-@app.command("eval-gold")
+@app.command("eval-gold", hidden=True)
 def eval_gold(
     reactions: str = typer.Option(..., "--reactions", help="Exported MM reactions JSONL"),
 ):
@@ -1061,7 +1086,7 @@ def eval_gold(
     typer.echo(json.dumps(gold.stats(), ensure_ascii=False))
 
 
-@app.command("eval-judge")
+@app.command("eval-judge", hidden=True)
 def eval_judge(
     records: str = typer.Option(
         ..., "--records", help="Judged records JSONL (predicted/gold/prob/lang)"
@@ -1080,7 +1105,7 @@ def eval_judge(
     typer.echo(json.dumps(compute_judge_metrics(rows), ensure_ascii=False, indent=2))
 
 
-@app.command("eval-best-of-n")
+@app.command("eval-best-of-n", hidden=True)
 def eval_best_of_n(
     corpus_dir: str = typer.Option(
         None, "--corpus-dir", help="Corpus dir (default: digest_core/eval/corpus)"
@@ -1119,7 +1144,7 @@ def eval_best_of_n(
     raise typer.Exit(0 if ok else 2)
 
 
-@app.command("eval-judge-run")
+@app.command("eval-judge-run", hidden=True)
 def eval_judge_run(
     digest: str = typer.Option(..., "--digest", help="Digest artifact JSON to judge"),
     gold: str = typer.Option(..., "--gold", help="Exported MM reactions JSONL (gold labels)"),
@@ -1210,7 +1235,7 @@ def eval_judge_run(
     )
 
 
-@app.command("eval-agreement")
+@app.command("eval-agreement", hidden=True)
 def eval_agreement(
     labels: str = typer.Option(..., "--labels", help="CSV with human and judge label columns"),
     human_col: str = typer.Option("human", "--human", help="Human-label column name"),
@@ -1243,7 +1268,7 @@ def eval_agreement(
     typer.echo(report["verdict"], err=True)
 
 
-@app.command("eval-calibrate")
+@app.command("eval-calibrate", hidden=True)
 def eval_calibrate(
     scored: str = typer.Option(..., "--scored", help="JSONL of {score, gold, lang} rows"),
     output_json: str = typer.Option(None, "--out", help="Write calibration.json here"),

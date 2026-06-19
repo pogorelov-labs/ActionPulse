@@ -199,6 +199,56 @@ class TestRunMenu:
         assert seen and seen[0]["cancel_value"] == "quit"
 
 
+class TestRetrievalRows:
+    """Search/Ask rows are gated on the store being enabled (M2 — the retrieval pillar was
+    invisible to menu-driven users)."""
+
+    def test_options_hidden_without_store(self):
+        keys = [k for k, _ in menu_mod._main_menu_options(False)]
+        assert "search" not in keys and "ask" not in keys
+
+    def test_options_shown_with_store(self):
+        keys = [k for k, _ in menu_mod._main_menu_options(True)]
+        assert "search" in keys and "ask" in keys
+        assert len(keys) <= 12  # stays a tidy list (quick-select stays sane)
+
+    def test_search_row_invokes_callback_with_query(self, monkeypatch):
+        seq = iter(["search", "quit"])
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(seq, "quit"))
+        monkeypatch.setattr(
+            menu_mod.Console, "input", lambda self, *a, **k: "budget?", raising=False
+        )
+        captured = []
+        run_menu(
+            on_run=lambda d, c: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            on_read=lambda date: None,
+            on_search=lambda q: captured.append(q),
+            on_ask=lambda q: None,
+            store_enabled=True,
+            console=_console(),
+        )
+        assert captured == ["budget?"]
+
+    def test_rows_absent_when_store_disabled_even_with_callbacks(self, monkeypatch):
+        seq = iter(["search", "quit"])  # 'search' is not an option → falls through harmlessly
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(seq, "quit"))
+        monkeypatch.setattr(menu_mod.Console, "input", lambda self, *a, **k: "", raising=False)
+        captured = []
+        run_menu(
+            on_run=lambda d, c: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            on_read=lambda date: None,
+            on_search=lambda q: captured.append(q),
+            on_ask=lambda q: None,
+            store_enabled=False,  # disabled → no rows, callback never reachable
+            console=_console(),
+        )
+        assert captured == []
+
+
 class TestBareInvocation:
     def test_non_tty_prints_help_not_menu(self, monkeypatch):
         # CliRunner stdin is not a tty -> help, no menu, exit 0.
@@ -208,6 +258,14 @@ class TestBareInvocation:
         assert result.exit_code == 0
         assert called["menu"] is False
         assert "Usage" in result.output or "Commands" in result.output
+
+    def test_eval_commands_hidden_but_user_commands_shown(self, monkeypatch):
+        # M1: the 8 eval-* research commands clutter --help; hidden=True removes them from
+        # the listing (still callable for CI). User-facing commands stay visible.
+        monkeypatch.setattr(cli_mod, "load_env_file", lambda *a, **k: 0)
+        out = CliRunner().invoke(app, ["--help"]).output
+        assert "eval-prompt" not in out and "eval-calibrate" not in out
+        assert "search" in out and "ask" in out and "run" in out
 
     def test_subcommand_still_works_through_callback(self, monkeypatch):
         # The callback (env autoload) must not swallow subcommands.
