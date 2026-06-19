@@ -1265,12 +1265,18 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
         from digest_core.llm.schemas import Item, Section
         from digest_core.api import InboxAPI
 
+        # Reference instant = end of the digest's *local* calendar day, so the cross-day
+        # verbs reckon "today" against the same day the digest window uses (not the UTC day).
+        try:
+            ref_tz = ZoneInfo(ctx.config.time.user_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            ref_tz = timezone.utc
         try:
             ref = datetime.fromisoformat(ctx.digest_date).replace(
-                hour=23, minute=59, second=59, tzinfo=timezone.utc
+                hour=23, minute=59, second=59, tzinfo=ref_tz
             )
         except ValueError:
-            ref = datetime.now(timezone.utc)
+            ref = datetime.now(ref_tz)
         language = ctx.config.report.language
         strings = report_strings(language)
 

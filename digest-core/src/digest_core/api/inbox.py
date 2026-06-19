@@ -225,7 +225,7 @@ class InboxAPI:
         return find_open_loops(
             self._store.conn,
             user_aliases=self._aliases(),
-            now=now or datetime.now(timezone.utc),
+            now=now or datetime.now(self._user_tz()),
             lookback_days=lookback_days,
             stale_days=stale_days,
             max_items=max_items,
@@ -244,13 +244,26 @@ class InboxAPI:
         return find_pending_requests(
             self._store.conn,
             user_aliases=self._aliases(),
-            now=now or datetime.now(timezone.utc),
+            now=now or datetime.now(self._user_tz()),
             lookback_days=lookback_days,
             max_items=max_items,
         )
 
     def _aliases(self) -> List[str]:
         return self._config.user_aliases()
+
+    def _user_tz(self):
+        """The configured user timezone as a stdlib tzinfo (ZoneInfo), UTC on a bad name.
+
+        Used so cross-day verbs reckon "today" against the user's local calendar day —
+        the same day the digest window uses — rather than the UTC day.
+        """
+        from zoneinfo import ZoneInfo
+
+        try:
+            return ZoneInfo(self._config.time.user_timezone)
+        except Exception:  # noqa: BLE001 - unknown tz name → UTC (matches naive-now fallback)
+            return timezone.utc
 
     # -- reasoning (gateway; corp network) ---------------------------------
 

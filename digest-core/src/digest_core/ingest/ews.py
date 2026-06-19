@@ -189,9 +189,14 @@ def compute_time_window(
     user_tz = pytz.timezone(time_config.user_timezone)
 
     if time_config.window == "calendar_day":
-        # Calendar day: 00:00:00 to 23:59:59 in user timezone
-        start_date = datetime.strptime(digest_date, "%Y-%m-%d").replace(tzinfo=user_tz)
-        end_date = start_date.replace(hour=23, minute=59, second=59)
+        # Calendar day: 00:00:00 to 23:59:59 in the user timezone. Localize naive
+        # datetimes via ``tz.localize`` — applying a pytz zone with ``.replace(tzinfo=tz)``
+        # / ``datetime(..., tzinfo=tz)`` selects the zone's historical Local-Mean-Time
+        # offset (e.g. Europe/Moscow +02:30, America/New_York -04:56) instead of the
+        # modern one, shifting the whole window by tens of minutes.
+        naive_day = datetime.strptime(digest_date, "%Y-%m-%d")
+        start_date = user_tz.localize(naive_day)
+        end_date = user_tz.localize(naive_day.replace(hour=23, minute=59, second=59))
         start_utc = to_utc(start_date)
         end_utc = to_utc(end_date)
     else:  # rolling_24h

@@ -75,6 +75,22 @@ def test_find_open_loops_selects_only_stale_addressed_non_dm(tmp_path, monkeypat
     assert loops[0].age_days == 4 and loops[0].author == "Ivan" and loops[0].source == "email"
 
 
+def test_find_open_loops_uses_local_day_boundary(tmp_path, monkeypatch):
+    """A message early on the digest's LOCAL day (already 'yesterday' in UTC) is part of
+    today — not a prior-day open loop. Regression for the UTC-midnight today_start bug."""
+    from zoneinfo import ZoneInfo
+
+    moscow = ZoneInfo("Europe/Moscow")  # UTC+3
+    with _open(tmp_path, monkeypatch) as store:
+        # 01:00 on 2026-06-19 Moscow == 22:00 on 2026-06-18 UTC.
+        early_local = datetime(2026, 6, 19, 1, 0, tzinfo=moscow)
+        store.upsert_messages([_msg("t1", thread="T1", to=["me@corp"], when=early_local)])
+        # Reference instant = end of the local digest day; stale_days=0 removes staleness.
+        now = datetime(2026, 6, 19, 23, 59, 59, tzinfo=moscow)
+        loops = find_open_loops(store.conn, user_aliases=["me@corp"], now=now, stale_days=0)
+    assert loops == []  # part of today (local), so not surfaced as a cross-day loop
+
+
 def test_find_open_loops_excludes_when_owner_replied_last(tmp_path, monkeypatch):
     with _open(tmp_path, monkeypatch) as store:
         store.upsert_messages(
