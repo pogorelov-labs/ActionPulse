@@ -423,6 +423,27 @@ class TestStoreStep:
         assert _store_step({}) == (False, None)
 
 
+class TestMmCredsStep:
+    """Optional MM_PAT / MM_BASE_URL collection (B3)."""
+
+    def test_non_tty_preserves_existing_without_prompting(self, monkeypatch):
+        from digest_core.setup_wizard import _mm_creds_step
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+        # Piped/scripted runs never prompt; they return the existing creds unchanged.
+        assert _mm_creds_step("https://mm.corp/hooks/x", "pat-123", "https://mm.corp") == (
+            "pat-123",
+            "https://mm.corp",
+        )
+
+    def test_derive_base_url_from_webhook(self):
+        from digest_core.setup_wizard import _derive_mm_base_url
+
+        assert _derive_mm_base_url("https://mm.corp/hooks/abc") == "https://mm.corp"
+        assert _derive_mm_base_url("not a url") is None
+        assert _derive_mm_base_url("") is None
+
+
 class TestDmSummaryValue:
     """The summary-table DM row text."""
 
