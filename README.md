@@ -71,6 +71,7 @@ actionpulse               # interactive menu: Run · Read · Dry run · Diagnose
 actionpulse run --dry-run # ingest + normalize only, no LLM
 actionpulse run           # full pipeline + delivery
 actionpulse read          # browse the latest digest (or --date YYYY-MM-DD)
+actionpulse history "..." # search across ALL past digests (offline; --since/--until/--section)
 actionpulse diagnose      # check environment & config
 actionpulse explain       # something failed? one LLM call explains the run (corp network)
 actionpulse search "..."  # search the encrypted store (keyword offline; semantic/hybrid corp)

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import typer
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -104,6 +105,17 @@ def _main(ctx: typer.Context) -> None:
         ),
         on_ask=_safe(
             lambda q: ask(question=q, k=8, mode=None, source=None, since=None, json_out=False)
+        ),
+        on_history=_safe(
+            lambda q: history(
+                query=q or None,
+                since=None,
+                until=None,
+                section=None,
+                limit=50,
+                out=None,
+                json_out=False,
+            )
         ),
         store_enabled=store_enabled,
     )
@@ -284,6 +296,90 @@ def read(
         # §5.5 abort contract: typed message, no traceback, exit 130.
         typer.echo("\nInterrupted.")
         raise typer.Exit(130)
+
+
+@app.command()
+def history(
+    query: str = typer.Argument(
+        None, help="Keyword to filter items (optional; omit to browse all)"
+    ),
+    since: str = typer.Option(None, "--since", help="Only digests on/after YYYY-MM-DD"),
+    until: str = typer.Option(None, "--until", help="Only digests on/before YYYY-MM-DD"),
+    section: str = typer.Option(
+        None, "--section", help="Section key: my_actions | urgent | fyi | status | unconfirmed"
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max items (newest first)"),
+    out: str = typer.Option(
+        None, "--out", help="Digest output directory (default: <data home>/var/out)"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Search & browse across ALL past digests — the curated output history.
+
+    Unlike `search` (raw message store) and `read` (one day), this scans every digest artifact
+    in the out dir and lists matching items chronologically. Fully offline — no store needed.
+    On a TTY it then offers to open a day in the reader.
+    """
+    from digest_core.history import search_history
+    from digest_core.ui.reader import _ellipsis, read_digest_interactive
+
+    for flag, value in (("--since", since), ("--until", until)):
+        if value:
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                typer.echo(f"{FAIL} {flag} expects YYYY-MM-DD, e.g. 2026-06-11", err=True)
+                raise typer.Exit(1)
+
+    out_dir = Path(out).expanduser() if out else paths.out_dir(create=False)
+    hits = search_history(out_dir, query, since=since, until=until, section=section, limit=limit)
+
+    if json_out:
+        import json as _json
+
+        payload = [
+            {
+                "digest_date": h.digest_date,
+                "section": h.section_key or h.section_title,
+                "title": h.item.title,
+                "due": h.item.due,
+                "source_from": h.item.source_from,
+                "source_subject": h.item.source_subject,
+                "evidence_id": h.item.evidence_id,
+                "weak_evidence": bool(getattr(h.item, "weak_evidence", False)),
+                "seen_before": bool(getattr(h.item, "seen_before", False)),
+            }
+            for h in hits
+        ]
+        typer.echo(_json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    if not hits:
+        scope = f" matching {query!r}" if query else ""
+        typer.echo(f"{FAIL} No items{scope} across past digests in {out_dir}.")
+        return
+
+    for h in hits:
+        sec = (h.section_key or h.section_title or "")[:11]
+        who = h.item.source_from or ""
+        flags = f"  {WARN} weak" if getattr(h.item, "weak_evidence", None) else ""
+        typer.echo(f"  {h.digest_date}  {sec:<11}  {_ellipsis(h.item.title, 46):<46}  {who}{flags}")
+    days = len({h.digest_date for h in hits})
+    typer.echo(f"\n  {len(hits)} item(s) across {days} digest(s).")
+
+    # On a TTY, offer to open one of the matching days in the reader (the §5.2 drill-down).
+    if stdin_is_tty() and sys.stdout.isatty():
+        from digest_core.ui.console import get_console
+        from digest_core.ui.reader import _paged_choose
+
+        console = get_console()
+        counts: dict[str, int] = {}
+        for h in hits:  # newest-first; keep first-seen order for the picker
+            counts[h.digest_date] = counts.get(h.digest_date, 0) + 1
+        entries = [(d, f"{d}  ({n} item{'s' if n != 1 else ''})") for d, n in counts.items()]
+        picked = _paged_choose(console, "Open a digest day?", entries, back_label="Done")
+        if picked:
+            read_digest_interactive(out_dir, date=picked, console=console)
 
 
 @app.command()

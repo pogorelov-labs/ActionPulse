@@ -559,6 +559,7 @@ def _main_menu_options(store_enabled: bool) -> list[tuple[str, str]]:
     options = [
         ("run", "Run digest — pick period, full pipeline + delivery"),
         ("read", "Read digest — topics · authors · quotes"),
+        ("history", "History — search across past digests"),
     ]
     if store_enabled:
         options += [
@@ -596,6 +597,7 @@ def run_menu(
     on_explain: Optional[Callable[[], None]] = None,
     on_search: Optional[Callable[[str], None]] = None,
     on_ask: Optional[Callable[[str], None]] = None,
+    on_history: Optional[Callable[[str], None]] = None,
     store_enabled: bool = False,
     console: Optional[Console] = None,
 ) -> int:
@@ -664,6 +666,11 @@ def run_menu(
                 query = _prompt_query(out, "Ask your inbox")
                 if query:
                     on_ask(query)
+            elif choice == "history" and on_history is not None:
+                # History works with or without a query (Enter = browse all); the reader-style
+                # drill-down inside it handles navigation.
+                query = _prompt_query(out, "History — keyword (Enter = browse all)")
+                on_history(query or "")
             elif choice == "dry":
                 on_run(True, None)
             elif choice == "diagnose":
