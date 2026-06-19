@@ -196,18 +196,8 @@ class InboxAPI:
         offline-safe; the network failure surfaces on the first ``embed`` call."""
         if self._backend_client is None:
             from digest_core.llm.fleet import EmbeddingsClient
-            from digest_core.llm.rate_broker import RateBroker
 
-            cfg = self._config
-            broker = RateBroker(
-                fleet_rpm=cfg.llm.fleet_rpm,
-                burst=cfg.llm.fleet_burst,
-                default_rpm=cfg.llm.rate_limit_rpm,
-                stage_call_budgets=cfg.llm.stage_call_budgets,
-            )
-            self._backend_client = EmbeddingsClient(
-                cfg.llm, model=cfg.store.embedding_model, rate_broker=broker, stage="embeddings"
-            )
+            self._backend_client = EmbeddingsClient.from_config(self._config)
         return self._backend_client
 
     # -- insights (offline) ------------------------------------------------

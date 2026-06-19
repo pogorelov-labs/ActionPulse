@@ -21,7 +21,10 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, Optional
+
+if TYPE_CHECKING:
+    from digest_core.config import LLMConfig
 
 # Sensible default RPM per known fleet model (see REDESIGN_PLAN.md §0.3). Unknown
 # models fall back to ``default_rpm``.
@@ -68,6 +71,24 @@ class _TokenBucket:
 
 class RateBroker:
     """Meters requests across per-model RPM buckets with per-stage call budgets."""
+
+    @classmethod
+    def from_config(
+        cls, llm: "LLMConfig", *, stage_call_budgets: Optional[Dict[str, int]] = None
+    ) -> "RateBroker":
+        """Build a broker from an ``LLMConfig`` — the shared ``fleet_rpm`` / ``fleet_burst`` /
+        ``rate_limit_rpm`` shape every fleet client and the gateway use. Pass
+        ``stage_call_budgets`` to override the config's (e.g. ``ask``'s dedicated budget);
+        otherwise the config's own ``stage_call_budgets`` are used. This is the single
+        construction point — callers used to hand-roll these four args in four places."""
+        return cls(
+            fleet_rpm=llm.fleet_rpm,
+            burst=llm.fleet_burst,
+            default_rpm=llm.rate_limit_rpm,
+            stage_call_budgets=(
+                stage_call_budgets if stage_call_budgets is not None else llm.stage_call_budgets
+            ),
+        )
 
     def __init__(
         self,

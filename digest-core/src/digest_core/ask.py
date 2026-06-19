@@ -93,12 +93,7 @@ def _ask_passages(
         )
 
     ask_llm = config.llm.model_copy(update={"max_output_tokens": ASK_MAX_OUTPUT_TOKENS})
-    broker = RateBroker(
-        fleet_rpm=config.llm.fleet_rpm,
-        burst=config.llm.fleet_burst,
-        default_rpm=config.llm.rate_limit_rpm,
-        stage_call_budgets={"ask": ASK_CALL_BUDGET},
-    )
+    broker = RateBroker.from_config(config.llm, stage_call_budgets={"ask": ASK_CALL_BUDGET})
     gateway = LLMGateway(ask_llm, rate_broker=broker, stage="ask")
     try:
         verdict = gateway.judge(
