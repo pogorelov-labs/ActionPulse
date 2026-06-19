@@ -37,7 +37,7 @@ Monorepo with one package. All development happens in `digest-core/`.
 - Every digest item MUST cite `evidence_id` and `source_ref` (principle P2: Traceability).
 - Secrets via ENV only — never in YAML config files.
 - Extract-over-Generate: LLM extracts from evidence, does not hallucinate (principle P1).
-- Max 2 LLM calls per run (1 primary + 1 quality retry), each with 1 internal retry for transient errors. 15 RPM rate limit on qwen35-397b-a17b (ADR-008).
+- Extractor: max 2 LLM calls per run (1 primary + 1 quality retry), each with 1 internal retry for transient errors. Other stages (reranker/judge/embeddings — default-OFF) have their own per-stage budgets (ADR-008 v2: `llm.stage_call_budgets`). 15 RPM on qwen35-397b-a17b.
 - All terminal output follows `docs/development/TERMINAL_DESIGN.md` (semantic tokens, split-region live displays, degradation matrix, no mouse). Execution plan: `docs/development/TERMINAL_DESIGN_ROADMAP.md`.
 
 ## Network Topology

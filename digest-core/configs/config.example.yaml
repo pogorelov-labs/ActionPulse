@@ -58,6 +58,10 @@ llm:
     tokenize: 20
   strict_json: true          # Enforce strict JSON validation with Pydantic
   max_retries: 3             # Maximum retry attempts for invalid JSON
+  # EP-4 injection containment: fence each untrusted evidence body between per-call
+  # random markers and tell the model to ignore instructions inside them. OFF until the
+  # eval baseline diff is reviewed; only changes the LLM request, never the digest schema.
+  spotlight_evidence: false
 
 deliver:
   mattermost:
@@ -147,7 +151,9 @@ retention:
 #   embed_on_ingest: false   # default off → --dry-run/--replay stay offline; use `store reembed`
 #   embedding_model: "bge-m3"
 #   search_default_mode: "hybrid"   # keyword | semantic | hybrid
+#   search_limit: 20         # default max search results
 #   vector_dtype: "float32"  # or float16 to halve vector RAM/disk
+#   bruteforce_max_rows: 100000  # cap above which cosine streams the matrix in blocks
 #   # db_path: <data home>/var/store/messages.db   # default; override if needed
 #   # DIGEST_STORE_KEY required when enabled — ENV only, never here.
 #   # Cross-day "Open loops" section: surfaces threads where you were addressed on
@@ -212,6 +218,11 @@ selection_weights:
   sender_rank: 1.0          # Weight multiplier per sender rank level
   thread_activity: 0.5      # Weight for thread activity
   negative_prior: -2.0      # Penalty for noreply/unsubscribe patterns
+  # Fused relevance scoring (PR9) — OFF until PC-2. When off, scoring is byte-identical
+  # to the legacy enhanced score; on, it fuses embeddings/reranker relevance into it.
+  enable_relevance: false
+  w_meta: 1.0               # weight on the metadata component (fused)
+  w_rerank: 1.0             # weight on the relevance component (fused)
 
 context_budget:
   max_total_tokens: 7000    # Maximum total tokens for LLM input
@@ -340,16 +351,24 @@ reranker:
   # P2-gate support scoring on the fleet reranker (EP-12, D4/PC-2 approved).
   # Stays OFF until corp validation (EP-14); flag-off runs make zero fleet calls.
   enabled: false
+  model: "bge-reranker-v2-m3"    # own RPM bucket (10 RPM)
+  endpoint_path: "/rerank"       # gateway path (probe-verified; EP-14 confirms response shape)
   tau: 0.0                   # support-score threshold for weak_evidence
   budget_per_run: 10         # the reranker is the scarce, non-batchable resource
   low_confidence_threshold: 0.7  # only items below this confidence spend the budget
   quarantine_weak: true      # D1: weak items go to «Не подтверждено», never dropped
+  # recall_floor: raise above 0.0 (from PR10 calibration / RUNBOOK §8) to make
+  # `--validate-citations` exit 2 when measured support recall drops below it. 0.0 = shadow.
+  recall_floor: 0.0
+  tau_repair: 0.0            # higher support bar a re-selected span must clear (PR11)
 
 judge:
   # Cross-model repair judge (EP-12, D1 rescue path). Must differ from llm.model
   # (R4) — a same-model config disables the judge with a warning. OFF until EP-14.
   enabled: false
   model: "qwen35-35b-a3b"    # own RPM bucket; stage budget judge=8
+  target_recall: 0.90        # calibrate tau at recall >= this (eval-calibrate)
+  min_samples_per_stratum: 20  # min gold samples/stratum to trust a calibrated tau
 
 eval:
   # Judge architecture for eval runs (D5, hybrid by job). 'pointwise' = advisory
