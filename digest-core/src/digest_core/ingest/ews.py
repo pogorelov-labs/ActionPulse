@@ -236,6 +236,34 @@ def compute_time_window(
     return start_utc, end_utc
 
 
+# -- Calendar event mapping helpers (the `calendar` source, read-side / E1) ------------
+
+
+def _event_aware(dt: object) -> Optional[datetime]:
+    """An aware datetime for an event boundary (exchangelib EWSDateTime is already aware)."""
+    if isinstance(dt, datetime):
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _event_attendee_emails(item: object) -> List[str]:
+    """Attendee emails from a CalendarItem (required + optional), de-duped, order-stable."""
+    out: List[str] = []
+    for group in ("required_attendees", "optional_attendees"):
+        for att in getattr(item, group, None) or []:
+            mailbox = getattr(att, "mailbox", None)
+            email = getattr(mailbox, "email_address", None) or getattr(att, "email_address", None)
+            if email and email not in out:
+                out.append(email)
+    return out
+
+
+def _event_range(start: Optional[datetime], end: Optional[datetime]) -> str:
+    if start and end:
+        return f"{start.isoformat()} – {end.isoformat()}"
+    return start.isoformat() if start else "(time unknown)"
+
+
 class EWSIngest:
     """EWS email ingestion with NTLM authentication."""
 
@@ -669,6 +697,88 @@ class EWSIngest:
             self._watermark().advance(observed_max)
 
         return normalized_messages
+
+    def _calendar_window(
+        self, digest_date: str, time_config: TimeConfig
+    ) -> tuple[datetime, datetime]:
+        """FORWARD calendar window, aware-UTC: ``digest_date 00:00`` →
+        ``(digest_date + lookahead-1) 23:59:59`` in the user tz. Calendar is *upcoming*
+        meetings, so unlike email's backward window this looks ahead
+        (``ews.calendar_lookahead_days``, default 1 = today). Localizes via ``tz.localize``
+        (the pytz LMT trap, same as ``compute_time_window``)."""
+        user_tz = pytz.timezone(time_config.user_timezone)
+        days = max(1, int(self.config.calendar_lookahead_days))
+        naive_day = datetime.strptime(digest_date, "%Y-%m-%d")
+        start = user_tz.localize(naive_day)
+        last_day = naive_day + timedelta(days=days - 1)
+        end = user_tz.localize(last_day.replace(hour=23, minute=59, second=59))
+        return to_utc(start), to_utc(end)
+
+    def fetch_events(self, digest_date: str, time_config: TimeConfig) -> List[NormalizedMessage]:
+        """Read-only EWS *calendar* fetch → events as NormalizedMessages (source='calendar').
+
+        Reuses the EWS connection (same account as email). Events flow through the normal
+        pipeline: the agenda body is extracted for in-body actions and the event is stored
+        (searchable / askable). Cancelled events are skipped; the fetch is capped by
+        ``ews.calendar_max_events``. Live fetch is corp-only (ADR-012)."""
+        logger.info("Starting EWS calendar fetch", digest_date=digest_date)
+        account = self._connect()
+        start, end = self._calendar_window(digest_date, time_config)
+        cap = max(1, int(self.config.calendar_max_events))
+
+        events: List[NormalizedMessage] = []
+        skipped = 0
+        items = account.calendar.view(start=start, end=end)  # corp-only; lenient adapter degrades
+        for item in items:
+            if getattr(item, "is_cancelled", False):
+                continue
+            try:
+                events.append(self._normalize_event(item))
+            except Exception as exc:  # noqa: BLE001 - one bad event must not abort the sweep
+                skipped += 1
+                logger.warning("Failed to normalize calendar event", error=str(exc))
+                continue
+            if len(events) >= cap:
+                logger.warning("Calendar event cap reached", cap=cap)
+                break
+        self.last_fetch_stats = {"events": len(events), "skipped": skipped}
+        logger.info("Calendar events normalized", count=len(events))
+        return events
+
+    def _normalize_event(self, item: object) -> NormalizedMessage:
+        """Map an exchangelib CalendarItem → NormalizedMessage (source='calendar').
+
+        The body is a factual meeting header (when / where / who — all real event fields,
+        like email headers) then the verbatim agenda, so extraction sees the meeting context
+        AND any in-body actions while the cited evidence stays factual."""
+        uid = str(getattr(item, "uid", None) or getattr(item, "id", "") or "")
+        subject = getattr(item, "subject", None) or "(no title)"
+        start = _event_aware(getattr(item, "start", None))
+        end = _event_aware(getattr(item, "end", None))
+        organizer = getattr(item, "organizer", None)
+        org_email = getattr(organizer, "email_address", "") or ""
+        org_name = getattr(organizer, "name", None)
+        attendees = _event_attendee_emails(item)
+        location = getattr(item, "location", None) or ""
+        agenda = str(getattr(item, "body", "") or "")
+
+        header = [f"When: {_event_range(start, end)}"]
+        if location:
+            header.append(f"Where: {location}")
+        if attendees:
+            header.append(f"Attendees: {', '.join(attendees)}")
+        body = "\n".join(header) + ("\n\n" + agenda if agenda.strip() else "")
+        return NormalizedMessage(
+            msg_id=uid,
+            conversation_id=uid,  # recurring-series instances thread together
+            datetime_received=start or datetime.now(timezone.utc),
+            sender_email=org_email,
+            from_name=org_name,
+            subject=subject,
+            text_body=body,
+            to_recipients=attendees,
+            source="calendar",
+        )
 
     # Note: Real EWS SyncFolderItems can be added later; MVP uses a timestamp
     # watermark, now via the shared ``ingest.watermark.SourceWatermark`` engine.

@@ -21,6 +21,8 @@ ews:
   folders: ["Inbox"]
   lookback_hours: 24
   page_size: 100
+  calendar_lookahead_days: 1     # `--sources calendar`: forward window (1 = today's meetings)
+  calendar_max_events: 100       # safety cap on events fetched per run
   # sync_state_path: unset by default — the watermark lives in the data home
   # (<data home>/var/state/ews.syncstate; see `actionpulse paths`). Set only to
   # pin a custom location; cwd-relative values bring back the pre-U5 reset bug.

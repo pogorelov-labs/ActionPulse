@@ -16,7 +16,7 @@
 | **B** | Prompt-injection defense (C11) | ✅ **coverage shipped** (2026-06-20; enable = corp step) | 0 |
 | **C** | Action loop — Done/Snooze/Send-to-task (A1 → C2) | ⏸ **parked** | 1 |
 | **D** | Mattermost bot / 2nd surface (B1) | ✅ **build** — connect-out, per-user (architecture decided ↓) | 1 |
-| **E** | EWS Calendar source (A9) | ✅ **build** (read-side now; write-side rides C) | 2 |
+| **E** | EWS Calendar source (A9) | 🟡 **ingestion shipped** (2026-06-20); enrichments next | 2 |
 | **F** | Standing / scheduled queries (A6) | ✅ **build** | 2 |
 | **G** | Audit-sample + fleet-activation machine (C4) | 🏢 corp-phase (later) | 3 |
 
@@ -115,9 +115,17 @@ to the bot — your Q&A with it won't pollute the digest.
 
 ## Tier 2 — depth + reach
 
-### E · EWS Calendar source (A9) — ✅ build (read-side now)
+### E · EWS Calendar source (A9) — 🟡 ingestion shipped (2026-06-20), enrichments next
 **What:** a read-only EWS Calendar adapter (rides the existing EWS auth/throttle, true on-prem,
 near-zero integration cost) via the `build_adapter` seam.
+
+**✅ E1 shipped — calendar ingestion foundation:** `EWSIngest.fetch_events` (forward window,
+`ews.calendar_lookahead_days`) maps each event → `NormalizedMessage(source="calendar")` with a
+factual when/where/who header + verbatim agenda; a `CalendarSourceAdapter` (reuses the EWS
+account, **lenient**) wired through `build_adapter` + run.py (`--sources ews,calendar`). Events
+flow through the normal pipeline (in-body actions extracted; events stored / searchable). Offline
+tests; live fetch is corp-only (ADR-012). **Next (E2+):** a dedicated "meetings" assembly section,
+**collision detection**, **agenda summarization**, **seniority-ranking**.
 
 The maintainer's calendar vision splits cleanly — **read/extract ships now; write/outbound rides
 the parked action loop (C):**
