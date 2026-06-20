@@ -24,7 +24,7 @@ inventory to live **with zero new features** (§5).
 
 | # | Stream | Built | Live | One-line state |
 |---|--------|:----:|:----:|----------------|
-| 1 | Capture — EWS + Mattermost ingest | 90% | 60% | Both sources built; only the EWS basic path is proven live |
+| 1 | Capture — EWS + Mattermost + Calendar ingest | 92% | 60% | Three sources built (calendar E1–E3); only the EWS basic path is proven live |
 | 2 | Extract & Trust — the quality loop | 85% | 20% | All trust tiers built but **dark**; `recall_floor=0.0` (inert) |
 | 3 | Remember & Retrieve — store · API · MCP | 96% | 45% | + cross-digest history browser (live offline); store off-by-default, semantic needs corp |
 | 4 | Deliver + reactions flywheel | 80% | 35% | Webhook live; the flywheel is a finished engine, **never spun** |
@@ -39,15 +39,24 @@ inventory to live **with zero new features** (§5).
 > browser (#175), cost-cap enforcement / TD-006 (#176), bearer/PAT log redaction (#177), wizard
 > MM-creds collection (#178), shellcheck CI lane (#179). Streams 3/5/6/7 nudged up accordingly.
 > The corp pivot (Phase B) is unchanged — still the only path to the big live gains.
+>
+> **Update (2026-06-21):** the post-research build program landed — Tier-0 facade-parity (C1, #190)
+> + injection-spotlighting coverage (C11, #191), then the **EWS Calendar set** (E1 ingest #192 · E2
+> Meetings section #193 · E3 collision detection #194). Stream 1 nudged 90→92; `history` is now a
+> first-class `InboxAPI`/MCP verb. Calendar live-fetch, E4 (agenda summary, LLM) and E5 (seniority
+> ranking, needs an org-title source) remain gated; Phase B still gates the big live gains.
 
 ## 3. Per-stream: done / missing
 
-### 1 · Capture — 90 / 60
+### 1 · Capture — 92 / 60
 - **Done:** EWS (NTLM, per-session TLS, retry + HTTP timeout, multi-folder, incremental watermark);
   Mattermost (allowlisted channels, consent-gated DMs, AIMD adaptive concurrency, api-mode);
+  **Calendar** (EWS read-only forward-window events → the pipeline; deterministic Meetings section
+  + collision detection; `--sources calendar`, E1–E3);
   the multi-source seam; `--dump-ingest` / `--replay-ingest`.
-- **Missing:** chat-tuned extraction prompt; cadence / real-time "urgent nudge"; **MM ingest never
-  validated on the real stack** (EWS basic fetch is the only live-exercised path).
+- **Missing:** chat-tuned extraction prompt; cadence / real-time "urgent nudge"; **MM + calendar
+  ingest never validated on the real stack** (EWS basic fetch is the only live-exercised path);
+  calendar agenda-summarization (E4) + meeting seniority-ranking (E5) are gated (LLM / org-title source).
 
 ### 2 · Extract & Trust — 85 / 20  ← *largest gap*
 - **Done:** verbatim evidence spans; citation gate (shadow → quarantine → repair); reranker tier;
@@ -58,7 +67,7 @@ inventory to live **with zero new features** (§5).
 
 ### 3 · Remember & Retrieve — 95 / 40
 - **Done:** SQLCipher 30-day store (FTS5 + brute-force cosine + RRF hybrid); `InboxAPI` facade
-  (retrieve / search / `ask` / summarize / compare / related / open-loops / pending / source verbs);
+  (retrieve / search / `ask` / summarize / compare / related / history / open-loops / pending / source verbs);
   `actionpulse-mcp` MCP server + macOS AI-CLI installer; `ask`/RAG; carryover + pending sections.
 - **Done (+):** cross-digest **history browser** — `actionpulse history` over past digest artifacts (#175).
 - **Missing:** `store.enabled=False` by default; semantic / `ask` / carryover need store-on + the
@@ -121,6 +130,8 @@ converts to live. (Defaults verified against `config.py` on 2026-06-19.)
 | Embedding thread-merge | `threading.embedding_merge = False` | cosine calibration |
 | Mattermost ingest | `mm_source.enabled = False` | PAT + corp |
 | DM ingest | `mm_source.dm_scope = off` | explicit consent |
+| Calendar ingest + Meetings section | off unless `--sources calendar` | corp EWS for live fetch |
+| Prompt-injection spotlighting | `llm.spotlight_evidence = False` | PC-2 + real-LLM eval |
 | MCP server | opt-in `[mcp]` extra | install + consent |
 
 ## 5. The critical path (one corp session)

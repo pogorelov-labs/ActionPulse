@@ -31,6 +31,7 @@ python -m digest_core.cli run                          # Full run (today, EWS + 
 python -m digest_core.cli run --dry-run                # Ingest + normalize only, no LLM
 python -m digest_core.cli run --from-date 2026-03-28   # Specific date
 python -m digest_core.cli run --window rolling_24h     # Last 24h instead of calendar day
+python -m digest_core.cli run --sources ews,mm,calendar # Add Mattermost + EWS calendar events (opt-in)
 python -m digest_core.cli run --out /tmp/digest --state /tmp/state  # Custom paths
 python -m digest_core.cli diagnose                     # Environment diagnostics
 

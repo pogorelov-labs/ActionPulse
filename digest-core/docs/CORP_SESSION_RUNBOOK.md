@@ -189,6 +189,10 @@ actionpulse run \
 > а JSON-логи уходят **только в файл** (путь печатается первой строкой).
 > Старое поведение: `--progress none`. В CI/пайпе автоматически plain-режим.
 
+> **Календарь (E1–E3):** добавь `--sources ews,calendar` (или `ews,mm,calendar`), чтобы втянуть
+> события календаря — они пройдут пайплайн и дадут детерминированную секцию «Встречи»
+> (отсортированную по началу, с пометкой ⚠ при наложении). Live-fetch календаря — только из корп-сети.
+
 **Чеклист:**
 - [ ] Exit code 0
 - [ ] В выводе `✓ INGEST    N messages` (N > 0 — иначе пустой ящик или фильтр дат); подробности — в лог-файле
@@ -279,6 +283,8 @@ python -m digest_core.cli eval-prompt \
 - [ ] «↻ повтор» — пометки повторов корректны? (ledger D3)
 - [ ] Есть ли галлюцинации — пункты, которых нет в письмах?
 - [ ] Пропущены ли очевидные действия из сегодняшних писем?
+- [ ] (если был `--sources calendar`) Секция «Встречи» корректна? — время без дублей,
+      ⚠ только при реальном наложении, и встречи не вмешиваются в LLM-извлечение (отдельная секция)
 
 **Реакции в MM (вход EP-15):** поставь 👍/👎 на пункты дайджеста прямо сейчас —
 экспорт реакций потом превращается в gold-set (`eval-gold`), без них калибровка
@@ -618,7 +624,8 @@ in order — each step links its detailed checklist.
    until its endpoint is confirmed. (PC-1 service-account role is already ✅ Personal — §"today".)
 1. **Prove ingest live.** §1–§3 exercise EWS; additionally prove **MM ingest** (never run in prod):
    `actionpulse run --sources ews,mm` (needs `MM_PAT` + `MM_BASE_URL` — the wizard collects them now,
-   §0.3). Confirm both sources land messages.
+   §0.3). Confirm both sources land messages. Optionally add **calendar** (`--sources ews,mm,calendar`)
+   and confirm the **Meetings** section populates (⚠ on real overlaps) — also never run in prod.
 2. **Store live-validation.** Enable the store (`store.enabled`), run, then `actionpulse store reembed`
    against the real gateway and exercise `search` / `ask` / `history` on real mail — follow
    [`STORE_VALIDATION_CHECKLIST.md`](./STORE_VALIDATION_CHECKLIST.md). (`reembed` hits `/v1/embeddings`
@@ -669,7 +676,7 @@ in order — each step links its detailed checklist.
 
 ```
 □  PC-2: per-endpoint statements filled → each CONFIRMED in PC2_DATA_HANDLING.md   (gate)
-□  ingest live: actionpulse run --sources ews,mm — both sources land
+□  ingest live: actionpulse run --sources ews,mm[,calendar] — sources land (calendar → Meetings section)
 □  store: store.enabled → run → store reembed → search/ask/history (STORE_VALIDATION_CHECKLIST)
 □  EP-14 quality pack passed (VISIT_CHECKLIST_EP14)
 □  fleet flipped (only CONFIRMED endpoints): reranker / enable_relevance / judge / embedding_merge

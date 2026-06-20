@@ -1,6 +1,6 @@
 # ActionPulse Architecture & Technical Specification
 
-> **Version:** 1.2.1 | **Status:** Living Document | **Last Updated:** 2026-06-19 (ADR-014 store, ADR-015 MCP/InboxAPI added)
+> **Version:** 1.3.0 | **Status:** Living Document | **Last Updated:** 2026-06-21 (calendar source E1–E3 + Meetings section + history surface-parity; ADR-014 store, ADR-015 MCP/InboxAPI)
 >
 > Этот документ — единственный источник правды для архитектуры, контрактов и роадмапа.
 > Любые решения, противоречащие этому документу, требуют его обновления.
@@ -40,9 +40,9 @@
 ```
                           ┌──────────────────────────────────────────────────┐
   Exchange (EWS/NTLM) ───>│              digest-core (Python 3.11)            │
-                          │                                                  │
+   (mail + calendar)      │                                                  │
   Mattermost (v4 API) ───>│  ingest → normalize → threads → evidence →       │
-   (opt-in source:        │    select → LLM extraction → assemble → deliver  │
+   (opt-in sources:       │    select → LLM extraction → assemble → deliver  │
     @-mentions, channels,  │                                                  │
     consent-gated DMs)     │  Outputs: digest-YYYY-MM-DD.{json,md}            │
                           │   → Mattermost (incoming webhook OR authenticated │
@@ -68,7 +68,7 @@
 ### 4.1 Stage Overview
 
 ```
-EWS Inbox
+EWS Inbox · MM · Calendar          (opt-in sources; each NormalizedMessage is source-tagged)
     │
     ▼
 ┌──────────┐   NormalizedMessage[]  (raw HTML body — naming debt, см. TD-009)
@@ -108,8 +108,8 @@ EWS Inbox
 
 #### Stage 1: INGEST
 
-**Input:** EWS config + digest_date + time_config
-**Output:** `List[NormalizedMessage]`
+**Input:** EWS + Mattermost + Calendar configs + digest_date + time_config
+**Output:** `List[NormalizedMessage]` — source-tagged (`source="email"` default | `"mm"` | `"calendar"`)
 
 > **Naming debt (TD-009):** Тип называется `NormalizedMessage`, но на выходе Stage 1
 > тело письма ещё **не нормализовано** (может содержать HTML). Реальная нормализация —
@@ -126,6 +126,9 @@ class NormalizedMessage(NamedTuple):  # TODO: rename to RawMessage for Stage 1 o
     text_body: str           # Raw text/HTML body (NOT yet normalized)
     to_recipients: List[str] # lowercase emails
     cc_recipients: List[str] # lowercase emails
+    # kw-only, NOT part of the content hash (multi-source / calendar):
+    source: str = "email"    # "email" (default) | "mm" | "calendar"
+    event_end: datetime = None  # calendar events only — end time (E3 collisions)
 ```
 
 **Invariants:**
@@ -136,6 +139,12 @@ class NormalizedMessage(NamedTuple):  # TODO: rename to RawMessage for Stage 1 o
 - Dedup: by `msg_id` (InternetMessageId)
 
 **Failure mode:** Connection failure after retries → raise, caller handles _(P5 target: partial report)_
+
+**Multi-source:** the same `NormalizedMessage` also carries Mattermost messages (`source="mm"`,
+opt-in) and EWS **calendar events** (`source="calendar"`, opt-in via `--sources calendar`).
+Calendar events are dated by meeting start and carry `event_end`; they flow through every
+downstream stage (in-body agenda actions are extracted) and additionally feed the deterministic
+**Meetings** section (§9.3, no LLM). Live calendar fetch is corp-only (ADR-012).
 
 ---
 
@@ -558,6 +567,8 @@ ews:
   lookback_hours: 24
   page_size: 100
   sync_state_path: ".state/ews.syncstate"
+  calendar_lookahead_days: 1               # calendar source: forward window (1 = today only)
+  calendar_max_events: 100                 # calendar source: per-run safety cap
 
 llm:
   endpoint: "https://llm-gw.corp.com/api/v1/chat"
@@ -812,6 +823,9 @@ run_digest("2026-03-29", ...)
 then reads the file via `Path.read_text()`. Jinja2 rendering is NOT used for extraction prompts (ADR-009);
 only `thread_summarize` in the hierarchical processor uses Jinja2.
 
+> **Not prompt-driven:** the **Meetings** section (calendar source) is assembled deterministically
+> in `run._enrich_digest_with_meetings()` — no LLM, no prompt (§9.3).
+
 ### 9.2 Prompt Design Decisions
 
 **Decision: Two-step pipeline is NOT needed for MVP.**
@@ -853,11 +867,20 @@ This is the correct approach:
 |--------------------|-----------|
 | **Темы из каналов** | Кластеры сообщений из MM public channels |
 
+**Детерминированные / store-derived секции (НЕ от LLM, собираются в `run.py`):**
+
+| Секция (RU / key) | Источник | Когда |
+|-------------------|----------|-------|
+| **Встречи** (`meetings`) | календарь (`--sources calendar`), сортировка по началу, ⚠ при наложении | есть события на сегодня (E2/E3) |
+| **Ждут вашего ответа** (`pending`) | store carryover | `store.pending` + история |
+| **Открытые вопросы** (`open_loops`) | store carryover | `store.carryover` + история |
+
 **Правила:**
 - Пустые секции не включаются в output
 - Если все секции пустые → "За период релевантных действий не найдено"
 - Assembler должен принимать **любые** section titles от LLM, но сортировать
-  в порядке: Мои действия → Срочное → К сведению → остальные
+  по каноническому весу (`assemble/labels.py` `SECTION_ORDER_BY_KEY`): Срочное →
+  Мои действия → Встречи → Ждут вашего ответа → Открытые вопросы → К сведению → остальные
 
 ---
 
