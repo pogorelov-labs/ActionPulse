@@ -20,7 +20,7 @@ import re
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import httpx
 import structlog
@@ -30,6 +30,9 @@ from digest_core.config import Config
 from digest_core.store.db import MessageStore, StoreError
 from digest_core.store.retrieve import DayCount, MessageRecord, SenderCount, ThreadSummary
 from digest_core.store.search import SearchHit
+
+if TYPE_CHECKING:
+    from digest_core.history import HistoryHit
 
 logger = structlog.get_logger(__name__)
 
@@ -151,6 +154,33 @@ class InboxAPI:
 
     def stats(self) -> Dict[str, Any]:
         return self._store.stats()
+
+    def history(
+        self,
+        query: Optional[str] = None,
+        *,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        section: Optional[str] = None,
+        limit: int = 50,
+        out_dir: Optional[str] = None,
+    ) -> "List[HistoryHit]":
+        """Search across PAST DIGEST ARTIFACTS (the curated output history), newest first.
+
+        Complements ``search`` (the raw message store) and ``get_thread`` (one thread):
+        this scans what the digests actually surfaced over time. Store-free in
+        implementation (it reads the out dir), but exposed on the facade so MCP / a bot
+        reach it through one surface; the CLI ``history`` command calls ``search_history``
+        directly so it keeps working when the store is off. ``section`` is a canonical key
+        (my_actions / urgent / fyi / status / unconfirmed).
+        """
+        from pathlib import Path
+
+        from digest_core import paths
+        from digest_core.history import search_history
+
+        target = Path(out_dir).expanduser() if out_dir else paths.out_dir(create=False)
+        return search_history(target, query, since=since, until=until, section=section, limit=limit)
 
     # -- search (keyword offline; semantic/hybrid via the gateway) ---------
 

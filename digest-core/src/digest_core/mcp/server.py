@@ -162,6 +162,31 @@ def _tool_stats() -> Dict[str, Any]:
     return _get_api().stats()
 
 
+def _tool_history(
+    query: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    section: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Search across PAST DIGESTS (the curated output history), newest first. Unlike `search`
+    (the raw message store), this scans what your digests actually surfaced over time.
+    section: my_actions | urgent | fyi | status | unconfirmed. since/until are YYYY-MM-DD."""
+    hits = _get_api().history(query, since=since, until=until, section=section, limit=limit)
+    return [
+        {
+            "digest_date": h.digest_date,
+            "section": h.section_key or h.section_title,
+            "title": h.item.title,
+            "due": h.item.due,
+            "source_from": h.item.source_from,
+            "source_subject": h.item.source_subject,
+            "evidence_id": h.item.evidence_id,
+        }
+        for h in hits
+    ]
+
+
 def _tool_related(message_id: str, limit: int = 10) -> Dict[str, Any]:
     """Messages similar to a given one (uses stored vectors). Needs the gateway only if the
     source isn't embedded yet; ``degraded: true`` means the gateway was unreachable, so the
@@ -323,6 +348,7 @@ _TOOLS = [
     (_tool_count_by_day, "count_by_day"),
     (_tool_timeline, "timeline"),
     (_tool_stats, "stats"),
+    (_tool_history, "history"),
     (_tool_related, "related"),
     (_tool_ask, "ask"),
     (_tool_summarize_thread, "summarize_thread"),

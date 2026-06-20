@@ -12,7 +12,7 @@
 
 | # | Addition | Decision | Tier |
 |---|----------|----------|------|
-| **A** | Facade parity + contract test (C1) | ✅ **build** | 0 |
+| **A** | Facade parity + contract test (C1) | ✅ **shipped** (2026-06-20) | 0 |
 | **B** | Prompt-injection defense (C11) | ✅ **build** | 0 |
 | **C** | Action loop — Done/Snooze/Send-to-task (A1 → C2) | ⏸ **parked** | 1 |
 | **D** | Mattermost bot / 2nd surface (B1) | ✅ **build** — connect-out, per-user (architecture decided ↓) | 1 |
@@ -31,9 +31,10 @@
 
 ## Tier 0 — foundational (offline, build now)
 
-### A · Facade parity + contract test (C1) — ✅ build
-**What:** move `history` into `InboxAPI`; CI test asserting every retrieval verb is reachable
-consistently across **API ↔ MCP ↔ CLI** (documented exceptions allowed).
+### A · Facade parity + contract test (C1) — ✅ shipped (2026-06-20)
+**What:** `history` now lives on `InboxAPI` (+ an MCP `history` tool; the CLI keeps the store-free
+direct path); `tests/test_surface_parity.py` enforces **InboxAPI ↔ MCP** verb parity as a CI drift
+guard (`checkpoint` is the one documented exception).
 **Pros:** cheap, offline, durable CI guardrail; makes all surfaces consistent; **unblocks D**.
 **Cons:** low immediate user-visible value (hygiene); small refactor + test churn; "parity" must
 encode intent, not mechanical equality.
