@@ -103,6 +103,17 @@ class EWSConfig(BaseModel):
     folders: List[str] = Field(default=["Inbox"], description="Folders to process")
     lookback_hours: int = Field(default=24, description="Hours to look back")
     page_size: int = Field(default=100, description="Page size for pagination")
+    calendar_lookahead_days: int = Field(
+        default=1,
+        description=(
+            "FORWARD window for the `calendar` source: number of days from the digest"
+            " date (inclusive) whose meetings are ingested. 1 = today's meetings only."
+            " Calendar is read-only EWS, surfaced via `--sources calendar`."
+        ),
+    )
+    calendar_max_events: int = Field(
+        default=100, description="Cap on calendar events fetched per run (safety bound)"
+    )
     timeout_s: float = Field(
         default=120.0, description="Per-request EWS HTTP timeout in seconds (exchangelib)"
     )

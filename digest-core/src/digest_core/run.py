@@ -34,8 +34,10 @@ from digest_core.evidence.split import EvidenceChunk, EvidenceSplitter
 from digest_core.ingest.ews import EWSIngest, NormalizedMessage
 from digest_core.ingest.envelope import messages_from_envelopes
 from digest_core.ingest.source_adapter import (
+    CALENDAR_SOURCE_NAMES,
     EWS_SOURCE_NAMES,
     MM_SOURCE_NAMES,
+    CalendarSourceAdapter,
     EWSSourceAdapter,
     SourceAdapter,
     canonical_source,
@@ -378,6 +380,7 @@ def _build_source_adapters(
     lenient_adapters: List[SourceAdapter] = []
     seen_ews = False
     seen_mm = False
+    seen_calendar = False
     for name in sources or ["ews"]:
         canonical = canonical_source(name)
         if canonical == "ews":
@@ -385,6 +388,12 @@ def _build_source_adapters(
             if not seen_ews:
                 strict_adapters.append(EWSSourceAdapter(ingest))
                 seen_ews = True
+        elif canonical == "calendar":
+            # Calendar reuses the EWS connection (same account, read-only). LENIENT:
+            # a calendar blip must never take down the email digest (degrade-not-drop).
+            if not seen_calendar:
+                lenient_adapters.append(CalendarSourceAdapter(ingest))
+                seen_calendar = True
         elif canonical == "mm":
             if not seen_mm:
                 lenient_adapters.append(_build_mm_adapter(config, sink, incremental=incremental))
@@ -394,7 +403,7 @@ def _build_source_adapters(
             # source is never silently dropped.
             raise ValueError(
                 f"Unknown ingest source {name!r}. Known sources: "
-                f"{sorted(EWS_SOURCE_NAMES | MM_SOURCE_NAMES)}."
+                f"{sorted(EWS_SOURCE_NAMES | CALENDAR_SOURCE_NAMES | MM_SOURCE_NAMES)}."
             )
     return strict_adapters, lenient_adapters
 
