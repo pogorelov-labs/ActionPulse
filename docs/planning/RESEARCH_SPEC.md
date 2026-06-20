@@ -1,5 +1,11 @@
 # ActionPulse Enhancement Research Specification
 
+> **🔬 Deep research landed 2026-06-20** → see [`research/SYNTHESIS.md`](research/SYNTHESIS.md)
+> (cross-cutting findings + the full correction list) and the 8 per-item briefs in
+> [`research/`](research/). Items below are annotated `🔬` where research changed them; the
+> thesis held, with C3 (transport) and C4 (the flywheel's recall claim) materially corrected,
+> and two new items added (see §5a). The A8/A11 *memos* are updated to research-verified v2.
+
 > **Status:** draft v2 for review · **Date:** 2026-06-20 · **Scope:** the three product
 > surfaces — `InboxAPI`, the `actionpulse-mcp` MCP server, and the terminal (CLI + menu).
 >
@@ -347,7 +353,14 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 - **Metric.** An ADR with a worked design for the top-2 actions, incl. idempotency + audit.
 - **Gate.** The action-layer ADR, or "stay read-only."
 
-### C3 · MCP HTTP/SSE transport + auth model  `[P1 · M · 🟢🏢]`  ↔B1
+### C3 · MCP transport + auth model  `[P1 · M · 🟢🏢]`  ↔B1
+- **🔬 Research correction** ([brief](research/C3-mcp-transport-auth.md)): premise mostly
+  *refuted* (good). stdio+env-key is **already the spec's recommended local shape** — no change
+  needed. **SSE is deprecated** — never build it; use **Streamable HTTP** only if a genuine
+  *remote* MCP client is ever required (behind PC-2). For B1 (the likely 2nd surface), the
+  secure pattern is a **corp-side service calling `InboxAPI` directly**, not a remote MCP. The
+  real, transport-independent priority is the new **prompt-injection item (§5a)**. This item
+  shrinks to "keep stdio; only add Streamable HTTP+OAuth 2.1 if remote MCP is forced."
 - **Q.** Does the MCP server need non-stdio transport + auth (today: stdio + env key only)?
 - **Why.** A second surface (B1) and any remote/multi-client use needs HTTP/SSE + auth;
   cloud egress (ADR-015) must be revisited at scale.
@@ -358,6 +371,16 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 - **Gate.** The transport/auth ADR; a PC-2 amendment if egress changes.
 
 ### C4 · Safe fleet-activation state machine  `[P1 · L · 🟢→🏢]`  ↔A2
+- **🔬 Research result + flywheel correction** ([brief](research/C4-calibration-activation.md)):
+  adopt the **six-state machine** `DARK→SHADOW→CALIBRATE→ARMED→CANARY→LIVE` + a feature-flag
+  kill-switch. Certify the recall floor with a **Wilson / Clopper–Pearson lower bound over
+  labeled positives** (never the Wald approx — it gives false certainty at recall≈1).
+  **Decisive correction:** **reactions are recall-blind** (survivorship — they only land on
+  *delivered* items), so the flywheel calibrates *precision/the judge* but **a defensible recall
+  floor needs a separate human-audited random sample**. Replace any bare-κ judge gate with
+  prevalence-aware per-class precision/recall (κ is deflated when positives are rare). *The
+  flywheel code shipped this session is sound; the recall-floor **claim** in STATUS/ROADMAP needs
+  the audit-sample caveat.*
 - **Q.** What's the safe-activation architecture for the dark fleet (reranker / judge /
   relevance / best-of-N / embedding-merge)?
 - **Why.** Shadow→calibrate→flip is the pattern; the per-user calibration store and an
@@ -421,6 +444,33 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 - **Metric.** A completed DPIA with every data flow classified; RTBF verified to remove a
   subject end-to-end.
 - **Gate.** The DPIA + any architecture changes it forces.
+
+---
+
+## 5a. Research-added items (new, 2026-06-20)
+
+### C11 · Prompt-injection / tool-output-as-data defense  `[P1 · M · 🟢]`  *(new — from C3 research)*
+- **Q.** How does ActionPulse defend against prompt injection, given it feeds **untrusted
+  inbound email/chat** to an LLM (extractor, judge, `ask`, and the MCP tool surface)?
+- **Why.** The corpus *is* attacker-influenceable — a malicious email can carry instructions
+  the model obeys (Gemini's email summaries were demonstrably injectable). This is
+  transport-independent and, per the C3 brief, the **highest-leverage hardening** — and it's
+  currently unaddressed in the spec.
+- **Protocol.** Audit every place ingested content reaches a model; adopt "treat content +
+  tool output as **data, not instructions**" (delimiting, instruction-stripping, the model is
+  told returns are data); consider pinning the MCP tool-definition set (SHA-256) so a change is
+  visible; human-in-the-loop for any future state-changing action (ties C2/A1).
+- **Inputs.** `llm/`, `assemble/`, `mcp/server.py`, the ingest path; OWASP MCP + LLM guidance.
+- **Metric.** A documented injection threat model + a red-team test set of adversarial
+  emails/posts that the pipeline resists (no instruction-following, no fabricated items).
+- **Gate.** The injection-defense ADR + the red-team test in CI.
+
+### Design red lines (constraints, not a research item) — from C10
+Two EU-AI-Act lines the product **must never cross**, binding on A1 (actions) and A2
+(personalization): **(1)** never infer employee **emotion/sentiment** (Art. 5 *prohibited*);
+**(2)** never feed outputs into **performance evaluation** (Annex III *high-risk*). Lawful basis
+is **legitimate-interest-with-balancing, not employee consent**. These are gates on design
+scope, recorded here so A1/A2/C4 stay inside *limited-risk*.
 
 ---
 
