@@ -4,6 +4,8 @@
 > [`../../digest-core/docs/ARCHITECTURE.md`](../../digest-core/docs/ARCHITECTURE.md) (SoT).
 > This is a point-in-time *snapshot* — progress %s are honest engineering estimates, not
 > instrumented metrics. When a number and the code disagree, trust the code.
+> **What to research before building next** → [`RESEARCH_SPEC.md`](./RESEARCH_SPEC.md)
+> (product/UX/architecture agenda; deliverables [`A8`](./A8-positioning.md) · [`A11`](./A11-business-model.md)).
 
 ## 1. Executive snapshot
 

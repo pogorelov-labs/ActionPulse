@@ -5,6 +5,8 @@
 >
 > **Where we are now** (stream-by-stream % built vs live, the dark inventory) → [`STATUS.md`](./STATUS.md).
 >
+> **What to research before building next** (product/UX/architecture agenda) → [`RESEARCH_SPEC.md`](./RESEARCH_SPEC.md).
+>
 > **Source-of-truth map** (don't trust prose over code):
 > - Contracts / ADRs / pipeline → `digest-core/docs/ARCHITECTURE.md` (verify §13/§14 against code — they lag).
 > - Requirements / principles / unified data schema v3.0 → `docs/planning/BUSINESS_REQUIREMENTS.md`.
