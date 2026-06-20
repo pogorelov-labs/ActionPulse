@@ -34,6 +34,7 @@ from digest_core.ingest.mattermost import (
     _channel_kind,
     _dm_counterparty_ids_from_name,
     _is_dm_channel,
+    _is_self_dm,
     _normalize_dm_allowlist,
     _user_identity_tokens,
 )
@@ -306,6 +307,40 @@ def test_dm_counterparty_ids_from_name():
     assert _dm_counterparty_ids_from_name(ch3, _OWNER_ID) == []
     # malformed name (no '__') → empty
     assert _dm_counterparty_ids_from_name({"type": "D", "name": "weird"}, _OWNER_ID) == []
+
+
+def test_is_self_dm():
+    self_dm = {"type": "D", "name": _dm_channel_name(_OWNER_ID, _OWNER_ID)}
+    assert _is_self_dm(self_dm, _OWNER_ID) is True
+    # a normal 1:1 DM is not a self-DM
+    partner = {"type": "D", "name": _dm_channel_name(_OWNER_ID, _PARTNER_ID)}
+    assert _is_self_dm(partner, _OWNER_ID) is False
+    # a group-DM ('G') is never a self-DM here, even if oddly named
+    assert (
+        _is_self_dm({"type": "G", "name": _dm_channel_name(_OWNER_ID, _OWNER_ID)}, _OWNER_ID)
+        is False
+    )
+    # blank owner id → fail closed (not classified as self)
+    assert _is_self_dm(self_dm, "") is False
+
+
+@pytest.mark.parametrize("scope", ["own_posts_only", "all"])
+def test_self_dm_excluded_by_default_included_when_opted_in(scope):
+    """The owner's notes-to-self DM is dropped by default under every ingesting
+    scope (it's personal scratch space), and re-included only with
+    dm_include_self=True. Exercises the selection chokepoint directly — no HTTP
+    is issued for own_posts_only/all selection."""
+    self_dm = {"id": "dm-self", "type": "D", "name": _dm_channel_name(_OWNER_ID, _OWNER_ID)}
+    partner_dm = {"id": "dm-partner", "type": "D", "name": _dm_channel_name(_OWNER_ID, _PARTNER_ID)}
+    http = _FakeHttp({}, {})
+
+    default = _make_adapter(http, dm_scope=scope, dm_consent_acknowledged=True)
+    kept = default._select_dm_channels([self_dm, partner_dm], scope, _OWNER_ID)
+    assert [c["id"] for c in kept] == ["dm-partner"]  # self-DM dropped
+
+    opted = _make_adapter(http, dm_scope=scope, dm_include_self=True, dm_consent_acknowledged=True)
+    kept_in = opted._select_dm_channels([self_dm, partner_dm], scope, _OWNER_ID)
+    assert {c["id"] for c in kept_in} == {"dm-self", "dm-partner"}  # self-DM kept
 
 
 def test_normalize_dm_allowlist_trims_lowercases_drops_blanks():

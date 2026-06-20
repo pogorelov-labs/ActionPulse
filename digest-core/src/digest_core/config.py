@@ -589,6 +589,16 @@ class MattermostSourceConfig(BaseModel):
             "docs/research/MATTERMOST_INTEGRATION_DESIGN.md §2.2/§6."
         ),
     )
+    dm_include_self: bool = Field(
+        default=False,
+        description=(
+            "Include the user's own notes-to-self DM (the 'me↔me' channel, MM "
+            "names it 'ownerid__ownerid'). Default False: a self-DM is personal "
+            "scratch space, not correspondence, so it is excluded from ingestion "
+            "regardless of dm_scope. Set True to ingest it (it then follows "
+            "dm_scope like any other DM)."
+        ),
+    )
     dm_allowlist: List[str] = Field(
         default_factory=list,
         description=(

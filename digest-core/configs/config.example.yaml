@@ -124,6 +124,7 @@ mm_source:
   # REFUSES to load 'selected'/'all' without it. Group-DMs (type 'G') follow this
   # same scope; under 'selected' a group-DM is kept iff ANY member is allowlisted.
   dm_scope: "off"
+  dm_include_self: false     # ingest your own notes-to-self DM (me↔me)? default off — it's scratch space
   dm_allowlist: []           # counterparty @username / email / user_id (NOT channel name)
   dm_max_quote_chars: 280    # verbatim cap on COUNTERPARTY text (your own posts uncapped)
   dm_consent_acknowledged: false
