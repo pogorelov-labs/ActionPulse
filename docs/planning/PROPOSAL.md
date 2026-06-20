@@ -124,8 +124,10 @@ near-zero integration cost) via the `build_adapter` seam.
 factual when/where/who header + verbatim agenda; a `CalendarSourceAdapter` (reuses the EWS
 account, **lenient**) wired through `build_adapter` + run.py (`--sources ews,calendar`). Events
 flow through the normal pipeline (in-body actions extracted; events stored / searchable). Offline
-tests; live fetch is corp-only (ADR-012). **Next (E2+):** a dedicated "meetings" assembly section,
-**collision detection**, **agenda summarization**, **seniority-ranking**.
+tests; live fetch is corp-only (ADR-012). **✅ E2 shipped — a deterministic "Meetings" section**
+(`_enrich_digest_with_meetings`): today's calendar events surfaced reliably (sorted by start,
+no LLM), with a new `meetings` section key (weight 2, after "My actions"). **Next (E3+):**
+**collision detection**, **agenda summarization** (corp/LLM), **seniority-ranking** (needs a title source).
 
 The maintainer's calendar vision splits cleanly — **read/extract ships now; write/outbound rides
 the parked action loop (C):**

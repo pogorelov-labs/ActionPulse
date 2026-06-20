@@ -51,14 +51,23 @@ class TestSortWeights:
         ru = [
             "Срочное",
             "Мои действия",
+            "Встречи",
             "Ждут вашего ответа",
             "Открытые вопросы",
             "К сведению",
             "Не подтверждено",
         ]
-        en = ["Urgent", "My actions", "Awaiting your reply", "Open loops", "FYI", "Unconfirmed"]
-        assert [L.section_sort_weight(t) for t in ru] == [0, 1, 2, 3, 4, 5]
-        assert [L.section_sort_weight(t) for t in en] == [0, 1, 2, 3, 4, 5]
+        en = [
+            "Urgent",
+            "My actions",
+            "Meetings",
+            "Awaiting your reply",
+            "Open loops",
+            "FYI",
+            "Unconfirmed",
+        ]
+        assert [L.section_sort_weight(t) for t in ru] == [0, 1, 2, 3, 4, 5, 6]
+        assert [L.section_sort_weight(t) for t in en] == [0, 1, 2, 3, 4, 5, 6]
 
     def test_unknown_sorts_last(self):
         assert L.section_sort_weight("Статус") == 99  # not in order map, same as pre-L1

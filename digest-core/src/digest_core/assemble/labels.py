@@ -31,6 +31,10 @@ OPEN_LOOPS = "open_loops"
 # Store-derived pending requests (P3): a message from an earlier day that asked
 # YOU something (question / approval / request) and you have not replied since.
 PENDING = "pending"
+# Calendar-derived (E2): today's upcoming meetings from the `calendar` source,
+# surfaced deterministically (not via the LLM extractor) so meetings appear even
+# when their agenda has no extractable action.
+MEETINGS = "meetings"
 
 SECTION_TITLES: dict[str, dict[str, str]] = {
     "en": {
@@ -41,6 +45,7 @@ SECTION_TITLES: dict[str, dict[str, str]] = {
         UNCONFIRMED: "Unconfirmed",
         OPEN_LOOPS: "Open loops",
         PENDING: "Awaiting your reply",
+        MEETINGS: "Meetings",
     },
     "ru": {
         MY_ACTIONS: "Мои действия",
@@ -50,6 +55,7 @@ SECTION_TITLES: dict[str, dict[str, str]] = {
         UNCONFIRMED: "Не подтверждено",
         OPEN_LOOPS: "Открытые вопросы",
         PENDING: "Ждут вашего ответа",
+        MEETINGS: "Встречи",
     },
 }
 
@@ -60,10 +66,11 @@ SECTION_TITLES: dict[str, dict[str, str]] = {
 SECTION_ORDER_BY_KEY: dict[str, int] = {
     URGENT: 0,
     MY_ACTIONS: 1,
-    PENDING: 2,
-    OPEN_LOOPS: 3,
-    FYI: 4,
-    UNCONFIRMED: 5,
+    MEETINGS: 2,
+    PENDING: 3,
+    OPEN_LOOPS: 4,
+    FYI: 5,
+    UNCONFIRMED: 6,
 }
 
 _TITLE_TO_KEY: dict[str, str] = {}

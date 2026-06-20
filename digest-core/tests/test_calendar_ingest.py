@@ -138,3 +138,56 @@ def test_canonical_source_and_build_adapter():
     cfg.ews.verify_ca = None  # default points at a corp CA path absent off-corp
     adapter = build_adapter("calendar", cfg)
     assert isinstance(adapter, CalendarSourceAdapter)
+
+
+def test_meetings_section_built_from_calendar_events():
+    """E2: the deterministic Meetings section lists only calendar events, sorted by start."""
+    from digest_core import run
+    from digest_core.ingest.ews import NormalizedMessage
+    from digest_core.llm.schemas import Digest
+
+    cfg = Config()
+    cfg.time.user_timezone = "UTC"
+    cfg.report.language = "en"
+    ctx = SimpleNamespace(config=cfg, run_meta={}, trace_id="t-cal")
+    digest = Digest(prompt_version="x", digest_date="2026-06-21", trace_id="t-cal", sections=[])
+
+    def _cal(uid, subject, hour):
+        return NormalizedMessage(
+            msg_id=uid,
+            conversation_id=uid,
+            datetime_received=datetime(2026, 6, 21, hour, 0, tzinfo=timezone.utc),
+            sender_email="org@corp",
+            subject=subject,
+            text_body="When: ...",
+            source="calendar",
+        )
+
+    email = NormalizedMessage(
+        msg_id="e1",
+        conversation_id="c1",
+        datetime_received=datetime(2026, 6, 21, 8, 0, tzinfo=timezone.utc),
+        sender_email="a@corp",
+        subject="An email",
+        text_body="hi",
+    )  # source defaults to "email"
+    messages = [_cal("u-late", "Late sync", 16), email, _cal("u-early", "Standup", 9)]
+
+    run._enrich_digest_with_meetings(ctx, digest, messages)
+
+    meetings = [s for s in digest.sections if s.title == "Meetings"]
+    assert len(meetings) == 1
+    titles = [i.title for i in meetings[0].items]
+    assert titles == ["Standup (09:00)", "Late sync (16:00)"]  # sorted by start; email excluded
+    assert ctx.run_meta["meeting_items"] == 2
+    assert meetings[0].items[0].source_ref["type"] == "meeting"
+
+
+def test_meetings_section_skipped_when_no_calendar_events():
+    from digest_core import run
+    from digest_core.llm.schemas import Digest
+
+    ctx = SimpleNamespace(config=Config(), run_meta={}, trace_id="t")
+    digest = Digest(prompt_version="x", digest_date="2026-06-21", trace_id="t", sections=[])
+    run._enrich_digest_with_meetings(ctx, digest, [])  # no calendar events
+    assert digest.sections == [] and "meeting_items" not in ctx.run_meta
