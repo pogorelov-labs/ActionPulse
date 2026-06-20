@@ -473,6 +473,15 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 ## 5a. Research-added items (new, 2026-06-20)
 
 ### C11 · Prompt-injection / tool-output-as-data defense  `[P1 · M · 🟢]`  *(new — from C3 research)*
+- **🔬 Audit correction + ✅ coverage shipped (2026-06-20).** The defense was already *built*
+  (gateway **spotlighting**: per-call random fences + a "treat as DATA" brief) and *tested*
+  (`test_injection_hardening.py` + `fixtures/emails_injection.json`) — but only on the
+  **extractor**, and **OFF by default** (`spotlight_evidence=False`, deliberately gated on a corp
+  eval-baseline review). Shipped: spotlighting now also covers **`gateway.judge`** — the one
+  chokepoint `ask` *and* the judge share — so when the flag is on, every untrusted-content→LLM
+  path is fenced (extractor + ask + judge), with new red-team tests. **Still default-off**:
+  *enabling* it is a corp activation step (needs the real-LLM eval — like the rest of the dark
+  inventory). The MCP-tool-pinning + a standalone threat-model doc remain (fold into C10/DPIA).
 - **Q.** How does ActionPulse defend against prompt injection, given it feeds **untrusted
   inbound email/chat** to an LLM (extractor, judge, `ask`, and the MCP tool surface)?
 - **Why.** The corpus *is* attacker-influenceable — a malicious email can carry instructions

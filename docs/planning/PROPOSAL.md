@@ -13,7 +13,7 @@
 | # | Addition | Decision | Tier |
 |---|----------|----------|------|
 | **A** | Facade parity + contract test (C1) | ✅ **shipped** (2026-06-20) | 0 |
-| **B** | Prompt-injection defense (C11) | ✅ **build** | 0 |
+| **B** | Prompt-injection defense (C11) | ✅ **coverage shipped** (2026-06-20; enable = corp step) | 0 |
 | **C** | Action loop — Done/Snooze/Send-to-task (A1 → C2) | ⏸ **parked** | 1 |
 | **D** | Mattermost bot / 2nd surface (B1) | ✅ **build** — connect-out, per-user (architecture decided ↓) | 1 |
 | **E** | EWS Calendar source (A9) | ✅ **build** (read-side now; write-side rides C) | 2 |
@@ -39,10 +39,14 @@ guard (`checkpoint` is the one documented exception).
 **Cons:** low immediate user-visible value (hygiene); small refactor + test churn; "parity" must
 encode intent, not mechanical equality.
 
-### B · Prompt-injection / tool-output-as-data defense (C11) — ✅ build
+### B · Prompt-injection / tool-output-as-data defense (C11) — ✅ coverage shipped (2026-06-20)
 **What:** treat ingested email/chat **and** tool output as *data, not instructions* everywhere it
-reaches an LLM (extractor, judge, `ask`, MCP, the future bot): delimiting, instruction-stripping,
-"returns are data" framing, pinned MCP tool defs, a red-team test set in CI.
+reaches an LLM. The audit found this was already built + tested for the **extractor** (gateway
+*spotlighting*) but OFF by default and extractor-only. **Shipped:** spotlighting now also covers
+**`gateway.judge`** (the chokepoint `ask` + the judge share) + new red-team tests, so when enabled
+it fences every untrusted-content→LLM path. **Still default-off** — enabling `spotlight_evidence`
+is a corp activation step (real-LLM eval, like the rest of the dark inventory). Remaining: MCP
+tool-def pinning + a standalone threat-model doc (fold into C10/DPIA).
 **Pros:** closes a real open hole (the corpus is attacker-influenceable); cheap vs. impact; a
 **precondition** for C (a write triggered by injection is far worse) and D (a new input surface);
 reinforces the evidence/trust wedge.
