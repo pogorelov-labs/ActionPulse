@@ -28,12 +28,14 @@ Bare `actionpulse` opens an arrow-key menu; "Run digest" asks exactly one follow
 
 ## What it is
 
-A single-tenant CLI tool. It reads your Exchange inbox — and, optionally, your Mattermost @-mentions / allowlisted channels / DMs — runs it through an 8-stage pipeline, and delivers the result to Mattermost via an **incoming webhook** (the target channel is chosen when the webhook is created in Mattermost). An opt-in encrypted store also enables cross-day sections, local `search`/`ask`, and an MCP server (below).
+A single-tenant CLI tool. It reads your Exchange inbox — and, optionally, your Mattermost @-mentions / allowlisted channels / DMs, plus your Exchange **calendar** — runs it through an 8-stage pipeline, and delivers the result to Mattermost via an **incoming webhook** (the target channel is chosen when the webhook is created in Mattermost). An opt-in encrypted store also enables cross-day sections, local `search`/`ask`, and an MCP server (below).
 
-**Not a summarizer** — the LLM extracts facts from evidence, it does not write on its own. Three output sections:
+**Not a summarizer** — the LLM extracts facts from evidence, it does not write on its own. Core output sections:
 - **My actions** — what is expected from you
 - **Urgent** — deadlines ≤2 business days
 - **FYI** — what was decided without you
+
+With the optional calendar source, today's **Meetings** are surfaced too — deterministically (no LLM), ordered by start, with overlap detection. The opt-in encrypted store adds cross-day **Awaiting your reply** / **Open loops** sections.
 
 **Not SaaS** — runs on corporate infrastructure; data never leaves the perimeter.
 
@@ -103,9 +105,10 @@ So: enabling `dm_scope` *does* read DMs — by design, behind explicit consent. 
 ## Architecture
 
 ```
-Exchange (EWS)  ─┐
-Mattermost (API) ─┴─ INGEST → NORMALIZE → THREADS → EVIDENCE → SELECT → LLM → ASSEMBLE → DELIVER
-   (opt-in source)                                                                          └── Mattermost (webhook)
+Exchange (EWS)   ─┐
+Mattermost (API) ─┼─ INGEST → NORMALIZE → THREADS → EVIDENCE → SELECT → LLM → ASSEMBLE → DELIVER
+Calendar (EWS)   ─┘                                                                          └── Mattermost (webhook)
+   (Mattermost + calendar are opt-in sources)
                   └─ (opt-in) encrypted store → search · ask · open-loops/pending · MCP server
 ```
 
@@ -117,7 +120,7 @@ Full stage contracts: [`digest-core/docs/ARCHITECTURE.md`](digest-core/docs/ARCH
 
 ## AI assistant access (MCP)
 
-ActionPulse ships a local **MCP server** (`actionpulse-mcp`, opt-in) that exposes your encrypted message store — search, retrieve, threads, `ask`, `compare`, open-loops / pending — to AI coding CLIs (Claude Code, opencode, qwen-code) over stdio.
+ActionPulse ships a local **MCP server** (`actionpulse-mcp`, opt-in) that exposes your encrypted message store — search, retrieve, threads, history, `ask`, `compare`, open-loops / pending — to AI coding CLIs (Claude Code, opencode, qwen-code) over stdio.
 
 ```bash
 cd digest-core
