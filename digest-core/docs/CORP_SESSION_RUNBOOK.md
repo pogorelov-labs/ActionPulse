@@ -629,7 +629,10 @@ in order — each step links its detailed checklist.
 4. **Flip the fleet — per CONFIRMED endpoint only.** With evidence from 2–3 and the PC-2 rows
    confirmed, set `reranker.enabled` / `enable_relevance` / `judge.enabled` /
    `threading.embedding_merge`. Each rides its own RPM bucket + stage budget; any failure
-   degrades-not-drops.
+   degrades-not-drops. **Also flip `llm.spotlight_evidence`** (C11 injection containment — fences
+   untrusted bodies as DATA across extractor + `ask` + judge; default-off pending exactly this
+   real-LLM eval). Confirm the EP-14 quality read-out doesn't regress with it on, and probe
+   `tests/fixtures/emails_injection.json` against the real LLM (the live half of the red-team set).
 5. **api-mode delivery (~1–2 weeks).** Configure the owner-only channel id + PAT (`auth_mode=api`);
    each run records delivered post-ids to the `delivered-posts` ledger. Let recipients react ✓/✗ over
    the window — this is the flywheel's fuel.
