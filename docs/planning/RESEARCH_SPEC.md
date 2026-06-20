@@ -6,6 +6,11 @@
 > thesis held, with C3 (transport) and C4 (the flywheel's recall claim) materially corrected,
 > and two new items added (see §5a). The A8/A11 *memos* are updated to research-verified v2.
 
+> **✅ Build decisions (2026-06-20)** → [`PROPOSAL.md`](PROPOSAL.md). Tier 0 (build now): **A**
+> facade parity (C1) + **B** injection defense (C11). Tier 1: **D** Mattermost bot (B1) —
+> *architecture decided: connect-out, per-user, no server*; **C** action loop (A1/C2) — **parked**.
+> Tier 2: **E** EWS Calendar (A9, read-side) + **F** scheduled queries (A6). Tier 3: **G** C4 (corp).
+
 > **Status:** draft v2 for review · **Date:** 2026-06-20 · **Scope:** the three product
 > surfaces — `InboxAPI`, the `actionpulse-mcp` MCP server, and the terminal (CLI + menu).
 >
@@ -117,6 +122,10 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 ## 3. Track A — Product
 
 ### A1 · The action loop  `[P0 · M · 🧪]`  ↔C2
+- **⏸ Parked (2026-06-20, [PROPOSAL](PROPOSAL.md)).** Deferred. When revived: build the
+  local-only subset first (`Done`≈dedup-suppression, `Snooze`≈carryover); `Send-to-task` is
+  outbound → a separate on-prem-only posture decision. C is the **prerequisite for the outbound
+  calendar features** (cancel/reschedule/propose/forward in E).
 - **Q.** Should the digest let you *act* on items (snooze, mark-done, create-task,
   draft-reply, delegate) instead of only reading them?
 - **Why.** Triage is the missing half of the loop; a read-only digest caps daily value
@@ -208,6 +217,10 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 - **Drafted v1.** → [`A8-positioning.md`](A8-positioning.md) (wedge identified; verify competitor specifics before external use).
 
 ### A9 · Source breadth — the next ingestion source  `[P1 · M · 🧪🟢]`
+- **✅ Decided: EWS Calendar next (2026-06-20, [PROPOSAL](PROPOSAL.md)).** Build the **read-side
+  now** (new meetings · in-body questions/actions · agenda summaries · collision detection ·
+  rank-by-attendee-seniority); the **write-side** (cancel/reschedule/propose-times/forward) rides
+  the parked action loop (C). Slack/Teams stay excluded (cloud-only → break no-egress).
 - **Q.** After EWS + Mattermost, which source adds the most digest value — calendar /
   meetings, Jira / tickets, Slack / Teams, or shared docs?
 - **Why.** Many high-value actions originate outside mail+chat (a decision owed in a
@@ -249,6 +262,11 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 ## 4. Track B — UX
 
 ### B1 · Mattermost bot / 2nd interaction surface  `[P0 · M · 🟢→🏢]`  ↔C1 ↔C3
+- **✅ Architecture decided (2026-06-20, [PROPOSAL](PROPOSAL.md)).** Build via **connect-out**:
+  a per-user local `actionpulse bot` daemon opens an **outbound** WebSocket to MM + replies via
+  REST — **no inbound server, no slash-command registration**. Identity = the user's PAT (posts as
+  self) or an optional dedicated bot account. Scales as **N independent per-user instances**
+  (never a shared bot). Runs corp-side (semantic `ask` is gateway-bound); needs **B/C11** first.
 - **Q.** What's the right interactive surface beyond the terminal — an MM bot /
   slash-commands, a TUI, a local web UI?
 - **Why.** The digest *arrives* in MM (any device) but every follow-up verb is at the

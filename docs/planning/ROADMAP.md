@@ -7,6 +7,8 @@
 >
 > **What to research before building next** (product/UX/architecture agenda) → [`RESEARCH_SPEC.md`](./RESEARCH_SPEC.md).
 >
+> **What we decided to build** (post-research, tiered, with the Mattermost-bot architecture) → [`PROPOSAL.md`](./PROPOSAL.md).
+>
 > **Source-of-truth map** (don't trust prose over code):
 > - Contracts / ADRs / pipeline → `digest-core/docs/ARCHITECTURE.md` (verify §13/§14 against code — they lag).
 > - Requirements / principles / unified data schema v3.0 → `docs/planning/BUSINESS_REQUIREMENTS.md`.
