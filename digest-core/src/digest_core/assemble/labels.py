@@ -170,6 +170,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "partial_generic_body": "This digest was produced in fallback mode (extractive).",
         "carryover_item": 'Awaiting you {days}d — "{subject}"',
         "pending_item": 'Reply needed {days}d — "{subject}"',
+        "meeting_overlap": "⚠ overlaps",
     },
     "ru": {
         "digest_header": "Дайджест действий",
@@ -229,6 +230,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "partial_generic_body": "Данный дайджест создан в резервном режиме (extractive fallback).",
         "carryover_item": "Ожидает вас {days}д — «{subject}»",
         "pending_item": "Нужен ответ {days}д — «{subject}»",
+        "meeting_overlap": "⚠ пересекается",
     },
 }
 
