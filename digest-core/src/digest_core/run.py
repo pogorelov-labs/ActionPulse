@@ -1371,6 +1371,62 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
         logger.warning("digest_store_enrich_failed", error=str(exc), trace_id=ctx.trace_id)
 
 
+def _enrich_digest_with_meetings(
+    ctx: RunContext, digest: Digest, normalized_messages: List[NormalizedMessage]
+) -> None:
+    """Append a deterministic "Meetings" section from the run's calendar events (E2).
+
+    Calendar events (``source='calendar'``, ingested via ``--sources calendar``) also flow
+    through the LLM extractor (in-body agenda actions land in the normal sections); this adds
+    a separate, no-LLM "Meetings" section so today's meetings surface *reliably* — even an
+    agenda-less meeting. Events are sorted by start time and capped. Non-fatal
+    (degrade-not-drop): any failure logs a warning and leaves the digest unchanged."""
+    import hashlib
+
+    events = [m for m in normalized_messages if getattr(m, "source", "") == "calendar"]
+    if not events:
+        return
+    try:
+        from digest_core.assemble.labels import MEETINGS, section_title
+        from digest_core.llm.schemas import Item, Section
+
+        try:
+            tz = ZoneInfo(ctx.config.time.user_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            tz = timezone.utc
+        language = ctx.config.report.language
+        cap = max(1, int(getattr(ctx.config.ews, "calendar_max_events", 100)))
+        events = sorted(events, key=lambda m: m.datetime_received)[:cap]
+
+        items: List[Item] = []
+        for m in events:
+            start = m.datetime_received
+            when = (start.astimezone(tz) if start.tzinfo else start).strftime("%H:%M")
+            subject = m.subject or "(no title)"
+            items.append(
+                Item(
+                    title=f"{subject} ({when})",
+                    evidence_id="meeting:"
+                    + hashlib.sha256(m.msg_id.encode("utf-8")).hexdigest()[:16],
+                    confidence=0.7,  # display threshold → renderers suppress the badge
+                    source_ref={
+                        "type": "meeting",
+                        "msg_id": m.msg_id,
+                        "conversation_id": m.conversation_id,
+                        "source": "calendar",
+                        "start": start.isoformat(),
+                    },
+                    source_subject=subject,
+                    source_from=m.from_name or m.sender_email or None,
+                )
+            )
+        digest.sections.append(Section(title=section_title(MEETINGS, language), items=items))
+        ctx.run_meta["meeting_items"] = len(items)
+        logger.info("digest_meetings_added", count=len(items), trace_id=ctx.trace_id)
+    except Exception as exc:  # noqa: BLE001 - degrade-not-drop: never fail the digest
+        logger.warning("digest_meetings_failed", error=str(exc), trace_id=ctx.trace_id)
+
+
 def _record_delivered_posts(ctx: RunContext, digest: Digest, receipt: Dict[str, Any]) -> None:
     """Record the post_id↔evidence map for the reactions flywheel (EP-15).
 
@@ -1641,6 +1697,11 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         # U4: items gain subject/author from the message behind their msg_id —
         # the artifact stays self-contained for the reader (no snapshot join).
         _enrich_items_from_messages(digest, normalized_messages)
+
+        # E2: append a deterministic "Meetings" section from the run's calendar events
+        # (source='calendar'), so today's meetings surface even without an extractable
+        # agenda action. No-op unless `--sources calendar` ingested events. Non-fatal.
+        _enrich_digest_with_meetings(ctx, digest, normalized_messages)
 
         # P3 memory pillar: append a store-derived "Open loops" section (cross-day
         # carryover). Opt-in (store.carryover) and non-fatal.
