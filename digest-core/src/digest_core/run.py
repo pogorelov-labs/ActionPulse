@@ -1379,15 +1379,16 @@ def _enrich_digest_with_meetings(
     Calendar events (``source='calendar'``, ingested via ``--sources calendar``) also flow
     through the LLM extractor (in-body agenda actions land in the normal sections); this adds
     a separate, no-LLM "Meetings" section so today's meetings surface *reliably* — even an
-    agenda-less meeting. Events are sorted by start time and capped. Non-fatal
-    (degrade-not-drop): any failure logs a warning and leaves the digest unchanged."""
+    agenda-less meeting. Events are sorted by start time and capped; overlapping meetings are
+    flagged (E3 collision detection). Non-fatal (degrade-not-drop): any failure logs a warning
+    and leaves the digest unchanged."""
     import hashlib
 
     events = [m for m in normalized_messages if getattr(m, "source", "") == "calendar"]
     if not events:
         return
     try:
-        from digest_core.assemble.labels import MEETINGS, section_title
+        from digest_core.assemble.labels import MEETINGS, report_strings, section_title
         from digest_core.llm.schemas import Item, Section
 
         try:
@@ -1395,34 +1396,62 @@ def _enrich_digest_with_meetings(
         except (ZoneInfoNotFoundError, ValueError):
             tz = timezone.utc
         language = ctx.config.report.language
+        overlap_label = report_strings(language)["meeting_overlap"]
         cap = max(1, int(getattr(ctx.config.ews, "calendar_max_events", 100)))
         events = sorted(events, key=lambda m: m.datetime_received)[:cap]
 
+        # Collision detection (E3): which events' time ranges overlap (half-open
+        # intersection; end falls back to start so a malformed/instant event never collides).
+        # n is a day's meetings → O(n²) is fine.
+        def _interval(m: NormalizedMessage):
+            s = m.datetime_received
+            return s, (getattr(m, "event_end", None) or s)
+
+        overlaps: Dict[int, List[int]] = {i: [] for i in range(len(events))}
+        for i in range(len(events)):
+            si, ei = _interval(events[i])
+            for j in range(i + 1, len(events)):
+                sj, ej = _interval(events[j])
+                if max(si, sj) < min(ei, ej):
+                    overlaps[i].append(j)
+                    overlaps[j].append(i)
+
         items: List[Item] = []
-        for m in events:
+        collisions = 0
+        for i, m in enumerate(events):
             start = m.datetime_received
             when = (start.astimezone(tz) if start.tzinfo else start).strftime("%H:%M")
             subject = m.subject or "(no title)"
+            title = f"{subject} ({when})"
+            ref: Dict[str, Any] = {
+                "type": "meeting",
+                "msg_id": m.msg_id,
+                "conversation_id": m.conversation_id,
+                "source": "calendar",
+                "start": start.isoformat(),
+            }
+            if overlaps[i]:
+                ref["overlaps"] = [events[k].subject or "(no title)" for k in overlaps[i]]
+                title = f"{title} {overlap_label}"
+                collisions += 1
             items.append(
                 Item(
-                    title=f"{subject} ({when})",
+                    title=title,
                     evidence_id="meeting:"
                     + hashlib.sha256(m.msg_id.encode("utf-8")).hexdigest()[:16],
                     confidence=0.7,  # display threshold → renderers suppress the badge
-                    source_ref={
-                        "type": "meeting",
-                        "msg_id": m.msg_id,
-                        "conversation_id": m.conversation_id,
-                        "source": "calendar",
-                        "start": start.isoformat(),
-                    },
+                    source_ref=ref,
                     source_subject=subject,
                     source_from=m.from_name or m.sender_email or None,
                 )
             )
         digest.sections.append(Section(title=section_title(MEETINGS, language), items=items))
         ctx.run_meta["meeting_items"] = len(items)
-        logger.info("digest_meetings_added", count=len(items), trace_id=ctx.trace_id)
+        if collisions:
+            ctx.run_meta["meeting_collisions"] = collisions
+        logger.info(
+            "digest_meetings_added", count=len(items), collisions=collisions, trace_id=ctx.trace_id
+        )
     except Exception as exc:  # noqa: BLE001 - degrade-not-drop: never fail the digest
         logger.warning("digest_meetings_failed", error=str(exc), trace_id=ctx.trace_id)
 

@@ -191,3 +191,40 @@ def test_meetings_section_skipped_when_no_calendar_events():
     digest = Digest(prompt_version="x", digest_date="2026-06-21", trace_id="t", sections=[])
     run._enrich_digest_with_meetings(ctx, digest, [])  # no calendar events
     assert digest.sections == [] and "meeting_items" not in ctx.run_meta
+
+
+def test_meetings_section_flags_collisions():
+    """E3: overlapping meetings get the ⚠ marker + source_ref['overlaps']; clear ones don't."""
+    from digest_core import run
+    from digest_core.ingest.ews import NormalizedMessage
+    from digest_core.llm.schemas import Digest
+
+    cfg = Config()
+    cfg.time.user_timezone = "UTC"
+    cfg.report.language = "en"
+    ctx = SimpleNamespace(config=cfg, run_meta={}, trace_id="t")
+    digest = Digest(prompt_version="x", digest_date="2026-06-21", trace_id="t", sections=[])
+
+    def _cal(uid, subject, h0, h1):
+        return NormalizedMessage(
+            msg_id=uid,
+            conversation_id=uid,
+            datetime_received=datetime(2026, 6, 21, h0, 0, tzinfo=timezone.utc),
+            event_end=datetime(2026, 6, 21, h1, 0, tzinfo=timezone.utc),
+            sender_email="o@corp",
+            subject=subject,
+            text_body="x",
+            source="calendar",
+        )
+
+    # A 09:00–10:00 and B 09:00–11:00 overlap; C 11:00–12:00 is clear (half-open: B ends as C starts).
+    messages = [_cal("a", "A", 9, 10), _cal("b", "B", 9, 11), _cal("c", "C", 11, 12)]
+    run._enrich_digest_with_meetings(ctx, digest, messages)
+
+    items = {i.source_subject: i for i in digest.sections[0].items}
+    assert "⚠ overlaps" in items["A"].title and "⚠ overlaps" in items["B"].title
+    assert "⚠ overlaps" not in items["C"].title
+    assert items["A"].source_ref["overlaps"] == ["B"]
+    assert items["B"].source_ref["overlaps"] == ["A"]
+    assert "overlaps" not in items["C"].source_ref
+    assert ctx.run_meta["meeting_collisions"] == 2

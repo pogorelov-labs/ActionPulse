@@ -123,6 +123,11 @@ class NormalizedMessage:
     #: hashes — and thus idempotency/replay — are byte-identical after adding it.
     mm_channel_type: Optional[str] = None
 
+    #: Calendar event END time (the ``calendar`` source only; ``None`` otherwise). Carried so
+    #: the Meetings section can flag overlapping meetings (E3 collision detection). kw-only,
+    #: default None, and — like ``source``/``mm_channel_type`` — NOT part of ``_content_sha256``.
+    event_end: Optional[datetime] = None
+
     def __init__(
         self,
         msg_id: str,
@@ -148,6 +153,7 @@ class NormalizedMessage:
         received_at: Optional[datetime] = None,
         source: str = "email",
         mm_channel_type: Optional[str] = None,
+        event_end: Optional[datetime] = None,
     ) -> None:
         sender_email = sender_email or sender or from_email
         to_recipients = list(to_recipients or to_emails or [])
@@ -177,6 +183,7 @@ class NormalizedMessage:
         object.__setattr__(self, "received_at", received_at)
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "mm_channel_type", mm_channel_type)
+        object.__setattr__(self, "event_end", event_end)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -778,6 +785,7 @@ class EWSIngest:
             text_body=body,
             to_recipients=attendees,
             source="calendar",
+            event_end=end,
         )
 
     # Note: Real EWS SyncFolderItems can be added later; MVP uses a timestamp

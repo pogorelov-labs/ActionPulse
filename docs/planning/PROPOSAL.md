@@ -126,8 +126,10 @@ account, **lenient**) wired through `build_adapter` + run.py (`--sources ews,cal
 flow through the normal pipeline (in-body actions extracted; events stored / searchable). Offline
 tests; live fetch is corp-only (ADR-012). **✅ E2 shipped — a deterministic "Meetings" section**
 (`_enrich_digest_with_meetings`): today's calendar events surfaced reliably (sorted by start,
-no LLM), with a new `meetings` section key (weight 2, after "My actions"). **Next (E3+):**
-**collision detection**, **agenda summarization** (corp/LLM), **seniority-ranking** (needs a title source).
+no LLM), with a new `meetings` section key (weight 2, after "My actions"). **✅ E3 shipped —
+collision detection**: `NormalizedMessage` carries `event_end`; overlapping meetings get a
+"⚠ overlaps" marker + `source_ref["overlaps"]` (half-open interval sweep). **Next (E4+):**
+**agenda summarization** (corp/LLM), **seniority-ranking** (needs a title source).
 
 The maintainer's calendar vision splits cleanly — **read/extract ships now; write/outbound rides
 the parked action loop (C):**
