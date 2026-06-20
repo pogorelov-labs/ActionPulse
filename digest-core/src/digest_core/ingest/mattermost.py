@@ -397,6 +397,20 @@ def _dm_counterparty_ids_from_name(channel: dict, owner_id: str) -> List[str]:
     return [p for p in parts if p != owner_id]
 
 
+def _is_self_dm(channel: dict, owner_id: str) -> bool:
+    """True iff a 1:1 DM ('D') whose member ids are BOTH the owner — the user's
+    notes-to-self channel (MM names it ``"<ownerid>__<ownerid>"``).
+
+    Decided from channel metadata alone (no API call): split ``name`` on ``'__'``
+    and require every id to equal ``owner_id``. A 'G' group-DM is never a self-DM
+    here (its name is an opaque hash; a one-member group is degenerate).
+    """
+    if channel.get("type") != "D" or not owner_id:
+        return False
+    parts = [p for p in (channel.get("name") or "").split("__") if p]
+    return bool(parts) and all(p == owner_id for p in parts)
+
+
 def _is_system_or_bot(post: dict) -> bool:
     """True for system posts (``type`` startswith "system_") and bot posts."""
     ptype = post.get("type") or ""
@@ -1237,10 +1251,22 @@ class MattermostSourceAdapter:
             Non-matching DM channels are NEVER paged for posts (allowlist-before-
             GET). An empty allowlist under 'selected' yields ``[]`` (effective OFF).
 
+        The owner's notes-to-self DM ('me↔me') is dropped FIRST unless
+        ``dm_include_self`` is set — it is personal scratch space, not
+        correspondence. (It already had no counterparty to match under 'selected';
+        this is what removes it from 'own_posts_only' / 'all' too.)
+
         Returns the subset of ``dm_channels`` to hand to the fetcher.
         """
         if dm_scope == "off" or not dm_channels:
             return []
+        if not self._config.dm_include_self:
+            kept = [ch for ch in dm_channels if not _is_self_dm(ch, owner_id)]
+            if len(kept) != len(dm_channels):
+                logger.info("Mattermost self-DM excluded", count=len(dm_channels) - len(kept))
+            dm_channels = kept
+            if not dm_channels:
+                return []
         if dm_scope in ("own_posts_only", "all"):
             return list(dm_channels)
 
