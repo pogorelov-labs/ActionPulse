@@ -352,6 +352,11 @@ corp-only; Mattermost is reachable everywhere. That shapes each instrument:
 ## 5. Track C — Architecture
 
 ### C1 · Facade parity + cross-surface contract test  `[P0 · S–M · 🟢]`
+- **✅ Shipped (2026-06-20).** `history` is now on `InboxAPI` (+ an MCP `history` tool); the CLI
+  keeps the store-free direct path by design. `tests/test_surface_parity.py` enforces
+  **InboxAPI ↔ MCP** verb parity (every verb is a tool and vice versa, `checkpoint` the one
+  documented exception) + history-on-all-surfaces — the durable drift guard. The metric (parity
+  test green; 0 undocumented retrieval verbs outside the facade) is met.
 - **Q.** Should *all* retrieval go through `InboxAPI`, with MCP/CLI parity enforced by a test?
 - **Why.** `history` lives outside the facade; reactions/flywheel and `explain` are
   CLI-only — drift that compounds as surfaces grow (gap #4 elsewhere, but here it's debt).

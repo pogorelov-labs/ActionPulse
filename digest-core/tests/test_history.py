@@ -67,3 +67,19 @@ def test_no_query_lists_all_and_limit(tmp_path):
 def test_empty_or_missing_dir(tmp_path):
     assert search_history(tmp_path) == []  # no artifacts
     assert search_history(tmp_path / "nope") == []  # missing dir
+
+
+def test_inbox_api_history_delegates_to_search_history(tmp_path):
+    """InboxAPI.history (the facade entry MCP / a bot use) delegates to search_history.
+
+    history is store-free, so a dummy store is fine — it exercises the delegation + the
+    lazy imports without needing the encrypted store extra.
+    """
+    from digest_core.api.inbox import InboxAPI
+    from digest_core.config import Config
+
+    _seed(tmp_path)
+    api = InboxAPI(store=object(), config=Config())
+    hits = api.history("budget", out_dir=str(tmp_path))
+    assert [h.digest_date for h in hits] == ["2026-06-12", "2026-06-10"]
+    assert all("budget" in h.item.title.lower() for h in hits)

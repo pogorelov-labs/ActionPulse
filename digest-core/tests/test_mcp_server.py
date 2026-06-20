@@ -155,8 +155,9 @@ def test_build_app_registers_read_reason_and_source_tools():
     app = server._build_app()
     tools = {t.name for t in asyncio.run(app.list_tools())}
     assert {"search", "ask", "compare", "open_loops", "pending", "get_message"} <= tools
+    assert "history" in tools  # cross-digest history is a first-class tool (C1 facade parity)
     assert {"list_containers", "get_reactions"} <= tools  # corp source reads always on
-    assert len(tools) == 19  # 17 read/reason + 2 source; maintenance + fetch OFF
+    assert len(tools) == 20  # 18 read/reason + 2 source; maintenance + fetch OFF
     assert "sweep_ttl" not in tools and "fetch_source" not in tools
 
 
@@ -169,4 +170,4 @@ def test_gated_tools_only_behind_flags(monkeypatch):
     app = server._build_app()
     tools = {t.name for t in asyncio.run(app.list_tools())}
     assert {"sweep_ttl", "embed_backlog", "reembed", "vacuum", "fetch_source"} <= tools
-    assert len(tools) == 24  # 19 + 4 maintenance + fetch_source
+    assert len(tools) == 25  # 20 + 4 maintenance + fetch_source
