@@ -25,23 +25,37 @@ digest they fully own — no vendor in the data path.
 
 ## The wedge — differentiators rivals can't easily copy
 
-These are **structural** (architecture + principles + business model), not features a
-competitor toggles on:
+> **Research-verified v2** (see [`research/A8-competitive-landscape.md`](research/A8-competitive-landscape.md)
+> + [`research/SYNTHESIS.md`](research/SYNTHESIS.md)). **Lead with ① + ② together** — the
+> pair no incumbent can match without changing its business model. ④ and ⑤ are *reinforcing,
+> not standalone* (reframed below). The generic "AI digest" is being commoditized (Copilot
+> *Scheduled Prompts*, Gemini *Daily Brief*) — so the wedge is no-egress + evidence-tracing,
+> **not** "we do digests."
 
-1. **Runs inside the perimeter, no egress by default.** EWS *and* the LLM gateway are
-   corp-only; nothing leaves the network. A cloud SaaS structurally *cannot* match this —
-   their model is to hold your data. This is the moat.
-2. **Evidence-traced, extract-over-generate.** Every item cites a verbatim evidence span
-   + source ref (principle P2); weak evidence is badged; a citation gate guards recall.
-   Generative summarizers can't retrofit verifiable provenance — it's a design principle
-   (P1/P2), not a setting.
+1. **Runs inside the perimeter, no egress by default** *(lead).* EWS *and* the LLM gateway
+   are corp-only; nothing leaves the network. A cloud SaaS structurally *cannot* match this.
+   Research reinforces it: even the strongest enterprise option — **M365 Copilot** — keeps
+   mail in the *vendor's* cloud, can call LLMs across regions, excludes Anthropic models from
+   the EU Data Boundary, and its 2026 **Flex Routing** (default-on) lets EU inferencing leave
+   the boundary under load. "Stays in your network" is genuinely distinct.
+2. **Evidence-traced, extract-over-generate** *(lead).* Every item cites a verbatim evidence
+   span + source ref (P2); weak evidence is badged. *Every* competitor ships a **generative
+   summary** with hallucination disclaimers (Gemini's are even prompt-injectable); the
+   dominant complaint across tools is trust failure (silent omission, fabrication) — the exact
+   ground P1/P2 owns. Frame as **per-item verbatim evidence + extract-not-generate** (Copilot
+   Chat already shows grounding citations, so "citations" alone isn't unique).
 3. **Native to the actual corp stack.** On-prem **Exchange (EWS)** + **self-hosted
-   Mattermost** (channels + consent-gated DMs) — the systems cloud tools don't touch.
-4. **Privacy by construction, at depth.** DM redaction *at rest*, a consent ladder,
-   ≤7-day retention, secrets-ENV-only, and a per-endpoint data-handling discipline
-   (PC-2). A compliance-grade posture, not a privacy-policy promise.
-5. **Open, inspectable, self-hostable.** You own the code, the prompts, and the data;
-   no lock-in. (Assumes the [A11](A11-business-model.md) M1→M2 path.)
+   Mattermost** — systems cloud tools don't touch. A niche moat (of incumbent *disinterest*,
+   durable while the niche stays small), not a technical impossibility.
+4. **Privacy by construction — but only as *architecture*** *(reinforcing).* "We don't train
+   on your data" is now table-stakes (every vendor claims it). This differentiates **only**
+   when expressed as the constructive facts — no egress, DM-redaction-at-rest, evidence-only
+   output — never as a policy promise. *Bonus, per [C10 research](research/C10-dpia-regulatory.md):
+   the no-egress posture is also a compliance asset (satisfies GDPR Ch. V + Russia 152-FZ).*
+5. **Open / self-hostable — but only in *combination*** *(reinforcing).* OSS self-host is
+   matched by hobby tools (Gmail-only) and, for support, by Rasa. The edge is *self-hostable
+   AND enterprise-grade AND evidence-traced AND Exchange-native* — the combination, not
+   openness alone. (Assumes the [A11](A11-business-model.md) M1→M2 path.)
 
 ## Competitive frame (category-level)
 
@@ -54,8 +68,20 @@ competitor toggles on:
 
 **Teardown axes that matter:** deployment (cloud vs on-prem/air-gap) · data egress
 (does your mail leave?) · source coverage (on-prem EWS? Mattermost?) · trust model
-(evidence-traced vs generative) · openness/ownership. ActionPulse is the only entry
-that is on-prem + no-egress + evidence-traced + Mattermost-native + self-hostable.
+(evidence-traced vs generative) · openness/ownership.
+
+**The market structure (research finding):** it bifurcates cleanly into **cloud
+personal-productivity** tools (Superhuman, Shortwave, Cora, Gemini, Copilot — *all* transit
+your mail to an LLM vendor) and **on-prem *customer-support* automation** platforms (Cognigy,
+Kore.ai, IBM watsonx, eGain — none do a personal action-digest). The only self-hostable
+*personal* tools are Gmail-only hobby projects. So ActionPulse's intersection —
+**privacy-first, evidence-traced, personal action-digest on on-prem Exchange + Mattermost** —
+is **unserved**. *Claim the unserved intersection*, not a bare superlative.
+
+> **Honesty guardrails for the pitch** (from the research): do **not** claim "the only tool
+> that doesn't train on your data" (false — everyone claims it) or "the only on-prem email AI"
+> (false — support platforms exist). The defensible claim is the *combination no one ships*.
+> The Mattermost+EWS-uniqueness claim is "no evidence found," not proven — don't over-state it.
 
 ## What we deliberately do NOT do (anti-positioning)
 

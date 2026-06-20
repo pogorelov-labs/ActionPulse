@@ -38,6 +38,14 @@ is owed. Today it is de-facto **M1** (one maintainer, one corp).
 
 ## Recommendation
 
+> **Research-verified v2** (see [`research/A11-market-and-model.md`](research/A11-market-and-model.md)
+> + [`research/SYNTHESIS.md`](research/SYNTHESIS.md)). The evidence **supports the path**, with
+> three refinements baked in below: (a) scope **M2 as source-available / inspectable + low-burden**,
+> not "build a community"; (b) **decide the monetization stance *before* publishing** — every recent
+> *relicense-to-monetize* (HashiCorp→OpenTofu, Redis→Valkey, Elastic) triggered a fork and lasting
+> distrust with no proven revenue upside; (c) set M2's expectation as **validation, not revenue** —
+> the people *with budget* buy on-prem *platforms* (served by funded vendors), not a solo digest.
+
 **M1 now → a deliberate, low-cost path to M2 (OSS) as the next step → M3 explicitly
 deferred** (not pursued unless an external pull appears).
 
@@ -50,7 +58,11 @@ deferred** (not pursued unless an external pull appears).
   without a sales motion or a custody liability.
 - **Why defer M3:** commercial is a *different commitment* — multi-tenant architecture
   (C6), enterprise sales, certification (C10 at depth), SLAs. Take it on only when there
-  is **demonstrated external demand**, which M2 is the cheapest way to discover.
+  is **demonstrated external demand**, which M2 is the cheapest way to discover. **Guardrail
+  (research):** if M3 ever activates, ship it as a **separate commercial edition kept
+  proprietary from inception** — *never* a retroactive relicense of the OSS core. The public
+  record is unanimous: HashiCorp, Redis, and Elastic all forked, and even Elastic's *reversal*
+  didn't undo the fork.
 
 ## What this decision gates
 

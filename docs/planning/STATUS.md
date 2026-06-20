@@ -136,7 +136,10 @@ share one unlock. In order:
 4. **Harvest → calibrate** — `reactions harvest --gold-out gold.jsonl` → `eval-gold --reactions
    gold.jsonl` → `eval-calibrate` → set `recall_floor > 0` and flip `reranker`/`judge`/relevance.
    (The harvest→gold bridge + a synthetic end-to-end test landed offline, so this step is now pure
-   execution — no code to write mid-session.)
+   execution — no code to write mid-session.) **Caveat (C4 research):** reactions are
+   *recall-blind* (they only land on delivered items), so a *defensible* `recall_floor` also needs
+   a periodic **human-audited random sample** — calibrating on thumbs alone over-states recall.
+   See [`research/SYNTHESIS.md`](research/SYNTHESIS.md) §3.
 
 That sequence moves Extract-&-Trust ~20→70, Remember-&-Retrieve ~40→80, Deliver ~35→75 — i.e. it
 turns the trust promise from *asserted* to *measured*, with **zero new features**. The highest-value

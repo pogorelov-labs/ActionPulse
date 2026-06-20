@@ -141,6 +141,10 @@ only missing link is **fuel**: one corp api-delivery window (Phase B) + the cali
   blocked on writing.
 - **Calibration chain:** api-delivery-live → ledger → harvest → `eval-gold` → `eval-calibrate` →
   `recall_floor > 0` → judge flip (Phase B → C). EP-14⑦ seeds the κ floor EP-15 needs.
+  **C4-research caveat:** reactions calibrate *precision/the judge* but are **recall-blind**
+  (survivorship — only delivered items get thumbs); a defensible recall floor needs a separate
+  **human-audited random sample** + a Wilson/Clopper–Pearson lower bound, and a prevalence-aware
+  judge κ. See [`RESEARCH_SPEC.md`](RESEARCH_SPEC.md) §C4 + [`research/SYNTHESIS.md`](research/SYNTHESIS.md).
 - **Corp-network-only** (cannot be done offline): live ingest proof, EN "production-grade", store
   live-validation, the api-delivery window. Everything else in Phases A/C/D is offline.
 - **Independent of the gate:** the history browser, all of Stream 7/8 Phase-A items, and the
