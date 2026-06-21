@@ -282,10 +282,13 @@ class HTMLNormalizer:
                 if headers or rows:
                     markdown_lines = []
 
+                    truncated_cells = 0
+
                     # Add header
                     if headers:
                         # Limit column width to 30 chars
                         headers_truncated = [h[:30] for h in headers]
+                        truncated_cells += sum(1 for h in headers if len(h) > 30)
                         markdown_lines.append("| " + " | ".join(headers_truncated) + " |")
                         markdown_lines.append(
                             "|" + "|".join(["-" * (len(h) + 2) for h in headers_truncated]) + "|"
@@ -300,10 +303,13 @@ class HTMLNormalizer:
 
                         # Truncate cells
                         row_truncated = [cell[:30] for cell in row]
+                        truncated_cells += sum(1 for cell in row if len(cell) > 30)
                         markdown_lines.append("| " + " | ".join(row_truncated) + " |")
 
                     if len(rows) > 10:
                         markdown_lines.append(f"... ({len(rows) - 10} more rows)")
+                    if truncated_cells:
+                        logger.debug("html_table_cells_truncated", cells=truncated_cells, width=30)
 
                     markdown_text = "\n".join(markdown_lines) + "\n"
                     table.replace_with(soup.new_string(markdown_text))

@@ -1398,7 +1398,17 @@ def _enrich_digest_with_meetings(
         language = ctx.config.report.language
         overlap_label = report_strings(language)["meeting_overlap"]
         cap = max(1, int(getattr(ctx.config.ews, "calendar_max_events", 100)))
-        events = sorted(events, key=lambda m: m.datetime_received)[:cap]
+        events_sorted = sorted(events, key=lambda m: m.datetime_received)
+        if len(events_sorted) > cap:
+            ctx.run_meta["meeting_events_dropped"] = len(events_sorted) - cap
+            logger.warning(
+                "digest_meetings_capped",
+                total=len(events_sorted),
+                kept=cap,
+                dropped=len(events_sorted) - cap,
+                trace_id=ctx.trace_id,
+            )
+        events = events_sorted[:cap]
 
         # Collision detection (E3): which events' time ranges overlap (half-open
         # intersection; end falls back to start so a malformed/instant event never collides).

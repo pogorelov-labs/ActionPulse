@@ -433,15 +433,14 @@ def _dm_edit_partners(console: Console, allowlist: list[str]) -> None:
             if not partners:
                 console.print("  [ap.dim]Nothing to remove.[/]")
                 continue
-            options = [(p, p) for p in partners] + [("__cancel__", "Cancel")]
-            picked = choose(
-                "Remove which partner?",
-                options,
-                default_index=len(options) - 1,
-                console=console,
-                cancel_value="__cancel__",
+            # Paged: a long allowlist must not exceed the 1–9 quick-select cap
+            # (§5.2) — reuse the reader's paging helper (as cli.py does).
+            from digest_core.ui.reader import _paged_choose
+
+            picked = _paged_choose(
+                console, "Remove which partner?", [(p, p) for p in partners], back_label="Cancel"
             )
-            if picked == "__cancel__":
+            if picked is None:
                 continue
             partners = [p for p in partners if p != picked]
             update_mm_source_dm(CONFIG_USER_PATH, dm_allowlist=partners)

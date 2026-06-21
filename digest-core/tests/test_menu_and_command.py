@@ -569,3 +569,23 @@ class TestMmDmMenuScope:
         assert block["dm_consent_acknowledged"] is True
         assert block["dm_consent_acknowledged_at"] is not None
         MattermostSourceConfig(**block)  # loadable
+
+    def test_remove_partner_pages_long_allowlist(self, monkeypatch):
+        # Regression for the >9 crash class (#196): removing a partner from a long
+        # allowlist must page — never hand choose() more than 9 options. Capturing
+        # reader.choose (used by _paged_choose) also fails if someone reverts to the
+        # bare choose() (then `seen` stays empty).
+        from digest_core.ui.menu import _dm_edit_partners
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        outer = iter(["remove", "back"])  # edit-partners menu: pick remove, then back
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(outer, "back"))
+        seen = []
+
+        def fake_reader_choose(label, options, **k):
+            seen.append(len(options))
+            return "__back__"  # back out of the paged remove list
+
+        monkeypatch.setattr("digest_core.ui.reader.choose", fake_reader_choose)
+        _dm_edit_partners(self._config(), [f"@u{i}" for i in range(12)])
+        assert seen and all(n <= 9 for n in seen)  # paged; never exceeded the quick-select cap
