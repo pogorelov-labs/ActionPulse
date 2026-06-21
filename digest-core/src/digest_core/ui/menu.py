@@ -79,6 +79,7 @@ class RunChoice:
     from_date: str = "today"  # "today" or YYYY-MM-DD
     window: str = "calendar_day"  # calendar_day | rolling_24h
     force: bool = False
+    dry: bool = False  # "Preview" — ingest+normalize only, no LLM/assemble/deliver
 
 
 _WINDOW_WORDS = {"calendar_day": "calendar day", "rolling_24h": "rolling 24h"}
@@ -150,11 +151,12 @@ def choose_run_options(console: Console, last: Optional[RunChoice] = None) -> Op
     """The U3 run selector: one menu, smart defaults, Esc backs out (never
     runs). Returns the chosen params, or None for "back"."""
     options = [
-        ("today", "Today (calendar day)"),
-        ("24h", "Today (rolling 24h window)"),
+        ("today", "Today — fetch & deliver"),
+        ("24h", "Today (rolling 24h) — fetch & deliver"),
         ("yesterday", f"Yesterday ({_yesterday()})"),
         ("date", "Pick a date…"),
-        ("force", "Re-run today (--force, bypass the idempotency skip)"),
+        ("preview", "Preview today — fetch only, nothing delivered"),
+        ("force", "Re-run today — rebuild even if nothing changed"),
     ]
     if last is not None:
         options.append(("last", _last_run_label(last)))
@@ -175,6 +177,8 @@ def choose_run_options(console: Console, last: Optional[RunChoice] = None) -> Op
         return RunChoice(window="rolling_24h")
     if selected == "yesterday":
         return RunChoice(from_date=_yesterday())
+    if selected == "preview":
+        return RunChoice(dry=True)
     if selected == "force":
         return RunChoice(force=True)
     if selected == "last":
@@ -520,7 +524,7 @@ def _settings_menu(console: Console, on_settings: Callable[[], None]) -> None:
             "Settings & tools",
             [
                 ("setup", "Run the setup wizard"),
-                ("mm_dm", "Mattermost DMs — scope · partners"),
+                ("mm_dm", "Mattermost DMs — choose whose to include"),
                 ("mcp", "MCP server — register into AI coding CLIs"),
                 ("maintenance", "Maintenance — disk usage · cleanup · logging"),
                 ("config", "Show current config (masked)"),
@@ -565,19 +569,18 @@ def _main_menu_options(store_enabled: bool) -> list[tuple[str, str]]:
     Search/Ask appear ONLY when the encrypted store is enabled — they are
     meaningless without it, and a dead row would mislead."""
     options = [
-        ("run", "Run digest — pick period, full pipeline + delivery"),
-        ("read", "Read digest — topics · authors · quotes"),
-        ("history", "History — search across past digests"),
+        ("run", "Run digest — choose a day, then fetch & deliver"),
+        ("read", "Read digest — browse the latest, with source quotes"),
+        ("history", "Past digests — search what was delivered before"),
     ]
     if store_enabled:
         options += [
-            ("search", "Search messages — keyword · semantic · hybrid"),
-            ("ask", "Ask your inbox — grounded, cited answer (RAG)"),
+            ("search", "Search messages — find any email or chat"),
+            ("ask", "Ask your inbox — a cited answer from your messages"),
         ]
     options += [
-        ("dry", "Dry run — ingest only, no LLM"),
-        ("diagnose", "Diagnose — check environment & config"),
-        ("settings", "Settings & tools — setup · Mattermost DMs · MCP · maintenance"),
+        ("diagnose", "Diagnose — check your setup & connections"),
+        ("settings", "Settings & tools — setup · DMs · MCP · cleanup"),
         ("quit", "Quit"),
     ]
     return options
@@ -646,6 +649,11 @@ def run_menu(
                 run_choice = choose_run_options(out, last=load_last_run())
                 if run_choice is None:
                     continue  # backed out — straight back to the menu
+                if run_choice.dry:
+                    # Preview: ingest+normalize only — nothing delivered, no artifact
+                    # to read, and not persisted as "last run".
+                    on_run(True, None)
+                    continue
                 on_run(False, run_choice)
                 # Persist only an accepted, completed-without-crash choice.
                 save_last_run(run_choice)
@@ -675,8 +683,6 @@ def run_menu(
                 # drill-down inside it handles navigation.
                 query = _prompt_query(out, "History — keyword (Enter = browse all)")
                 on_history(query or "")
-            elif choice == "dry":
-                on_run(True, None)
             elif choice == "diagnose":
                 on_diagnose()
             elif choice == "settings":
@@ -686,8 +692,8 @@ def run_menu(
             out.print("\n[ap.warn]⚠ Interrupted — back to menu.[/]")
         except Exception as exc:  # noqa: BLE001 - keep the menu alive on action errors
             out.print(f"[ap.err]✗[/] {exc}")
-            # U7: a failed run leaves telemetry behind — offer the diagnosis.
-            if choice in ("run", "dry") and on_explain is not None:
+            # U7: a failed run (incl. a Preview) leaves telemetry behind — offer the diagnosis.
+            if choice == "run" and on_explain is not None:
                 follow = choose(
                     "Ask the LLM what went wrong?",
                     [("explain", "Explain it now (one LLM call)"), ("menu", "Back to the menu")],

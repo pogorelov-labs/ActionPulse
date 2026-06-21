@@ -90,12 +90,24 @@ class TestRunMenu:
         monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
         (tmp_path / "env").write_text("EWS_USER_UPN=ivan@corp.ru\nLLM_TOKEN=tok-abcdef123456\n")
         calls = {"run": [], "diag": 0, "settings": 0, "read": []}
-        # "run" opens the U3 submenu, then the post-run "read now?" offer.
-        # "settings" now opens the Settings & tools submenu — pick "setup"
-        # (→ on_settings), then "back" returns to the main menu.
+        # "run"→"today" then the post-run "read now?" offer; a second "run"→"preview"
+        # exercises the dry path (Dry run now lives in the Run selector, not top-level).
+        # "settings" opens the Settings & tools submenu — pick "setup" (→ on_settings),
+        # then "back" returns to the main menu.
         self._scripted(
             monkeypatch,
-            ["run", "today", "menu", "dry", "diagnose", "settings", "setup", "back", "quit"],
+            [
+                "run",
+                "today",
+                "menu",
+                "run",
+                "preview",
+                "diagnose",
+                "settings",
+                "setup",
+                "back",
+                "quit",
+            ],
         )
         code = run_menu(
             on_run=lambda dry, choice: calls["run"].append((dry, choice)),
@@ -105,7 +117,10 @@ class TestRunMenu:
             console=_console(),
         )
         assert code == 0
-        assert calls["run"] == [(False, RunChoice()), (True, None)]  # run then dry
+        assert calls["run"] == [
+            (False, RunChoice()),
+            (True, None),
+        ]  # run (today) then preview (dry)
         assert calls["diag"] == 1
         assert calls["settings"] == 1
         assert calls["read"] == []  # the post-run offer was declined
@@ -375,6 +390,7 @@ class TestChooseRunOptions:
         cases = {
             "today": RunChoice(),
             "24h": RunChoice(window="rolling_24h"),
+            "preview": RunChoice(dry=True),
             "force": RunChoice(force=True),
             "back": None,
         }
