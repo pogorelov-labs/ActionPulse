@@ -605,3 +605,42 @@ class TestMmDmMenuScope:
         monkeypatch.setattr("digest_core.ui.reader.choose", fake_reader_choose)
         _dm_edit_partners(self._config(), [f"@u{i}" for i in range(12)])
         assert seen and all(n <= 9 for n in seen)  # paged; never exceeded the quick-select cap
+
+
+class TestStoreMenu:
+    """The Message store submenu (Settings & tools → Message store)."""
+
+    def test_status_renders_stats(self, monkeypatch):
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(
+            stats=lambda: {
+                "messages": 5,
+                "by_source": {"ews": 5},
+                "chunks": 10,
+                "embeddings": 10,
+                "oldest": "2026-06-01",
+                "newest": "2026-06-21",
+            },
+            config=SimpleNamespace(resolved_db_path=lambda: "/tmp/nope.db"),
+            close=lambda: None,
+        )
+        monkeypatch.setattr(menu_mod, "_open_store_for_menu", lambda con: fake)
+        actions = iter(["status", "back"])
+        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(actions, "back"))
+        monkeypatch.setattr(menu_mod.Console, "input", lambda self, *a, **k: "", raising=False)
+        menu_mod._store_menu(_console())  # status path runs without raising
+
+    def test_store_row_gated_on_store_enabled(self, monkeypatch):
+        # The Message store row appears under Settings & tools only when the store is on.
+        seen = {}
+
+        def fake_choose(label, options, **k):
+            seen["keys"] = [key for key, _ in options]
+            return "back"
+
+        monkeypatch.setattr(menu_mod, "choose", fake_choose)
+        menu_mod._settings_menu(_console(), lambda: None, store_enabled=False)
+        assert "store" not in seen["keys"]
+        menu_mod._settings_menu(_console(), lambda: None, store_enabled=True)
+        assert "store" in seen["keys"]

@@ -1,16 +1,16 @@
 """Interactive launcher menu (TERMINAL_DESIGN.md §5, roadmap follow-up).
 
 `actionpulse` with no subcommand opens this menu on a TTY — Run / Read /
-History / Dry-run / Diagnose / Settings & tools / Quit — built on the §5.2
+Past digests / Diagnose / Settings & tools / Quit — built on the §5.2
 arrow-key selector. To stay within the 1–9 quick-select invariant the
-lower-frequency actions (setup wizard, Mattermost DMs, MCP, maintenance,
-show-config) live under the "Settings & tools" submenu. Each action calls the
-same code paths as the corresponding subcommand; the menu loops until Quit.
-Non-TTY callers never reach here (the CLI prints help instead), so scripted
-use is unaffected.
+lower-frequency actions (setup wizard, Mattermost DMs, MCP, message store
+[when on], maintenance, show-config) live under the "Settings & tools"
+submenu. Each action calls the same code paths as the corresponding
+subcommand; the menu loops until Quit. Non-TTY callers never reach here (the
+CLI prints help instead), so scripted use is unaffected.
 
-"Run digest" opens ONE follow-up selector (U3): the daily time-period
-decision (today / rolling 24h / yesterday / a date / --force / repeat last)
+"Run digest" opens ONE follow-up selector (U3): the daily time-period decision
+(today / rolling 24h / yesterday / a date / preview / re-run / repeat last)
 — smart defaults, no interrogation; Esc backs out without running anything.
 The last accepted choice persists to ~/.config/actionpulse/last_run.json.
 """
@@ -514,23 +514,152 @@ def _mcp_menu(console: Console) -> None:
     offer_install(console)
 
 
-def _settings_menu(console: Console, on_settings: Callable[[], None]) -> None:
-    """Settings & tools submenu — keeps the main menu inside the 1–9 quick-select
-    invariant (§5.2). Hosts the lower-frequency actions: run the setup wizard ·
-    edit Mattermost DM scope/partners · register the MCP server · maintenance ·
-    show the current config. Each row reuses the existing screen/callback."""
+def _open_store_for_menu(console: Console):
+    """Open the message store for an in-menu action, or print why-not and return
+    None — never exits (the menu must stay alive). Mirrors `cli._open_store_or_exit`
+    without the `typer.Exit`."""
+    from digest_core.config import Config
+    from digest_core.store import HAS_SQLCIPHER, INSTALL_HINT, MessageStore, StoreError
+
+    cfg = Config().store
+    if not HAS_SQLCIPHER:
+        console.print(f"  [ap.warn]⚠[/] {INSTALL_HINT}")
+        return None
+    if not cfg.enabled:
+        console.print(
+            "  [ap.warn]⚠[/] Store is off — enable it via Settings → Run the setup wizard."
+        )
+        return None
+    try:
+        return MessageStore.open(cfg)
+    except (StoreError, ValueError) as exc:
+        console.print(f"  [ap.err]✗[/] {exc}")
+        return None
+
+
+def _store_status(console: Console) -> None:
+    """Read-only store stats (messages by source, chunks/embeddings, window, size)."""
+    from digest_core import maintenance
+
+    store = _open_store_for_menu(console)
+    if store is None:
+        return
+    try:
+        st = store.stats()
+        db_path = Path(store.config.resolved_db_path())
+        size = db_path.stat().st_size if db_path.exists() else 0
+    finally:
+        store.close()
+    by_source = ", ".join(f"{k}={v}" for k, v in st["by_source"].items()) or "—"
+    console.print(f"  [ap.dim]messages[/]   {st['messages']}  ({by_source})")
+    console.print(f"  [ap.dim]chunks[/]     {st['chunks']}")
+    console.print(f"  [ap.dim]embeddings[/] {st['embeddings']}")
+    console.print(f"  [ap.dim]window[/]     {st['oldest'] or '—'} … {st['newest'] or '—'}")
+    console.print(f"  [ap.dim]db size[/]    {maintenance.format_bytes(size)}  [ap.dim]{db_path}[/]")
+
+
+def _store_reembed(console: Console) -> None:
+    """Fill the embedding backlog (needs the corp gateway; degrades with a message)."""
+    from digest_core.api import InboxAPI
+    from digest_core.config import Config
+
+    store = _open_store_for_menu(console)
+    if store is None:
+        return
+    api = InboxAPI(store, Config())  # owns the embeddings wiring; api.close() closes the store
+    try:
+        with console.status("[ap.accent]Embedding the backlog (corp network)…"):
+            result = api.reembed(force=False)
+        console.print(
+            f"  [ap.ok]✓[/] Embedded {result['embedded']} chunk(s);"
+            f" {result['pending']} still pending."
+        )
+    except Exception as exc:  # noqa: BLE001 — the gateway is corp-only; report, don't crash
+        console.print(f"  [ap.err]✗[/] Re-embed failed: {exc}")
+    finally:
+        api.close()
+
+
+def _store_purge(console: Console) -> None:
+    """Apply the retention TTL now (default-No confirm), then vacuum."""
+    from rich.prompt import Confirm
+
+    store = _open_store_for_menu(console)
+    if store is None:
+        return
+    try:
+        days = store.config.ttl_days
+        if Confirm.ask(
+            f"[ap.accent.bold]Delete store messages older than {days} days?[/]", default=False
+        ):
+            deleted = store.sweep_ttl(days)
+            store.vacuum()
+            console.print(f"  [ap.ok]✓[/] Purged {deleted} message(s) older than {days} days.")
+        else:
+            console.print("  [ap.dim]Cancelled.[/]")
+    finally:
+        store.close()
+
+
+def _store_menu(console: Console) -> None:
+    """Message store submenu: status · re-embed (corp) · purge expired. Shown only
+    when the store is enabled; each action opens the store fresh and
+    degrades-not-crashes if the driver/key is missing."""
     while True:
         action = choose(
-            "Settings & tools",
+            "Message store",
             [
-                ("setup", "Run the setup wizard"),
-                ("mm_dm", "Mattermost DMs — choose whose to include"),
-                ("mcp", "MCP server — register into AI coding CLIs"),
-                ("maintenance", "Maintenance — disk usage · cleanup · logging"),
-                ("config", "Show current config (masked)"),
+                ("status", "Status — messages · chunks · embeddings · size"),
+                ("reembed", "Re-embed — fill the embedding backlog (corp network)"),
+                ("purge", "Purge — delete messages past the retention window"),
                 ("back", "Back"),
             ],
-            default_index=5,
+            default_index=3,
+            console=console,
+            cancel_value="back",
+        )
+        if action == "back":
+            return
+        try:
+            if action == "status":
+                _store_status(console)
+            elif action == "reembed":
+                _store_reembed(console)
+            elif action == "purge":
+                _store_purge(console)
+        except KeyboardInterrupt:
+            console.print("\n[ap.warn]⚠ Interrupted — back to the store menu.[/]")
+        except Exception as exc:  # noqa: BLE001 - keep the submenu alive on errors
+            console.print(f"  [ap.err]✗[/] {exc}")
+        console.print()
+        try:
+            console.input("[ap.dim]Enter — back to the store menu …[/]")
+        except (EOFError, KeyboardInterrupt):
+            return
+
+
+def _settings_menu(
+    console: Console, on_settings: Callable[[], None], store_enabled: bool = False
+) -> None:
+    """Settings & tools submenu — keeps the main menu inside the 1–9 quick-select
+    invariant (§5.2). Hosts the lower-frequency actions: run the setup wizard ·
+    edit Mattermost DM scope/partners · register the MCP server · (when the store
+    is on) manage the message store · maintenance · show config. Each row reuses
+    the existing screen/callback."""
+    while True:
+        rows = [
+            ("setup", "Run the setup wizard"),
+            ("mm_dm", "Mattermost DMs — choose whose to include"),
+            ("mcp", "MCP server — register into AI coding CLIs"),
+            ("maintenance", "Maintenance — disk usage · cleanup · logging"),
+        ]
+        if store_enabled:
+            rows.append(("store", "Message store — status · re-embed · purge"))
+        rows += [("config", "Show current config (masked)"), ("back", "Back")]
+        action = choose(
+            "Settings & tools",
+            rows,
+            default_index=len(rows) - 1,
             console=console,
             cancel_value="back",
         )
@@ -542,6 +671,9 @@ def _settings_menu(console: Console, on_settings: Callable[[], None]) -> None:
                 continue  # has its own loop — no pause
             if action == "maintenance":
                 _maintenance(console)
+                continue  # has its own loop — no pause
+            if action == "store":
+                _store_menu(console)
                 continue  # has its own loop — no pause
             if action == "setup":
                 on_settings()
@@ -686,7 +818,7 @@ def run_menu(
             elif choice == "diagnose":
                 on_diagnose()
             elif choice == "settings":
-                _settings_menu(out, on_settings)
+                _settings_menu(out, on_settings, store_enabled=store_enabled)
                 continue  # the submenu has its own loop + pauses
         except KeyboardInterrupt:
             out.print("\n[ap.warn]⚠ Interrupted — back to menu.[/]")
