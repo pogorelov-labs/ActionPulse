@@ -622,16 +622,6 @@ class MattermostSourceConfig(BaseModel):
             "OFF (graceful, no error). Enforced BEFORE any content GET."
         ),
     )
-    dm_max_quote_chars: int = Field(
-        default=280,
-        ge=0,
-        description=(
-            "Verbatim cap on COUNTERPARTY text per DM post (the owner's OWN posts "
-            "are uncapped). Applies under 'selected'/'all'. 0 = strip all "
-            "counterparty text. Deliberately NOT surfaced in the wizard/menu "
-            "(YAML-only) — it is a privacy boundary, not a casual knob."
-        ),
-    )
     dm_consent_acknowledged: bool = Field(
         default=False,
         description=(

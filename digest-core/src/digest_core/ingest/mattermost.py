@@ -879,8 +879,7 @@ class MattermostSourceAdapter:
           e. Map each kept post → ``NormalizedMessage(source="mm")`` with
              ``mm_channel_type`` set to the channel's raw ``type``; resolve author
              usernames via the batch ``/users/ids`` read. addressed-to-me posts
-             carry the owner in ``to_recipients``; counterparty DM text is
-             quote-capped to ``dm_max_quote_chars``.
+             carry the owner in ``to_recipients``; DM text is harvested in full.
         """
         start_ms, end_ms = self._window_ms(digest_date)
         # Incremental window (BR: per-source high-water marks): raise the start
@@ -1439,9 +1438,8 @@ class MattermostSourceAdapter:
         ``keep_meta`` drives the three source-aware decisions:
           * ``addressed_to_me`` → owner identity in ``to_recipients`` (an op-channel
             @mention OR a counterparty DM post); else CONTEXT (``to_recipients=[]``).
-          * ``is_counterparty`` → the verbatim text_body is QUOTE-CAPPED to
-            ``dm_max_quote_chars`` (counterparty DM text only; the owner's own posts
-            and ALL op-channel posts are NEVER capped). 0 → "".
+          * ``is_counterparty`` → informational (the post was authored by someone
+            other than the owner); DM text_body is harvested in full (no quote cap).
           * ``channel_kind`` is informational; the channel's raw ``type`` lands on
             ``mm_channel_type`` for the audit/redaction carrier.
 
@@ -1480,11 +1478,9 @@ class MattermostSourceAdapter:
             if owner_id:
                 to_recipients.append(owner_id)
 
-        # Quote cap for COUNTERPARTY DM text only (third-party PII boundary, §6).
-        # The owner's own posts and all op-channel posts are never capped.
+        # Full harvest: DM text — counterparty and owner alike — is kept in full
+        # (no quote cap). The store keeps DM bodies redacted at rest (guardrail #9).
         text_body = post.get("message") or ""
-        if keep_meta.is_counterparty:
-            text_body = text_body[: self._config.dm_max_quote_chars]
 
         return NormalizedMessage(
             msg_id=f"mm:{post_id}",

@@ -117,18 +117,13 @@ def dm_consent_required(
     * Acknowledged but STALE (or missing/unparseable while in a consent
       scope) → required (re-affirm).
 
-    This function does NOT decide the extra "Ingest ALL DMs?" confirm — that is
-    a separate gate the caller applies whenever ``new_scope == 'all'``.
-
     Editing the partner list within 'selected' is NOT a scope change and never
     reaches here, so it never fires consent — by design. The acknowledgement is
     for the 'selected' *exposure* ("some chosen partners' DM text reaches the
     LLM"), not for specific names; adding/removing a partner is an editorial
-    change, and the per-post quote cap (``dm_max_quote_chars``) bounds every
-    counterparty's verbatim text regardless of who is on the list. (A
-    hand-edited config.yaml that only swaps allowlist entries under a still-fresh
-    consent is therefore accepted — the model validator gates the *scope*, not
-    the allowlist contents.)
+    change. (A hand-edited config.yaml that only swaps allowlist entries under a
+    still-fresh consent is therefore accepted — the model validator gates the
+    *scope*, not the allowlist contents.)
     """
     if new_scope not in CONSENT_SCOPES:
         return False
