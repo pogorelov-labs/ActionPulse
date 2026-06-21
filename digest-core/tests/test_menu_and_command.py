@@ -555,31 +555,16 @@ class TestMmDmMenuScope:
         assert doc["llm"] == {"x": 1}  # other section preserved
         MattermostSourceConfig(**doc["mm_source"])  # loadable
 
-    def test_change_to_selected_consent_declined_keeps_off(self, tmp_path, monkeypatch):
+    def test_change_to_selected_records_consent_and_loadable(self, tmp_path, monkeypatch):
+        # Selecting a counterparty scope records the ack (no panel) and stays loadable.
         cfg = tmp_path / "config.yaml"
         cfg.write_text(yaml.dump({"mm_source": {"dm_scope": "off"}}))
         monkeypatch.setattr(menu_mod, "CONFIG_USER_PATH", cfg)
         actions = iter(["scope", "selected", "back"])
         monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(actions))
-        # Consent panel declined.
-        monkeypatch.setattr(menu_mod, "_dm_consent_panel", lambda console: False)
         monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
         _mm_dm_menu(self._config())
-        doc = yaml.safe_load(cfg.read_text())
-        # Still off — never wrote an unloadable selected-without-consent.
-        assert doc["mm_source"]["dm_scope"] == "off"
-
-    def test_change_to_selected_consent_accepted_writes_loadable(self, tmp_path, monkeypatch):
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text(yaml.dump({"mm_source": {"dm_scope": "off"}}))
-        monkeypatch.setattr(menu_mod, "CONFIG_USER_PATH", cfg)
-        actions = iter(["scope", "selected", "back"])
-        monkeypatch.setattr(menu_mod, "choose", lambda *a, **k: next(actions))
-        monkeypatch.setattr(menu_mod, "_dm_consent_panel", lambda console: True)
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
-        _mm_dm_menu(self._config())
-        doc = yaml.safe_load(cfg.read_text())
-        block = doc["mm_source"]
+        block = yaml.safe_load(cfg.read_text())["mm_source"]
         assert block["dm_scope"] == "selected"
         assert block["dm_consent_acknowledged"] is True
         assert block["dm_consent_acknowledged_at"] is not None

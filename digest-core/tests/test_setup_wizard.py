@@ -487,16 +487,9 @@ class TestDmStep:
         assert result.scope == "own_posts_only"
         assert result.consent_acknowledged is False
 
-    def test_selected_consent_declined_falls_back_off(self, monkeypatch):
+    def test_selected_records_consent_and_timestamp(self, monkeypatch):
+        # Selecting a counterparty scope IS the consent — no panel, ack recorded.
         self._patch_tty(monkeypatch, "selected")
-        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: False)
-        result = _dm_step({})
-        assert result.scope == "off"
-        assert result.consent_acknowledged is False
-
-    def test_selected_consent_accepted_sets_timestamp(self, monkeypatch):
-        self._patch_tty(monkeypatch, "selected")
-        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
         monkeypatch.setattr(wiz, "_ask_dm_partners", lambda con, cur: ["@ann"])
         result = _dm_step({})
         assert result.scope == "selected"
@@ -506,30 +499,15 @@ class TestDmStep:
 
     def test_selected_empty_list_keeps_selected(self, monkeypatch):
         self._patch_tty(monkeypatch, "selected")
-        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
         monkeypatch.setattr(wiz, "_ask_dm_partners", lambda con, cur: [])
         result = _dm_step({})
         assert result.scope == "selected"
         assert result.allowlist == []
         assert result.consent_acknowledged is True
 
-    def test_all_consent_declined_falls_back_off(self, monkeypatch):
+    def test_all_records_consent(self, monkeypatch):
+        # 'all' selects directly — no scary panel, no extra "every conversation" gate.
         self._patch_tty(monkeypatch, "all")
-        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: False)
-        result = _dm_step({})
-        assert result.scope == "off"
-
-    def test_all_confirm_declined_falls_back_off(self, monkeypatch):
-        self._patch_tty(monkeypatch, "all")
-        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
-        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: False))
-        result = _dm_step({})
-        assert result.scope == "off"
-
-    def test_all_both_yes_sets_all(self, monkeypatch):
-        self._patch_tty(monkeypatch, "all")
-        monkeypatch.setattr(wiz, "_dm_consent_panel", lambda con: True)
-        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: True))
         result = _dm_step({})
         assert result.scope == "all"
         assert result.consent_acknowledged is True
@@ -689,3 +667,62 @@ class TestNextStepsText:
         # contains "actionpulse" — check command forms, not the bare substring).
         assert "actionpulse run" not in text
         assert "actionpulse diagnose" not in text
+
+
+class TestConnectionChecks:
+    """#2: single-entry secrets are verified by a live connection check, not by
+    re-typing. The checks are soft (never raise) so setup completes off-corp."""
+
+    def _resp(self, status, payload=None):
+        class _R:
+            status_code = status
+
+            def json(self_inner):
+                return payload or {}
+
+        return _R()
+
+    def test_llm_check_ok_and_derives_models_url(self, monkeypatch):
+        import httpx
+
+        seen = {}
+
+        def _get(url, **k):
+            seen["url"] = url
+            return self._resp(200)
+
+        monkeypatch.setattr(httpx, "get", _get)
+        ok, _ = wiz._test_llm("https://gw/v1/chat/completions", "tok")
+        assert ok is True
+        assert seen["url"] == "https://gw/v1/models"  # /chat/completions stripped
+
+    def test_llm_check_flags_bad_token(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **k: self._resp(401))
+        ok, detail = wiz._test_llm("https://gw/v1/chat/completions", "tok")
+        assert ok is False and "401" in detail
+
+    def test_llm_check_unreachable_is_soft(self, monkeypatch):
+        import httpx
+
+        def _boom(*a, **k):
+            raise httpx.ConnectError("nope")
+
+        monkeypatch.setattr(httpx, "get", _boom)
+        ok, _ = wiz._test_llm("https://gw/v1/chat/completions", "tok")
+        assert ok is False  # soft — never raises
+
+    def test_mm_pat_check_returns_username(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **k: self._resp(200, {"username": "ann"}))
+        ok, detail = wiz._test_mm_pat("https://mm", "pat")
+        assert ok is True and detail == "@ann"
+
+    def test_mm_pat_check_flags_bad_token(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **k: self._resp(403))
+        ok, detail = wiz._test_mm_pat("https://mm", "pat")
+        assert ok is False and "403" in detail

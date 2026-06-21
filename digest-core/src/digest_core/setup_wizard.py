@@ -280,6 +280,72 @@ def _test_mm_webhook(url: str, timeout: float = 5.0) -> tuple[bool, str]:
         return False, type(exc).__name__
 
 
+def _test_llm(endpoint: str, token: str, *, verify=True, timeout: float = 10.0) -> tuple[bool, str]:
+    """Probe the LLM gateway: GET ``<base>/models`` with the bearer token —
+    generation-free + auth-checked. Returns (ok, detail); the token is never
+    logged. The gateway is corp-only (ADR-012), so outside the perimeter this
+    reports unreachable, which is expected, not an error."""
+    try:
+        import httpx
+
+        base = endpoint.rstrip("/")
+        for suffix in ("/chat/completions", "/completions"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        resp = httpx.get(
+            f"{base}/models",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+            verify=verify,
+        )
+        if resp.status_code == 200:
+            return True, "reachable, token accepted"
+        if resp.status_code in (401, 403):
+            return False, f"token rejected (HTTP {resp.status_code})"
+        if resp.status_code in (404, 405):
+            return True, "endpoint reachable (token not confirmed — no /models)"
+        return False, f"HTTP {resp.status_code}"
+    except Exception as exc:  # noqa: BLE001 — any network failure is a soft result
+        return False, type(exc).__name__
+
+
+def _test_mm_pat(
+    base_url: str, pat: str, *, verify=True, timeout: float = 10.0
+) -> tuple[bool, str]:
+    """Probe the Mattermost API: GET ``/api/v4/users/me`` with the PAT. Returns
+    (ok, '@username' | detail); the token is never logged. Mattermost is
+    reachable from anywhere (ADR-012)."""
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"{base_url.rstrip('/')}/api/v4/users/me",
+            headers={"Authorization": f"Bearer {pat}"},
+            timeout=timeout,
+            verify=verify,
+        )
+        if resp.status_code == 200:
+            username = (resp.json() or {}).get("username", "")
+            return True, (f"@{username}" if username else "token accepted")
+        if resp.status_code in (401, 403):
+            return False, f"token rejected (HTTP {resp.status_code})"
+        return False, f"HTTP {resp.status_code}"
+    except Exception as exc:  # noqa: BLE001 — any network failure is a soft result
+        return False, type(exc).__name__
+
+
+def _report_check(con, label: str, ok: bool, detail: str) -> None:
+    """One-line ✓/⚠ result for a connection check (never blocks setup)."""
+    if ok:
+        con.print(f"  [ap.ok]✓[/] {label} — {detail}")
+    else:
+        con.print(
+            f"  [ap.warn]⚠[/] {label} — {detail} "
+            "[ap.dim](corp-only endpoints fail outside the network; fix later via re-run)[/]"
+        )
+
+
 def _existing_ca_candidates(existing_cfg: dict) -> list[Path]:
     """Return prioritized CA path candidates from config + standard locations."""
     candidates: list[Path] = []
@@ -536,7 +602,11 @@ def _ask(
 
 
 def _ask_secret(label: str, *, existing: str = "") -> str:
-    """Masked prompt with confirmation; Enter keeps the existing value on re-runs."""
+    """Masked single-entry prompt; Enter keeps the existing value on re-runs.
+
+    No confirm-twice: tokens/passwords are pasted, not typed, so repeating is
+    friction, not safety. Correctness is verified instead by the live connection
+    checks at the end of setup (LLM gateway + Mattermost)."""
     keep_hint = " [dim](Enter — keep current)[/]" if existing else ""
     while True:
         value = Prompt.ask(
@@ -546,22 +616,12 @@ def _ask_secret(label: str, *, existing: str = "") -> str:
             show_default=False,
             console=console,
         ).strip()
-        if not value:
-            if existing:
-                console.print("  [ap.ok]✓[/] Kept the current secret")
-                return existing
-            console.print("  [ap.err]✗[/] The value cannot be empty")
-            continue
-        confirm = Prompt.ask(
-            "[ap.accent.bold]  Repeat to confirm[/]",
-            password=True,
-            default="",
-            show_default=False,
-            console=console,
-        ).strip()
-        if value == confirm:
+        if value:
             return value
-        console.print("  [ap.err]✗[/] The values did not match, try again")
+        if existing:
+            console.print("  [ap.ok]✓[/] Kept the current secret")
+            return existing
+        console.print("  [ap.err]✗[/] The value cannot be empty")
 
 
 def _ask_ca(existing_cfg: dict, user_upn: str) -> Optional[str]:
@@ -690,32 +750,6 @@ class DMResult:
             self.allowlist = []
 
 
-def _dm_consent_panel(con) -> bool:
-    """Render the DM consent panel and return the owner's acknowledgement.
-
-    Shared by every consent-firing path (wizard + menu). The Confirm defaults
-    to False — consent is opt-IN, never the resting state.
-    """
-    body = Text.assemble(
-        ("⚠ This sends colleagues' DM text to the LLM.\n\n", "ap.warn"),
-        ("• Counterparty (their) messages are third-party PII.\n", ""),
-        ("• Their text is quote-capped to ~280 chars; your own posts are not.\n", ""),
-        ("• You are responsible for this under your employer-device policy.\n", ""),
-        ("• Your consent is logged locally with a UTC timestamp.\n", ""),
-    )
-    con.print()
-    con.print(
-        Panel(
-            body,
-            title="[bold]DM consent[/]",
-            box=box.ROUNDED,
-            border_style="ap.warn",
-            expand=False,
-        )
-    )
-    return Confirm.ask("[ap.accent.bold]I understand and consent[/]", default=False)
-
-
 def _ask_dm_partners(con, current: list[str]) -> list[str]:
     """Free-text comma-separated partner allowlist (mirrors user_aliases).
 
@@ -745,12 +779,12 @@ def _dm_ingest_note(con) -> None:
 
 
 def _dm_step(existing_cfg: dict) -> DMResult:
-    """Direct-messages (ingest) sub-section of the Mattermost step.
+    """Direct-messages (ingest) scope on the privacy ladder.
 
-    Picks the DM scope on the privacy ladder, defaulting to the CURRENT value
-    so a re-run keeps it on Enter (never silently widens). Consent scopes
-    ('selected'/'all') gate behind the consent panel (+ an extra ALL confirm);
-    a declined consent falls the scope back to 'off'.
+    Defaults to the CURRENT value so a re-run keeps it on Enter. Picking a scope
+    that reads counterparty text ('selected'/'all') records the consent ack +
+    a local UTC timestamp (audit trail) — selecting the scope IS the consent;
+    there is no extra gate.
     """
     mm_source = existing_cfg.get("mm_source", {}) or {}
     current_scope = mm_source.get("dm_scope", "off")
@@ -760,7 +794,7 @@ def _dm_step(existing_cfg: dict) -> DMResult:
 
     console.print()
     console.print("[bold]Direct messages (ingest)[/]")
-    console.print("[dim]DMs carry colleagues' messages (third-party PII). Default is OFF.[/]")
+    console.print("[dim]Include direct messages in the digest. Default is off.[/]")
 
     default_index = DM_SCOPES.index(current_scope)
     if sys.stdin.isatty():
@@ -779,21 +813,17 @@ def _dm_step(existing_cfg: dict) -> DMResult:
             console=console,
         )
 
-    # off / own_posts_only — no third-party text, clear consent on the way down.
+    # off / own_posts_only — no counterparty text; clear any prior consent.
     if scope in ("off", "own_posts_only"):
         console.print(f"  [ap.ok]✓[/] DM scope: [bold]{_dm_scope_label(scope)}[/]")
         return DMResult(scope=scope, allowlist=[])
 
-    # selected — consent panel, then collect the partner allowlist.
+    # selected — collect the partner allowlist (consent recorded on selection).
     if scope == "selected":
-        if not _dm_consent_panel(console):
-            console.print("  [ap.warn]⚠[/] Consent declined — DMs stay OFF.")
-            return DMResult(scope="off", allowlist=[])
-        ack_at = now_iso()
         partners = _ask_dm_partners(console, current_allowlist)
         if not partners:
             console.print(
-                "  [ap.warn]⚠[/] Empty list → DMs effectively OFF (scope kept 'selected')."
+                "  [ap.warn]⚠[/] Empty list → DMs effectively off (scope kept 'selected')."
             )
         else:
             console.print(
@@ -805,19 +835,11 @@ def _dm_step(existing_cfg: dict) -> DMResult:
             scope="selected",
             allowlist=partners,
             consent_acknowledged=True,
-            consent_acknowledged_at=ack_at,
+            consent_acknowledged_at=now_iso(),
         )
 
-    # all — consent panel + an explicit, default-No "ingest everything" confirm.
-    if not _dm_consent_panel(console):
-        console.print("  [ap.warn]⚠[/] Consent declined — DMs stay OFF.")
-        return DMResult(scope="off", allowlist=[])
-    if not Confirm.ask(
-        "[ap.accent.bold]Ingest ALL DMs? This reads every conversation.[/]", default=False
-    ):
-        console.print("  [ap.warn]⚠[/] Not confirmed — DMs stay OFF.")
-        return DMResult(scope="off", allowlist=[])
-    console.print("  [ap.ok]✓[/] DM scope: [bold]All DMs[/] [ap.warn](every conversation)[/]")
+    # all
+    console.print("  [ap.ok]✓[/] DM scope: [bold]All DMs[/]")
     _dm_ingest_note(console)
     return DMResult(
         scope="all",
@@ -1220,20 +1242,27 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     for key, val in env_values.items():
         os.environ[key] = val
 
-    # ── Live check: Mattermost is the one endpoint reachable from anywhere ──
-    # TTY-gated so scripted/piped runs keep a stable answer protocol.
+    # ── Live connection checks (TTY-gated; scripted/piped runs keep a stable
+    # protocol). Each uses the configured CA. The LLM gateway is corp-only
+    # (ADR-012) so outside the perimeter it honestly reports unreachable. ──
     if sys.stdin.isatty() and Confirm.ask(
-        "[ap.accent.bold]Send a test message to Mattermost?[/]", default=True
+        "[ap.accent.bold]Verify connections now?[/]", default=True
     ):
-        with console.status("[ap.accent]Checking the webhook…", spinner=SPINNER):
-            mm_ok, mm_detail = _test_mm_webhook(mm_webhook)
-        if mm_ok:
-            console.print("  [ap.ok]✓[/] Webhook works — the test message is in the channel")
-        else:
-            console.print(
-                f"  [ap.warn]⚠[/] Webhook did not respond ({mm_detail}). Mattermost is reachable even "
-                f"outside the corp network — check the URL (re-run setup to fix)."
-            )
+        verify = verify_ca or True
+        with console.status("[ap.accent]Checking the LLM gateway…", spinner=SPINNER):
+            llm_ok, llm_detail = _test_llm(llm_endpoint, llm_token, verify=verify)
+        _report_check(console, "LLM gateway", llm_ok, llm_detail)
+        if mm_pat and mm_base_url:
+            with console.status("[ap.accent]Checking the Mattermost API…", spinner=SPINNER):
+                pat_ok, pat_detail = _test_mm_pat(mm_base_url, mm_pat, verify=verify)
+            _report_check(console, "Mattermost API (PAT)", pat_ok, pat_detail)
+        if mm_webhook:
+            with console.status("[ap.accent]Checking the Mattermost webhook…", spinner=SPINNER):
+                mm_ok, mm_detail = _test_mm_webhook(mm_webhook)
+            if mm_ok:
+                console.print("  [ap.ok]✓[/] Mattermost webhook — test message delivered")
+            else:
+                _report_check(console, "Mattermost webhook", False, mm_detail)
 
     # ── Summary: next steps speak `actionpulse`, never the module form ──
     launcher = _ensure_launcher()
