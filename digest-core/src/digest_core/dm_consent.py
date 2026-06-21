@@ -40,13 +40,13 @@ DM_CONSENT_STALE_DAYS = 180
 
 # Display labels for the four-rung picker (wizard + menu share these).
 DM_SCOPE_LABELS: tuple[tuple[str, str], ...] = (
-    ("off", "Off — no DMs (recommended default)"),
+    ("off", "Off — no direct messages"),
     (
         "own_posts_only",
-        "My posts only — only messages I sent; colleagues' text never read",
+        "My posts only — only the messages I sent",
     ),
     ("selected", "Selected partners — pick whose DMs to include"),
-    ("all", "All DMs — every DM the token can read (not recommended)"),
+    ("all", "All DMs — every DM the token can read"),
 )
 
 

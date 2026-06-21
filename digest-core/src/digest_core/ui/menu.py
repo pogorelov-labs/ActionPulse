@@ -33,7 +33,6 @@ from digest_core.dm_consent import (
     DM_SCOPE_LABELS,
     DM_SCOPES,
     dm_consent_is_stale,
-    dm_consent_required,
     normalize_partners,
     now_iso,
     update_mm_source_dm,
@@ -345,45 +344,18 @@ def _dm_header(
     )
 
 
-def _dm_consent_panel(console: Console) -> bool:
-    """Consent panel + default-No acknowledgement (shared shape with the wizard)."""
-    from rich import box
-    from rich.panel import Panel
-    from rich.prompt import Confirm
-    from rich.text import Text
-
-    body = Text.assemble(
-        ("⚠ This sends colleagues' DM text to the LLM.\n\n", "ap.warn"),
-        ("• Counterparty (their) messages are third-party PII.\n", ""),
-        ("• Their text is quote-capped to ~280 chars; your own posts are not.\n", ""),
-        ("• You are responsible for this under your employer-device policy.\n", ""),
-        ("• Your consent is logged locally with a UTC timestamp.\n", ""),
-    )
-    console.print()
-    console.print(
-        Panel(
-            body,
-            title="[bold]DM consent[/]",
-            box=box.ROUNDED,
-            border_style="ap.warn",
-            expand=False,
-        )
-    )
-    return Confirm.ask("[ap.accent.bold]I understand and consent[/]", default=False)
-
-
 def _dm_change_scope(
     console: Console, current_scope: str, allowlist: list[str], ack: bool, ack_at: Optional[str]
 ) -> None:
     """Run the ladder picker and persist a (loadable) scope change.
 
     off/own_posts_only save immediately (consent cleared on a downgrade to a
-    no-PII scope). selected/all gate on dm_consent_required(...): when consent
-    is required we run the panel (+ the default-No ALL confirm for 'all'); on
-    decline we revert to the prior scope (never persisting a consent scope
-    without its ack — that would be unloadable).
+    no-PII scope). selected/all record the consent ack + a local timestamp —
+    selecting the scope IS the consent; no panel, no extra gate. The write helper
+    refuses to persist a consent scope without its ack, so this can never leave
+    an unloadable config.
     """
-    from rich.prompt import Confirm, Prompt
+    from rich.prompt import Prompt
 
     if sys.stdin.isatty():
         new_scope = choose(
@@ -412,28 +384,12 @@ def _dm_change_scope(
         console.print(f"  [ap.ok]✓[/] DM scope: [bold]{_DM_SCOPE_LABEL[new_scope]}[/]")
         return
 
-    # Consent scopes: decide whether the boundary change must re-consent.
-    needs = dm_consent_required(current_scope, new_scope, ack, ack_at, datetime.now(timezone.utc))
-    new_ack, new_ack_at = ack, ack_at
-    if needs:
-        if not _dm_consent_panel(console):
-            console.print(f"  [ap.warn]⚠[/] Consent declined — kept [bold]{current_scope}[/].")
-            return
-        new_ack, new_ack_at = True, now_iso()
-
-    if new_scope == "all":
-        # Independent, default-No gate every time 'all' is (re-)selected.
-        if not Confirm.ask(
-            "[ap.accent.bold]Ingest ALL DMs? This reads every conversation.[/]", default=False
-        ):
-            console.print(f"  [ap.warn]⚠[/] Not confirmed — kept [bold]{current_scope}[/].")
-            return
-
+    # selected/all — record consent on selection (no panel, no extra confirm).
     update_mm_source_dm(
         CONFIG_USER_PATH,
         dm_scope=new_scope,
-        dm_consent_acknowledged=bool(new_ack),
-        dm_consent_acknowledged_at=new_ack_at,
+        dm_consent_acknowledged=True,
+        dm_consent_acknowledged_at=now_iso(),
     )
     if new_scope == "selected" and not allowlist:
         console.print(
