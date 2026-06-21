@@ -1,7 +1,7 @@
 """Interactive launcher menu (TERMINAL_DESIGN.md §5, roadmap follow-up).
 
 `actionpulse` with no subcommand opens this menu on a TTY — Run / Read /
-Past digests / Diagnose / Settings & tools / Quit — built on the §5.2
+History / Diagnose / Settings & tools / Quit — built on the §5.2
 arrow-key selector. To stay within the 1–9 quick-select invariant the
 lower-frequency actions (setup wizard, Mattermost DMs, MCP, message store
 [when on], maintenance, show-config) live under the "Settings & tools"
@@ -703,7 +703,7 @@ def _main_menu_options(store_enabled: bool) -> list[tuple[str, str]]:
     options = [
         ("run", "Run digest — choose a day, then fetch & deliver"),
         ("read", "Read digest — browse the latest, with source quotes"),
-        ("history", "Past digests — search what was delivered before"),
+        ("history", "History — search what was delivered before"),
     ]
     if store_enabled:
         options += [
