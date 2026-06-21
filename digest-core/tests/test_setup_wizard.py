@@ -399,13 +399,10 @@ class TestStoreStep:
     """The optional encrypted-store enable step (non-interactive paths)."""
 
     def test_non_tty_reuses_existing_key_and_keeps_state(self, monkeypatch):
+        # The non-tty path is driver-independent now (key-gen is just a secret),
+        # so it no longer skips when the store extra is absent.
         from digest_core.setup_wizard import _store_step
-        from digest_core.store import HAS_SQLCIPHER
 
-        if not HAS_SQLCIPHER:
-            import pytest
-
-            pytest.skip("store extra not installed")
         monkeypatch.setenv("DIGEST_STORE_KEY", "existing-key")
         # non-tty (pytest) → keep current state, never regenerate the key (would orphan the DB)
         enabled, key = _store_step({"store": {"enabled": True}})
@@ -413,14 +410,23 @@ class TestStoreStep:
 
     def test_non_tty_off_without_key_or_config(self, monkeypatch):
         from digest_core.setup_wizard import _store_step
-        from digest_core.store import HAS_SQLCIPHER
 
-        if not HAS_SQLCIPHER:
-            import pytest
-
-            pytest.skip("store extra not installed")
         monkeypatch.delenv("DIGEST_STORE_KEY", raising=False)
         assert _store_step({}) == (False, None)
+
+    def test_tty_enables_and_generates_key_without_driver(self, monkeypatch):
+        # #6: `store init` lives in the wizard. Even when the sqlcipher driver is
+        # not installed, opting in generates the key + enables the store (it
+        # activates once the driver lands; runs degrade-not-drop until then).
+        from digest_core import setup_wizard as wiz
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        monkeypatch.setattr("digest_core.store.HAS_SQLCIPHER", False, raising=False)
+        monkeypatch.delenv("DIGEST_STORE_KEY", raising=False)
+        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: True))
+        enabled, key = wiz._store_step({})
+        assert enabled is True
+        assert key is not None and len(key) == 64  # fresh 256-bit hex key
 
 
 class TestMmCredsStep:

@@ -923,10 +923,14 @@ def _mm_creds_step(webhook: str, existing_pat: str, existing_base: str) -> tuple
 def _store_step(existing_cfg: dict) -> tuple[bool, Optional[str]]:
     """Optional encrypted-store enable. Returns ``(enabled, key)``.
 
-    Reuses an EXISTING DIGEST_STORE_KEY (never regenerates — that would orphan the
-    encrypted DB) and only generates one on first enable. Declining keeps any existing
-    key (so re-running setup never drops it) with the store off. No-op when the ``store``
-    extra isn't installed.
+    This IS ``store init``, in the wizard: it generates (or reuses) the
+    DIGEST_STORE_KEY and turns the store on. The key is just a secret — driver
+    independent — so the step runs even when the ``store`` extra isn't installed
+    yet: the key is saved and the store activates automatically once the driver
+    is present. Enabling early is safe because a run with the store on but the
+    driver missing degrades-not-drops (``run._persist_to_store`` swallows it), so
+    the digest is never broken. Never regenerates an existing key (that would
+    orphan the encrypted DB); declining keeps any existing key with the store off.
     """
     import secrets
 
@@ -941,23 +945,24 @@ def _store_step(existing_cfg: dict) -> tuple[bool, Optional[str]]:
         "[dim]Persist fetched messages (30d, encrypted at rest) → `search`, `ask`, and the"
         " cross-day Open-loops / Awaiting-your-reply sections (and the MCP server).[/]"
     )
-    if not HAS_SQLCIPHER:
-        console.print(
-            "  [ap.dim]Store driver not installed — run `uv sync --extra store`, then re-run"
-            " setup to enable it.[/]"
-        )
-        # Preserve an already-configured key/state even if the driver is absent right now.
-        return (default_on and existing_key is not None), existing_key
     if not sys.stdin.isatty():
         return default_on, existing_key  # scripted: keep current state, never prompt
     if not Confirm.ask("Enable the encrypted message store?", default=default_on):
         return False, existing_key  # keep the key (don't orphan a prior DB); store stays off
+
     key = existing_key or secrets.token_hex(32)
     if existing_key:
         console.print("  [ap.ok]✓[/] Store enabled (existing DIGEST_STORE_KEY reused).")
     else:
         console.print("  [ap.ok]✓[/] Store enabled; a new DIGEST_STORE_KEY is written (chmod 600).")
         console.print("  [ap.warn]⚠[/] Keep the key safe — losing it makes the store unreadable.")
+    if not HAS_SQLCIPHER:
+        console.print(
+            "  [ap.warn]⚠[/] The store driver isn't installed yet — run"
+            " [bold]uv sync --extra store[/] to activate it (macOS: `brew install sqlcipher"
+            " openssl@3` first). The key is saved; until then runs skip store features"
+            " (they degrade, never fail)."
+        )
     console.print(
         "  [ap.dim]Cross-day sections are opt-in: set store.carryover / store.pending: true"
         " in configs/config.yaml.[/]"
@@ -1264,6 +1269,19 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             else:
                 _report_check(console, "Mattermost webhook", False, mm_detail)
 
+    # ── Optional: register the MCP server into detected AI coding CLIs — a wizard
+    # step (not a separate command). TTY-guarded so non-interactive runs (and
+    # tests) never prompt or write configs. Placed before the finale; the store
+    # key was just written above, so the server has something to expose. ──
+    if sys.stdin.isatty():
+        try:
+            from digest_core.mcp.commands import offer_install
+
+            console.print()
+            offer_install(console)
+        except Exception:  # noqa: BLE001 - an optional offer must never break setup
+            pass
+
     # ── Summary: next steps speak `actionpulse`, never the module form ──
     launcher = _ensure_launcher()
     if launcher.created:
@@ -1281,16 +1299,5 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             expand=False,
         )
     )
-
-    # Optional: offer to register the MCP server into detected AI coding CLIs.
-    # TTY-guarded so non-interactive runs (and tests) never prompt or write configs.
-    if sys.stdin.isatty():
-        try:
-            from digest_core.mcp.commands import offer_install
-
-            console.print()
-            offer_install(console)
-        except Exception:  # noqa: BLE001 - an optional offer must never break setup
-            pass
 
     return True
