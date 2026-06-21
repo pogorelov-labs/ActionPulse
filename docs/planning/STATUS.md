@@ -45,6 +45,13 @@ inventory to live **with zero new features** (§5).
 > Meetings section #193 · E3 collision detection #194). Stream 1 nudged 90→92; `history` is now a
 > first-class `InboxAPI`/MCP verb. Calendar live-fetch, E4 (agenda summary, LLM) and E5 (seniority
 > ranking, needs an org-title source) remain gated; Phase B still gates the big live gains.
+>
+> **Update (2026-06-21, field-report batch #196–#204):** fixed the bare-`actionpulse` menu crash
+> (#196, the menu had outgrown the 1–9 quick-select), then shipped the wizard/menu overhaul —
+> PAT-first MM delivery (#200), single-entry secrets + live connection checks + neutral DM consent
+> (#197), full-DM harvest (the 280-char quote cap removed, #198), store init + MCP as wizard steps
+> (#199), plain-language menu + "Settings & tools" / "Message store" submenus (#202/#203), and
+> silent-cap logging (#201). Stream 5 (UX) stays the most-realized; nothing here needed the corp network.
 
 ## 3. Per-stream: done / missing
 
@@ -84,10 +91,12 @@ inventory to live **with zero new features** (§5).
   slash commands.
 
 ### 5 · Terminal UX / setup — 94 / 90  ← *most realized*
-- **Done:** setup wizard (+ encrypted-store step, + MM-creds collection #178); launcher menu
-  (+ search / ask / history rows); digest reader; design system + conformance CI; global command.
-- **Missing:** api-mode delivery **channel** pick in the wizard (corp-interactive — needs the live
-  API); corp visual checks C2–C5.
+- **Done:** setup wizard — PAT-first delivery + self-DM/private-channel pick (#200) · single-entry
+  secrets + live connection checks (#197) · neutral DM consent (#197) · store init + MCP
+  registration as wizard steps (#199); launcher menu (plain labels + "Settings & tools" / "Message
+  store" submenus #202/#203; the >9-options crash fixed #196) + search / ask / history rows; digest
+  reader; design system + conformance CI; global command.
+- **Missing:** corp visual checks C2–C5.
 
 ### 6 · Privacy / Consent / Retention — 82 / 77
 - **Done:** fail-closed DM-at-rest redaction (structural — DMs get no chunk rows); consent gate

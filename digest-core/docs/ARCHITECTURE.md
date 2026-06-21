@@ -423,6 +423,13 @@ class Item(BaseModel):
 
 **Mattermost delivery (Phase 0):**
 
+> **SHIPPED (#200): PAT-first is the wizard default.** Setup leads with a Personal
+> Access Token → api-mode (Вариант B): delivery to the owner's own private channel /
+> self-DM, found-or-created on the first run (provably owner-only; post-ids captured for
+> the reactions flywheel). The incoming webhook (Вариант A) is the **fallback** when no
+> PAT is given. The "start with webhook" framing below is the original Phase-0 decision —
+> the connect-out api path is now the default.
+
 Два варианта подключения (от простого к гибкому):
 
 **Вариант A: Incoming Webhook (рекомендуется для старта)**
@@ -447,8 +454,9 @@ httpx.post(
 - Плюсы: DM любому юзеру, реакции, slash commands
 - Минусы: нужен bot account + token
 
-**Decision (ADR-010):** Начинаем с Incoming Webhook (вариант A).
-Миграция на Bot API — при добавлении `/digest` commands (Phase 1).
+**Decision (ADR-010):** Начинали с Incoming Webhook (вариант A). **Update (#200):**
+мастер теперь по умолчанию использует **PAT/api-mode** (вариант B) — доставку в
+owner-only канал/self-DM; webhook остаётся fallback. Bot slash-commands — по-прежнему Phase 1.
 
 **MM Markdown limitations:**
 - Нет `###` heading (только `#` и `##` в некоторых клиентах)
