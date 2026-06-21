@@ -91,9 +91,11 @@ class TestRunMenu:
         (tmp_path / "env").write_text("EWS_USER_UPN=ivan@corp.ru\nLLM_TOKEN=tok-abcdef123456\n")
         calls = {"run": [], "diag": 0, "settings": 0, "read": []}
         # "run" opens the U3 submenu, then the post-run "read now?" offer.
+        # "settings" now opens the Settings & tools submenu — pick "setup"
+        # (→ on_settings), then "back" returns to the main menu.
         self._scripted(
             monkeypatch,
-            ["run", "today", "menu", "dry", "diagnose", "settings", "config", "quit"],
+            ["run", "today", "menu", "dry", "diagnose", "settings", "setup", "back", "quit"],
         )
         code = run_menu(
             on_run=lambda dry, choice: calls["run"].append((dry, choice)),
@@ -109,6 +111,26 @@ class TestRunMenu:
         assert calls["read"] == []  # the post-run offer was declined
         # The accepted choice persisted for "Repeat last run".
         assert load_last_run(tmp_path / "last_run.json") == RunChoice()
+
+    def test_settings_submenu_routes_to_tools(self, tmp_path, monkeypatch):
+        # The Settings & tools submenu hosts the moved actions. Round-trip:
+        # open settings → Show config → Back → quit, and assert the tool fired.
+        monkeypatch.setattr(menu_mod, "ENV_PATH", tmp_path / "env")
+        (tmp_path / "env").write_text("EWS_USER_UPN=ivan@corp.ru\n")
+        shown = {"config": 0}
+        monkeypatch.setattr(
+            menu_mod, "_show_config", lambda con: shown.__setitem__("config", shown["config"] + 1)
+        )
+        self._scripted(monkeypatch, ["settings", "config", "back", "quit"])
+        code = run_menu(
+            on_run=lambda d, c: None,
+            on_diagnose=lambda: None,
+            on_settings=lambda: None,
+            on_read=lambda date: None,
+            console=_console(),
+        )
+        assert code == 0
+        assert shown["config"] == 1
 
     def test_post_run_offer_opens_reader_with_absolute_date(self, tmp_path, monkeypatch):
         monkeypatch.setattr(menu_mod, "LAST_RUN_PATH", tmp_path / "last_run.json")
@@ -206,12 +228,23 @@ class TestRetrievalRows:
     def test_options_hidden_without_store(self):
         keys = [k for k, _ in menu_mod._main_menu_options(False)]
         assert "search" not in keys and "ask" not in keys
+        # 1–9 quick-select invariant (§5.2): the regression that crashed bare
+        # `actionpulse` was this list growing past 9 (the assertion lives in
+        # choose(), which the menu tests monkeypatch — so guard the count here).
+        assert len(keys) <= 9
 
     def test_options_shown_with_store(self):
         keys = [k for k, _ in menu_mod._main_menu_options(True)]
         assert "search" in keys and "ask" in keys
         assert "history" in keys  # always present (reads artifacts, not store-gated)
-        assert len(keys) <= 13  # stays a tidy arrow-navigable list
+        assert len(keys) <= 9  # the 1–9 quick-select invariant (§5.2) — even with the store rows
+
+    def test_secondary_actions_under_settings_submenu(self):
+        # The lower-frequency actions moved off the top level into the submenu.
+        keys = [k for k, _ in menu_mod._main_menu_options(True)]
+        for moved in ("mm_dm", "maintenance", "mcp", "config"):
+            assert moved not in keys
+        assert "settings" in keys  # the single entry point to those tools
 
     def test_history_row_invokes_callback_browse_all(self, monkeypatch):
         # History is unconditional + works with an empty query (Enter = browse all).
