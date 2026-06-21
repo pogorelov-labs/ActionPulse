@@ -74,27 +74,28 @@ Keychain — отключается флагом `--no-autodetect`), затем 
 |-----|--------|-----------|-------|
 | 1 | Corporate email (UPN) | `EWS_USER_UPN` (env) + выводит `ews.user_*` | твой корп-email; из него выводятся endpoint/login/aliases |
 | 2 | EWS endpoint URL | `EWS_ENDPOINT` (env), `ews.endpoint` | авто (Keychain+DNS) или `https://owa.<домен>/EWS/Exchange.asmx` |
-| 3 | EWS password | `EWS_PASSWORD` (env) | секрет; Enter — оставить текущий при повторном запуске |
+| 3 | EWS password | `EWS_PASSWORD` (env) | секрет; **единичный ввод** (без «повтори для подтверждения»); Enter — оставить текущий |
 | 4 | LLM gateway endpoint | `LLM_ENDPOINT` (env), `llm.endpoint` | OpenAI-фронт шлюза: `https://<gw>/v1/chat/completions` |
 | 5 | LLM token (Bearer) | `LLM_TOKEN` (env) | секрет |
-| 6 | Mattermost webhook URL | `MM_WEBHOOK_URL` (env) | incoming webhook канала-получателя |
-| 6a | «Это приватный DM/канал?» | `deliver.mattermost.acknowledged_private` | y если личный канал (иначе каждый прогон предупреждает) |
-| 6b | (опц., TTY) MM PAT + base URL | `MM_PAT`, `MM_BASE_URL` (env) | **нужно для MM-ingest и api-доставки/реакций**; для webhook-only — пропустить |
-| 6c | DM consent ladder | `mm_source.dm_*` | `off` (умолч.) · `own_posts_only` · `selected`+allowlist · `all` — две верхние требуют consent (PII третьих лиц) |
+| 6 | «Use a PAT for delivery?» | `deliver.mattermost.auth_mode` | **PAT-first** (реком.): y → api-доставка в твой приватный канал/self-DM (реакции пишутся) |
+| 6a | (если PAT) MM PAT + base URL + цель | `MM_PAT`, `MM_BASE_URL` (env), `delivery_target`/`channel_name` | self-DM или приватный канал — найдётся-или-создастся при первом прогоне (provably owner-only) |
+| 6b | (если без PAT) webhook URL + «приватный?» | `MM_WEBHOOK_URL`, `acknowledged_private` | fallback: incoming webhook; PAT можно отдельно добавить для ingest/реакций |
+| 6c | DM ingest scope | `mm_source.dm_*` | `off` (умолч.) · `own_posts_only` · `selected`+allowlist · `all` — нейтральный выбор, согласие пишется без лишних барьеров |
 | 7 | Report language | `report.language` | стрелочное меню ↑↓/jk; `en` (умолч.) / `ru` |
-| опц. | Encrypted store | `DIGEST_STORE_KEY` (env), `store.enabled` | y чтобы включить 30-дн. зашифрованный стор; ключ **переиспользуется**, не регенерируется |
+| (шаг) | Encrypted store | `DIGEST_STORE_KEY` (env), `store.enabled` | y → генерит ключ + включает стор **даже без драйвера** (активируется после `uv sync --extra store`; прогоны деградируют, не падают); ключ переиспользуется |
 | опц. | TLS · Corporate CA | `ews.verify_ca` | авто-детект пути / экспорт цепочки из Keychain (macOS) / ручной путь |
-| опц. | MCP register (после записи, macOS) | конфиги Claude/opencode/qwen | y чтобы зарегистрировать `actionpulse-mcp` в AI-CLI |
+| (шаг) | MCP register (macOS) | конфиги Claude/opencode/qwen | шаг мастера (до финала): y чтобы зарегистрировать `actionpulse-mcp` в AI-CLI |
 
 Перед записью — таблица **Review** (секреты маскируются: пароль `••••`, токен `••••XXXX`,
-MM PAT как `set`) и вопрос `Save the configuration?`. На TTY после записи мастер
-предлагает тест webhook'а.
+MM PAT как `set`) и вопрос `Save the configuration?`. На TTY после записи мастер делает
+**live-проверки соединений**: LLM gateway (`GET /models`), MM PAT (`GET /api/v4/users/me`),
+и webhook (тест-пост) — каждая «мягкая» (corp-only endpoints честно сообщают «unreachable», setup не падает).
 
 **Чего мастер НЕ спрашивает — правит вручную в `configs/config.yaml` при необходимости:**
 - `time.user_timezone` / `time.window` — **дефолт `Europe/Moscow` / `calendar_day`**; если
   машина/ящик в другом поясе, дата дайджеста уедет — проверь и поправь.
-- `deliver.mattermost.auth_mode` — дефолт `webhook`; для **захвата post_id и реакций**
-  (флайвил) переключи на `api` (+ `delivery_target` / `channel_name`).
+- `deliver.mattermost.auth_mode` — мастер ставит `api` если дал PAT (шаг 6); правь вручную
+  только чтобы сменить `delivery_target` / `channel_name` или вернуться на `webhook`.
 - `ews.folders` — дефолт `["Inbox"]`; добавь общие папки, если нужно.
 - `mm_source.channel_allowlist` — список публичных каналов для ingest.
 - `retention` / `memory.dedup_*` / `reranker` / `judge` — «тёмный» инвентарь, включается
@@ -152,8 +153,9 @@ actionpulse diagnose          # глобальная команда; секре�
 #   uv run python -m digest_core.cli diagnose
 ```
 
-Без аргументов `actionpulse` открывает интерактивное меню (Run · Dry run · Diagnose ·
-Settings · Show config · Quit); все примеры ниже одинаково работают как
+Без аргументов `actionpulse` открывает интерактивное меню (Run · Read · History ·
+Diagnose · Settings & tools · Quit; Dry run = «Preview» в селекторе Run; Search/Ask —
+при включённом сторе); все примеры ниже одинаково работают как
 `actionpulse <cmd>` и как `uv run python -m digest_core.cli <cmd>`.
 
 ### 1.4 Проверить среду

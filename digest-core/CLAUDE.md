@@ -1,6 +1,6 @@
 # digest-core
 
-Python 3.11 package. Daily email digest pipeline: EWS → normalize → threads → evidence → LLM → assemble → deliver (Mattermost incoming webhook).
+Python 3.11 package. Daily corporate-comms digest pipeline: EWS (+ opt-in Mattermost / calendar) → normalize → threads → evidence → LLM → assemble → deliver (Mattermost: PAT/api to your own channel, or webhook fallback).
 
 ## Commands
 
