@@ -186,6 +186,9 @@ def _write_config_yaml(
     verify_ca: Optional[str],
     report_language: str = "en",
     acknowledged_private: bool = False,
+    auth_mode: str = "webhook",
+    delivery_target: str = "self_dm",
+    channel_name: str = "actionpulse-digest",
     dm_scope: str = "off",
     dm_allowlist: Optional[list[str]] = None,
     dm_consent_acknowledged: bool = False,
@@ -224,7 +227,11 @@ def _write_config_yaml(
     # whether to warn. Other deliver.mattermost keys (from the example) survive.
     deliver = config.get("deliver", {}) or {}
     mattermost = deliver.get("mattermost", {}) or {}
+    mattermost["auth_mode"] = auth_mode
     mattermost["acknowledged_private"] = bool(acknowledged_private)
+    if auth_mode == "api":
+        mattermost["delivery_target"] = delivery_target
+        mattermost["channel_name"] = channel_name
     deliver["mattermost"] = mattermost
     config["deliver"] = deliver
 
@@ -714,6 +721,7 @@ def _summary_table(
     ews_login: Optional[str] = None,
     dm_scope: str = "off",
     dm_allowlist: Optional[list[str]] = None,
+    delivery_summary: str = "",
 ) -> Table:
     table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
     table.add_column(style="dim", min_width=18)
@@ -725,11 +733,10 @@ def _summary_table(
     table.add_row("EWS password", _mask_secret(env_values["EWS_PASSWORD"], show_tail=0))
     table.add_row("LLM endpoint", env_values["LLM_ENDPOINT"])
     table.add_row("LLM token", _mask_secret(env_values["LLM_TOKEN"]))
-    table.add_row("MM webhook", env_values["MM_WEBHOOK_URL"])
-    table.add_row(
-        "MM PAT (ingest/api)",
-        "set" if env_values.get("MM_PAT") else "[dim]— (webhook delivery only)[/]",
-    )
+    table.add_row("MM delivery", delivery_summary or "webhook")
+    if env_values.get("MM_WEBHOOK_URL"):
+        table.add_row("MM webhook", env_values["MM_WEBHOOK_URL"])
+    table.add_row("MM PAT", "set" if env_values.get("MM_PAT") else "[dim]—[/]")
     table.add_row("MM DMs (ingest)", _dm_summary_value(dm_scope, dm_allowlist or []))
     table.add_row("Report language", report_language)
     table.add_row("CA certificate", verify_ca or "[dim]— (system trust store)[/]")
@@ -900,24 +907,133 @@ def _derive_mm_base_url(webhook: str) -> Optional[str]:
     return None
 
 
-def _mm_creds_step(webhook: str, existing_pat: str, existing_base: str) -> tuple[str, str]:
-    """Optionally collect MM_PAT + MM_BASE_URL (Mattermost ingest / reaction harvest / api-mode
-    delivery). Webhook delivery needs neither, so this is opt-in. Non-TTY runs skip prompting and
-    preserve existing values (stable line protocol). Returns ``(mm_pat, mm_base_url)`` — existing
-    values when kept/skipped, "" when unset. The api-mode delivery CHANNEL is chosen at the corp
-    session (it needs the live API to list channels), so it's deliberately not prompted here."""
-    console.print(
-        "[dim]Optional: a Personal Access Token unlocks MM ingest, reaction harvest, and api-mode"
-        " delivery. Webhook delivery (above) needs none.[/]"
-    )
+@dataclass
+class MMResult:
+    """Resolved Mattermost delivery choices the wizard threads into the writes.
+
+    PAT-first: a Personal Access Token (``auth_mode='api'``) delivers to the
+    owner's own private channel or self-DM — provably owner-only, captures
+    reactions — found-or-created on the first run by the api deliverer, no opaque
+    webhook needed. The incoming webhook (``auth_mode='webhook'``) is the
+    fallback when no PAT is given (a PAT may still be set there for ingest).
+    """
+
+    auth_mode: str = "webhook"  # "api" | "webhook"
+    webhook: str = ""
+    pat: str = ""
+    base_url: str = ""
+    acknowledged_private: bool = False
+    delivery_target: str = "self_dm"  # api only: "self_dm" | "private_channel"
+    channel_name: str = "actionpulse-digest"  # api only (private-channel base slug)
+
+
+def _mm_step(existing_env: dict[str, str], existing_cfg: dict) -> MMResult:
+    """Step 6: Mattermost delivery — PAT-first, webhook fallback.
+
+    A PAT posts the digest to your own private channel (or self-DM), found-or-
+    created on the first run; it is provably owner-only and captures reactions.
+    Decline the PAT and the opaque incoming webhook is used instead (a PAT can
+    still be set there for ingest / reactions). Non-TTY runs preserve the existing
+    delivery config and never prompt.
+    """
+    mm_cfg = (existing_cfg.get("deliver", {}) or {}).get("mattermost", {}) or {}
+    existing_pat = os.getenv("MM_PAT", "")
+    existing_base = os.getenv("MM_BASE_URL", "")
+    existing_webhook = existing_env.get("MM_WEBHOOK_URL") or ""
+    default_api = (mm_cfg.get("auth_mode") == "api") or bool(existing_pat)
+
     if not sys.stdin.isatty():
-        return existing_pat, existing_base
-    if not Confirm.ask("[ap.accent.bold]Set a Mattermost PAT now?[/]", default=bool(existing_pat)):
-        return existing_pat, existing_base
-    mm_pat = _ask_secret("Mattermost PAT", existing=existing_pat)
-    default_base = existing_base or _derive_mm_base_url(webhook)
-    mm_base_url = _ask("Mattermost base URL", default=default_base, validate=_validate_url)
-    return mm_pat, mm_base_url
+        # Scripted/piped: preserve the existing delivery config, never prompt.
+        if default_api and existing_pat:
+            return MMResult(
+                auth_mode="api",
+                pat=existing_pat,
+                base_url=existing_base,
+                acknowledged_private=True,
+                delivery_target=mm_cfg.get("delivery_target") or "self_dm",
+                channel_name=mm_cfg.get("channel_name") or "actionpulse-digest",
+            )
+        return MMResult(
+            auth_mode="webhook",
+            webhook=existing_webhook,
+            pat=existing_pat,
+            base_url=existing_base,
+            acknowledged_private=bool(mm_cfg.get("acknowledged_private", False)),
+        )
+
+    console.print(
+        "[dim]Deliver with a Personal Access Token (recommended — posts to your own private"
+        " channel / self-DM, captures reactions) or an incoming webhook.[/]"
+    )
+    console.print("[dim]Get a PAT: Mattermost → Profile → Security → Personal Access Tokens.[/]")
+    if Confirm.ask(
+        "[ap.accent.bold]Use a Personal Access Token for delivery?[/]", default=default_api
+    ):
+        pat = _ask_secret("Mattermost PAT", existing=existing_pat)
+        base_url = _ask(
+            "Mattermost base URL",
+            default=existing_base or _derive_mm_base_url(existing_webhook),
+            validate=_validate_url,
+        )
+        target = choose(
+            "Where should the digest land?",
+            [
+                ("self_dm", "A note to yourself (self-DM) — zero setup"),
+                ("private_channel", "A private channel only you are in"),
+            ],
+            default_index=0 if (mm_cfg.get("delivery_target") or "self_dm") == "self_dm" else 1,
+            console=console,
+        )
+        channel_name = mm_cfg.get("channel_name") or "actionpulse-digest"
+        if target == "private_channel":
+            channel_name = (_ask("Channel name", default=channel_name) or channel_name).strip()
+        where = "your self-DM" if target == "self_dm" else f"private channel '{channel_name}-<you>'"
+        console.print(
+            f"  [ap.ok]✓[/] Delivery: api-mode → {where}"
+            " [ap.dim](found-or-created on the first run)[/]"
+        )
+        return MMResult(
+            auth_mode="api",
+            pat=pat,
+            base_url=base_url,
+            acknowledged_private=True,  # api delivery is structurally owner-only
+            delivery_target=target,
+            channel_name=channel_name,
+        )
+
+    # No PAT-delivery → the opaque incoming webhook (the fallback).
+    webhook = _ask(
+        "Mattermost webhook URL", default=existing_webhook or None, validate=_validate_url
+    )
+    console.print("[dim]A webhook URL is opaque — ActionPulse cannot verify the target channel.[/]")
+    acknowledged_private = Confirm.ask(
+        "[ap.accent.bold]Is this webhook a PRIVATE DM/channel (not a shared team channel)?[/]",
+        default=bool(mm_cfg.get("acknowledged_private", False)),
+    )
+    if not acknowledged_private:
+        console.print(
+            "  [ap.warn]⚠[/] Unconfirmed: every run will warn that the personal digest"
+            " may be visible to the channel audience."
+        )
+    # A PAT is still useful for MM ingest + reaction harvest even with webhook delivery.
+    pat, base_url = existing_pat, existing_base
+    if Confirm.ask(
+        "[ap.accent.bold]Set a Mattermost PAT for ingest / reactions?[/]",
+        default=bool(existing_pat),
+    ):
+        pat = _ask_secret("Mattermost PAT", existing=existing_pat)
+        base_url = _ask(
+            "Mattermost base URL",
+            default=existing_base or _derive_mm_base_url(webhook),
+            validate=_validate_url,
+        )
+    return MMResult(
+        auth_mode="webhook",
+        webhook=webhook,
+        pat=pat,
+        base_url=base_url,
+        acknowledged_private=acknowledged_private,
+    )
 
 
 def _store_step(existing_cfg: dict) -> tuple[bool, Optional[str]]:
@@ -1113,38 +1229,12 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
     _step(5, "LLM Gateway token", "Bearer token; never written to logs or configs in plain form.")
     llm_token = _ask_secret("LLM token (Bearer)", existing=existing_env.get("LLM_TOKEN", ""))
 
-    # ── 6. Mattermost webhook ──
-    _step(6, "Mattermost", "Incoming webhook of the channel that receives the digest.")
-    default_mm = existing_env.get("MM_WEBHOOK_URL") or None
-    mm_webhook = _ask("Mattermost webhook URL", default=default_mm, validate=_validate_url)
+    # ── 6. Mattermost — delivery (PAT-first, webhook fallback) ──
+    _step(6, "Mattermost", "Deliver the digest via a Personal Access Token or an incoming webhook.")
+    mm = _mm_step(existing_env, existing_cfg)
 
-    # D4 delivery guard: a webhook URL is an opaque token — we cannot tell what
-    # channel it points at. Ask the operator to confirm it is a private target so
-    # the personal digest is not posted to a shared team channel by accident.
-    # Default to the existing config value (idempotent re-runs keep the answer).
-    default_ack = bool(
-        ((existing_cfg.get("deliver", {}) or {}).get("mattermost", {}) or {}).get(
-            "acknowledged_private", False
-        )
-    )
-    console.print("[dim]A webhook URL is opaque — ActionPulse cannot verify the target channel.[/]")
-    acknowledged_private = Confirm.ask(
-        "[ap.accent.bold]Is this webhook a PRIVATE DM/channel (not a shared team channel)?[/]",
-        default=default_ack,
-    )
-    if not acknowledged_private:
-        console.print(
-            "  [ap.warn]⚠[/] Unconfirmed: every run will warn that the personal digest"
-            " may be visible to the channel audience."
-        )
-
-    # Optional MM credentials (ingest / reactions / api-delivery) — part of the MM step.
-    mm_pat, mm_base_url = _mm_creds_step(
-        mm_webhook, os.getenv("MM_PAT", ""), os.getenv("MM_BASE_URL", "")
-    )
-
-    # Direct messages (ingest) — privacy ladder, consent-gated (part of the
-    # Mattermost step; TOTAL_STEPS stays 7).
+    # Direct messages (ingest) — privacy ladder (part of the Mattermost step;
+    # TOTAL_STEPS stays 7).
     dm = _dm_step(existing_cfg)
 
     # ── 7. Report language ──
@@ -1185,17 +1275,27 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
         "EWS_ENDPOINT": ews_endpoint,
         "LLM_TOKEN": llm_token,
         "LLM_ENDPOINT": llm_endpoint,
-        "MM_WEBHOOK_URL": mm_webhook,
     }
+    if mm.webhook:
+        env_values["MM_WEBHOOK_URL"] = mm.webhook
     if store_key:
         env_values["DIGEST_STORE_KEY"] = store_key
     # MM credentials: the collected values already fall back to any existing env (kept on a
     # skip / Enter), so this both records new input and preserves prior secrets across re-runs
     # (the env file is rewritten from scratch).
-    if mm_pat:
-        env_values["MM_PAT"] = mm_pat
-    if mm_base_url:
-        env_values["MM_BASE_URL"] = mm_base_url
+    if mm.pat:
+        env_values["MM_PAT"] = mm.pat
+    if mm.base_url:
+        env_values["MM_BASE_URL"] = mm.base_url
+    if mm.auth_mode == "api":
+        _where = (
+            "self-DM"
+            if mm.delivery_target == "self_dm"
+            else f"private channel '{mm.channel_name}-<you>'"
+        )
+        delivery_summary = f"api → {_where}"
+    else:
+        delivery_summary = "webhook"
     console.print()
     console.print(
         Panel(
@@ -1206,6 +1306,7 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
                 derived["user_login"],
                 dm_scope=dm.scope,
                 dm_allowlist=dm.allowlist,
+                delivery_summary=delivery_summary,
             ),
             title="[bold]Review the values[/]",
             box=box.ROUNDED,
@@ -1233,7 +1334,10 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
             derived=derived,
             verify_ca=verify_ca,
             report_language=report_language,
-            acknowledged_private=acknowledged_private,
+            acknowledged_private=mm.acknowledged_private,
+            auth_mode=mm.auth_mode,
+            delivery_target=mm.delivery_target,
+            channel_name=mm.channel_name,
             dm_scope=dm.scope,
             dm_allowlist=dm.allowlist,
             dm_consent_acknowledged=dm.consent_acknowledged,
@@ -1257,13 +1361,13 @@ def _run_setup_flow(det: Optional[DetectedEnv] = None, force_ask: bool = False) 
         with console.status("[ap.accent]Checking the LLM gateway…", spinner=SPINNER):
             llm_ok, llm_detail = _test_llm(llm_endpoint, llm_token, verify=verify)
         _report_check(console, "LLM gateway", llm_ok, llm_detail)
-        if mm_pat and mm_base_url:
+        if mm.pat and mm.base_url:
             with console.status("[ap.accent]Checking the Mattermost API…", spinner=SPINNER):
-                pat_ok, pat_detail = _test_mm_pat(mm_base_url, mm_pat, verify=verify)
+                pat_ok, pat_detail = _test_mm_pat(mm.base_url, mm.pat, verify=verify)
             _report_check(console, "Mattermost API (PAT)", pat_ok, pat_detail)
-        if mm_webhook:
+        if mm.webhook:
             with console.status("[ap.accent]Checking the Mattermost webhook…", spinner=SPINNER):
-                mm_ok, mm_detail = _test_mm_webhook(mm_webhook)
+                mm_ok, mm_detail = _test_mm_webhook(mm.webhook)
             if mm_ok:
                 console.print("  [ap.ok]✓[/] Mattermost webhook — test message delivered")
             else:
