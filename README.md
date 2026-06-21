@@ -28,7 +28,7 @@ Bare `actionpulse` opens an arrow-key menu; "Run digest" asks exactly one follow
 
 ## What it is
 
-A single-tenant CLI tool. It reads your Exchange inbox — and, optionally, your Mattermost @-mentions / allowlisted channels / DMs, plus your Exchange **calendar** — runs it through an 8-stage pipeline, and delivers the result to Mattermost via an **incoming webhook** (the target channel is chosen when the webhook is created in Mattermost). An opt-in encrypted store also enables cross-day sections, local `search`/`ask`, and an MCP server (below).
+A single-tenant CLI tool. It reads your Exchange inbox — and, optionally, your Mattermost @-mentions / allowlisted channels / DMs, plus your Exchange **calendar** — runs it through an 8-stage pipeline, and delivers the result to Mattermost — by default to your own private channel via a **Personal Access Token** (auto-created, reactions captured), or to an **incoming webhook** if you'd rather not create a token. An opt-in encrypted store also enables cross-day sections, local `search`/`ask`, and an MCP server (below).
 
 **Not a summarizer** — the LLM extracts facts from evidence, it does not write on its own. Core output sections:
 - **My actions** — what is expected from you
@@ -89,14 +89,14 @@ Everything regenerable lives in **one data home**: `~/ActionPulse/var/` — `var
 
 > If `actionpulse` isn't found, `~/.local/bin` isn't on your PATH yet — open a new terminal, or add it: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec $SHELL`. The classic `cd ~/ActionPulse/digest-core && uv run python -m digest_core.cli …` invocation still works too.
 
-The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost webhook URL, and the report language (`en` default / `ru`). Before asking, it auto-detects your machine login (the EWS NTLM identity, e.g. `ruapgr2` — note this differs from the email local part), your name, and corp-email candidates (a local Keychain metadata scan — Keychain secrets stay encrypted and unreadable) and auto-confirms validated values; the final review screen is always shown (`--no-autodetect` disables detection). It generates `~/.config/actionpulse/env` (chmod 600) and `configs/config.yaml`. To reconfigure: `actionpulse setup` (or `make setup` from `digest-core/` — the same wizard; it also installs the `actionpulse` launcher when missing).
+The wizard asks for: corporate email, EWS endpoint, EWS password, LLM endpoint, LLM token, Mattermost delivery (a Personal Access Token → your own channel, or a webhook), and the report language (`en` default / `ru`). Before asking, it auto-detects your machine login (the EWS NTLM identity, e.g. `ruapgr2` — note this differs from the email local part), your name, and corp-email candidates (a local Keychain metadata scan — Keychain secrets stay encrypted and unreadable) and auto-confirms validated values; the final review screen is always shown (`--no-autodetect` disables detection). It generates `~/.config/actionpulse/env` (chmod 600) and `configs/config.yaml`. To reconfigure: `actionpulse setup` (or `make setup` from `digest-core/` — the same wizard; it also installs the `actionpulse` launcher when missing).
 
 If you see `No module named 'digest_core'`, the command ran under the system Python outside the project environment. Use `uv run python -m ...` (as in the examples above) or activate `.venv` manually.
 
 ### Mattermost integration (important)
 Mattermost is both a **delivery target** and an optional **ingest source**:
-- **Deliver** (default): an **incoming webhook** posts the finished digest (Stage 8). Write-only, no reading.
-- **Ingest** (opt-in, off by default): with a personal access token (`MM_PAT`) and `--sources ews,mm`, ActionPulse **reads** via the authenticated v4 REST API — your @-mentions, allowlisted channels, and (consent-gated, `mm_source.dm_scope`, default `off`) direct messages. DM bodies are never stored at rest (redacted; guardrail #9).
+- **Deliver** (default, recommended): with a **Personal Access Token** (`MM_PAT`; Mattermost → Profile → Security → Personal Access Tokens), ActionPulse posts the digest to your own private channel or self-DM (`auth_mode: api`) — provably owner-only, and it captures post-ids so reactions feed the calibration flywheel. The channel is found-or-created on the first run. No PAT? An **incoming webhook** (`MM_WEBHOOK_URL`) is the fallback — write-only, opaque target.
+- **Ingest** (opt-in, off by default): the same `MM_PAT` + `--sources ews,mm` lets ActionPulse **read** via the authenticated v4 REST API — your @-mentions, allowlisted channels, and (consent-gated, `mm_source.dm_scope`, default `off`) direct messages. DM bodies are never stored at rest (redacted; guardrail #9).
 
 So: enabling `dm_scope` *does* read DMs — by design, behind explicit consent. Details: [`digest-core/CLAUDE.md`](digest-core/CLAUDE.md).
 

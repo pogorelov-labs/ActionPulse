@@ -394,6 +394,26 @@ class TestWriteConfigYaml:
     def test_store_disabled_adds_no_block(self, tmp_path, monkeypatch):
         assert "store" not in self._write_with_store(tmp_path, monkeypatch, False)
 
+    def test_api_delivery_block_written(self, tmp_path, monkeypatch):
+        # #1: PAT-first delivery persists auth_mode + the api target/channel.
+        mm = self._write_with_dm(
+            tmp_path,
+            monkeypatch,
+            auth_mode="api",
+            delivery_target="private_channel",
+            channel_name="ap-digest",
+            acknowledged_private=True,
+        )["deliver"]["mattermost"]
+        assert mm["auth_mode"] == "api"
+        assert mm["delivery_target"] == "private_channel"
+        assert mm["channel_name"] == "ap-digest"
+        assert mm["acknowledged_private"] is True
+
+    def test_webhook_delivery_block_has_no_api_keys(self, tmp_path, monkeypatch):
+        mm = self._write_with_dm(tmp_path, monkeypatch)["deliver"]["mattermost"]
+        assert mm["auth_mode"] == "webhook"
+        assert "delivery_target" not in mm and "channel_name" not in mm
+
 
 class TestStoreStep:
     """The optional encrypted-store enable step (non-interactive paths)."""
@@ -429,18 +449,60 @@ class TestStoreStep:
         assert key is not None and len(key) == 64  # fresh 256-bit hex key
 
 
-class TestMmCredsStep:
-    """Optional MM_PAT / MM_BASE_URL collection (B3)."""
+class TestMmStep:
+    """#1: PAT-first delivery — a PAT configures api-mode auto-channel; no PAT
+    falls back to the opaque webhook."""
 
-    def test_non_tty_preserves_existing_without_prompting(self, monkeypatch):
-        from digest_core.setup_wizard import _mm_creds_step
+    def test_non_tty_preserves_api_when_pat_present(self, monkeypatch):
+        from digest_core.setup_wizard import _mm_step
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
-        # Piped/scripted runs never prompt; they return the existing creds unchanged.
-        assert _mm_creds_step("https://mm.corp/hooks/x", "pat-123", "https://mm.corp") == (
-            "pat-123",
-            "https://mm.corp",
+        monkeypatch.setenv("MM_PAT", "pat-123")
+        monkeypatch.setenv("MM_BASE_URL", "https://mm.corp")
+        mm = _mm_step(
+            {}, {"deliver": {"mattermost": {"auth_mode": "api", "delivery_target": "self_dm"}}}
         )
+        assert mm.auth_mode == "api"
+        assert mm.pat == "pat-123" and mm.base_url == "https://mm.corp"
+        assert mm.acknowledged_private is True  # api delivery is provably owner-only
+
+    def test_non_tty_preserves_webhook_when_no_pat(self, monkeypatch):
+        from digest_core.setup_wizard import _mm_step
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+        monkeypatch.delenv("MM_PAT", raising=False)
+        mm = _mm_step({"MM_WEBHOOK_URL": "https://mm.corp/hooks/x"}, {})
+        assert mm.auth_mode == "webhook" and mm.webhook == "https://mm.corp/hooks/x"
+
+    def test_tty_pat_yes_configures_api_delivery(self, monkeypatch):
+        from digest_core import setup_wizard as wiz
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        monkeypatch.delenv("MM_PAT", raising=False)
+        monkeypatch.delenv("MM_BASE_URL", raising=False)
+        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: True))  # use PAT? yes
+        monkeypatch.setattr(wiz, "_ask_secret", lambda *a, **k: "pat-xyz")
+        monkeypatch.setattr(wiz, "_ask", lambda *a, **k: "https://mm.corp")  # base url
+        monkeypatch.setattr(wiz, "choose", lambda *a, **k: "self_dm")
+        mm = wiz._mm_step({}, {})
+        assert mm.auth_mode == "api"
+        assert mm.pat == "pat-xyz"
+        assert mm.delivery_target == "self_dm"
+        assert mm.acknowledged_private is True
+
+    def test_tty_pat_no_falls_back_to_webhook(self, monkeypatch):
+        from digest_core import setup_wizard as wiz
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+        monkeypatch.delenv("MM_PAT", raising=False)
+        # Confirm: "use PAT?"=No, "private?"=Yes, "set PAT for ingest?"=No.
+        answers = iter([False, True, False])
+        monkeypatch.setattr(wiz.Confirm, "ask", staticmethod(lambda *a, **k: next(answers, False)))
+        monkeypatch.setattr(wiz, "_ask", lambda *a, **k: "https://mm.corp/hooks/x")  # webhook url
+        mm = wiz._mm_step({}, {})
+        assert mm.auth_mode == "webhook"
+        assert mm.webhook == "https://mm.corp/hooks/x"
+        assert mm.acknowledged_private is True
 
     def test_derive_base_url_from_webhook(self):
         from digest_core.setup_wizard import _derive_mm_base_url
