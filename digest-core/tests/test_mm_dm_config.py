@@ -22,7 +22,6 @@ def test_dm_defaults_are_hard_off():
     cfg = MattermostSourceConfig()
     assert cfg.dm_scope == "off"
     assert cfg.dm_allowlist == []
-    assert cfg.dm_max_quote_chars == 280
     assert cfg.dm_consent_acknowledged is False
     assert cfg.dm_consent_acknowledged_at is None
 

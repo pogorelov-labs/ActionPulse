@@ -9,15 +9,15 @@ What is asserted here (design §2.2 DMs + §6 privacy ladder):
     group-DM with an @owner mention yields ZERO messages (the pre-existing
     mention-slice leak is CLOSED). OP-channel mentions/allowlist still work.
   * dm_scope='own_posts_only' — only the owner's OWN DM posts are kept
-    (addressed_to_me=False, uncapped); counterparty posts dropped entirely.
+    (addressed_to_me=False); counterparty posts dropped entirely.
   * dm_scope='selected' — only D/G channels whose counterparty matches the
     dm_allowlist are paged (allowlist-BEFORE-GET); counterparty posts are kept
-    (addressed_to_me=True, quote-capped), owner posts kept (uncapped).
+    (addressed_to_me=True), owner posts kept — both in full.
   * member-match by user_id / @username / bare username / email (case-insens).
   * 'D' counterparty derived from the channel-name split; 'G' members via
     get_channel_members; group-DM kept iff ANY non-owner member matches.
-  * quote cap: counterparty text truncated to N; N=0 → ""; owner text uncapped.
-  * dm_scope='all' — every active D/G ingested; counterparty capped.
+  * full harvest: DM text (counterparty + owner) is kept in full — no quote cap.
+  * dm_scope='all' — every active D/G ingested (full text).
   * mm_channel_type set to 'D'/'G'/'O'/'P'; None for email; NOT in the hash.
 """
 
@@ -430,7 +430,7 @@ def test_own_posts_only_keeps_owner_drops_counterparty():
     assert owner_dm.to_recipients == []  # owner's own statement, not addressed-to-me
     assert owner_dm.subject == ""  # DMs have no subject
     assert owner_dm.mm_channel_type == "D"
-    # Owner text is NEVER quote-capped.
+    # Owner text is harvested in full.
     assert owner_dm.text_body == "I'll get to it this afternoon"
 
     # No consent required for own_posts_only (config constructs fine, no error).
@@ -454,11 +454,11 @@ def _selected_adapter(http: _FakeHttp, allowlist: list[str], **kw) -> Mattermost
     )
 
 
-def test_selected_matching_partner_dm_kept_counterparty_capped():
-    """A matching partner's 1:1 DM: counterparty posts kept (addressed_to_me=True,
-    quote-capped to N), owner posts kept (uncapped)."""
+def test_selected_matching_partner_dm_kept_in_full():
+    """A matching partner's 1:1 DM: counterparty posts kept (addressed_to_me=True),
+    owner posts kept — both harvested in full (no quote cap)."""
     http = _full_http()
-    adapter = _selected_adapter(http, [_PARTNER_USERNAME], dm_max_quote_chars=10)
+    adapter = _selected_adapter(http, [_PARTNER_USERNAME])
     by_id = {m.msg_id: m for m in adapter.fetch(_DIGEST_DATE)}
 
     # The partner DM is fully ingested.
@@ -469,13 +469,12 @@ def test_selected_matching_partner_dm_kept_counterparty_capped():
     assert cp.to_recipients[0] == _OWNER_HANDLE  # a DM to you IS addressed to you
     assert cp.mm_channel_type == "D"
     assert cp.subject == ""
-    # Counterparty text is quote-capped to N=10 chars.
-    assert cp.text_body == "can you ap"
-    assert len(cp.text_body) == 10
+    # Counterparty text is kept in full — no truncation.
+    assert cp.text_body == "can you approve the budget by EOD? " + ("x" * 400)
 
     owner = by_id["mm:p-dmp-owner"]
     assert owner.to_recipients == []  # owner's own statement
-    assert owner.text_body == "I'll get to it this afternoon"  # uncapped
+    assert owner.text_body == "I'll get to it this afternoon"
 
 
 def test_selected_non_matching_partner_dm_never_paged():
@@ -494,11 +493,11 @@ def test_selected_non_matching_partner_dm_never_paged():
 
 
 def test_selected_group_dm_kept_iff_any_member_matches():
-    """A group-DM is kept iff ANY non-owner member matches; counterparty text is
-    quote-capped. Members are resolved via get_channel_members ('G')."""
+    """A group-DM is kept iff ANY non-owner member matches; text is harvested in
+    full. Members are resolved via get_channel_members ('G')."""
     http = _full_http()
     # The partner is a member of the group-DM → it is selected.
-    adapter = _selected_adapter(http, [_PARTNER_USERNAME], dm_max_quote_chars=12)
+    adapter = _selected_adapter(http, [_PARTNER_USERNAME])
     by_id = {m.msg_id: m for m in adapter.fetch(_DIGEST_DATE)}
 
     # Group-DM ingested (partner matched among its members).
@@ -507,7 +506,7 @@ def test_selected_group_dm_kept_iff_any_member_matches():
     gdm = by_id["mm:p-gdm-mention"]
     assert gdm.mm_channel_type == "G"
     assert gdm.to_recipients[0] == _OWNER_HANDLE  # counterparty post → addressed-to-me
-    assert len(gdm.text_body) == 12  # quote-capped
+    assert gdm.text_body == f"{_OWNER_HANDLE} can you join the call? " + ("z" * 400)  # full
     # The 'G' member list WAS resolved (metadata, before posts GET).
     assert any(url.endswith("/channels/gdm-1/members") for (_, url) in http.calls)
 
@@ -576,42 +575,15 @@ def test_selected_d_counterparty_derived_from_name_no_members_call():
 
 
 # ---------------------------------------------------------------------------
-# 5. Quote cap edge cases
+# 5. dm_scope='all' — every active D/G ingested
 # ---------------------------------------------------------------------------
 
 
-def test_quote_cap_zero_strips_counterparty_text():
-    """dm_max_quote_chars=0 → counterparty text becomes "" (stripped); owner text
-    is untouched."""
+def test_all_ingests_every_active_dm_in_full():
+    """dm_scope='all': every active D/G is ingested (no member filter); all text
+    — counterparty and owner — is harvested in full."""
     http = _full_http()
-    adapter = _selected_adapter(http, [_PARTNER_USERNAME], dm_max_quote_chars=0)
-    by_id = {m.msg_id: m for m in adapter.fetch(_DIGEST_DATE)}
-    assert by_id["mm:p-dmp-cp"].text_body == ""
-    # The owner's own post is NEVER capped.
-    assert by_id["mm:p-dmp-owner"].text_body == "I'll get to it this afternoon"
-
-
-def test_quote_cap_owner_text_uncapped_even_with_tiny_cap():
-    """The owner's own DM posts are uncapped regardless of dm_max_quote_chars."""
-    http = _full_http()
-    adapter = _selected_adapter(http, [_PARTNER_USERNAME], dm_max_quote_chars=3)
-    by_id = {m.msg_id: m for m in adapter.fetch(_DIGEST_DATE)}
-    assert by_id["mm:p-dmp-owner"].text_body == "I'll get to it this afternoon"
-    assert len(by_id["mm:p-dmp-cp"].text_body) == 3
-
-
-# ---------------------------------------------------------------------------
-# 6. dm_scope='all' — every active D/G ingested
-# ---------------------------------------------------------------------------
-
-
-def test_all_ingests_every_active_dm_counterparty_capped():
-    """dm_scope='all': every active D/G is ingested (no member filter); counterparty
-    text is quote-capped, owner text uncapped."""
-    http = _full_http()
-    adapter = _make_adapter(
-        http, dm_scope="all", dm_consent_acknowledged=True, dm_max_quote_chars=5
-    )
+    adapter = _make_adapter(http, dm_scope="all", dm_consent_acknowledged=True)
     by_id = {m.msg_id: m for m in adapter.fetch(_DIGEST_DATE)}
 
     # Both DMs + the group-DM are ingested (every counterparty post present).
@@ -625,11 +597,11 @@ def test_all_ingests_every_active_dm_counterparty_capped():
     ):
         assert mid in by_id, mid
 
-    # Counterparty posts are addressed-to-me + quote-capped.
+    # Counterparty posts are addressed-to-me + kept in full.
     assert by_id["mm:p-dmp-cp"].to_recipients[0] == _OWNER_HANDLE
-    assert len(by_id["mm:p-dmp-cp"].text_body) == 5
-    assert len(by_id["mm:p-dmo-cp"].text_body) == 5
-    # Owner posts uncapped.
+    assert by_id["mm:p-dmp-cp"].text_body == "can you approve the budget by EOD? " + ("x" * 400)
+    assert by_id["mm:p-dmo-cp"].text_body == "ping " + ("y" * 400)
+    # Owner posts in full.
     assert by_id["mm:p-dmp-owner"].text_body == "I'll get to it this afternoon"
 
     stats = adapter.last_fetch_stats
