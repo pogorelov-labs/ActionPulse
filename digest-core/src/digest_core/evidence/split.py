@@ -281,7 +281,7 @@ class EvidenceSplitter:
         current_chunk = ""
         chunk_count = 0
 
-        for paragraph in paragraphs:
+        for p_idx, paragraph in enumerate(paragraphs):
             # Estimate tokens (rough approximation: 1.3 tokens per word)
             paragraph_tokens = int(len(paragraph.split()) * 1.3)
 
@@ -318,6 +318,14 @@ class EvidenceSplitter:
 
             # Limit chunks per message (adaptive)
             if chunk_count >= max_chunks_for_message:
+                dropped = len(paragraphs) - (p_idx + 1)
+                if dropped > 0:
+                    logger.warning(
+                        "evidence_chunk_cap_hit",
+                        message_index=message_index,
+                        cap=max_chunks_for_message,
+                        dropped_paragraphs=dropped,
+                    )
                 break
 
         # Add final chunk if it exists
@@ -369,7 +377,15 @@ class EvidenceSplitter:
 
                 # If single sentence is still too long, truncate it
                 if sentence_tokens > self.max_tokens_per_chunk:
-                    truncated = sentence[: self.max_tokens_per_chunk * 4]
+                    keep_chars = self.max_tokens_per_chunk * 4
+                    if len(sentence) > keep_chars:
+                        logger.warning(
+                            "evidence_sentence_truncated",
+                            message_index=message_index,
+                            kept_chars=keep_chars,
+                            original_chars=len(sentence),
+                        )
+                    truncated = sentence[:keep_chars]
                     chunk = self._create_evidence_chunk(
                         truncated, conversation_id, message, message_index, chunk_count
                     )
@@ -578,6 +594,7 @@ class EvidenceSplitter:
         limited_chunks = []
         total_tokens = 0
 
+        truncated_last = False
         for chunk in chunks:
             if total_tokens + chunk.token_count <= self.max_total_tokens:
                 limited_chunks.append(chunk)
@@ -592,6 +609,7 @@ class EvidenceSplitter:
                         content=truncated_content, token_count=remaining_tokens
                     )
                     limited_chunks.append(truncated_chunk)
+                    truncated_last = True
                 break
 
         logger.info(
@@ -599,6 +617,8 @@ class EvidenceSplitter:
             original_chunks=len(chunks),
             limited_chunks=len(limited_chunks),
             total_tokens=total_tokens,
+            dropped_chunks=len(chunks) - len(limited_chunks),
+            last_chunk_truncated=truncated_last,
         )
 
         return limited_chunks
