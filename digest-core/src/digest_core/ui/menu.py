@@ -1,10 +1,13 @@
 """Interactive launcher menu (TERMINAL_DESIGN.md §5, roadmap follow-up).
 
-`actionpulse` with no subcommand opens this menu on a TTY — Run / Dry-run /
-Diagnose / Settings / Show config / Quit — built on the §5.2 arrow-key
-selector. Each action calls the same code paths as the corresponding
-subcommand; the menu loops until Quit. Non-TTY callers never reach here
-(the CLI prints help instead), so scripted use is unaffected.
+`actionpulse` with no subcommand opens this menu on a TTY — Run / Read /
+History / Dry-run / Diagnose / Settings & tools / Quit — built on the §5.2
+arrow-key selector. To stay within the 1–9 quick-select invariant the
+lower-frequency actions (setup wizard, Mattermost DMs, MCP, maintenance,
+show-config) live under the "Settings & tools" submenu. Each action calls the
+same code paths as the corresponding subcommand; the menu loops until Quit.
+Non-TTY callers never reach here (the CLI prints help instead), so scripted
+use is unaffected.
 
 "Run digest" opens ONE follow-up selector (U3): the daily time-period
 decision (today / rolling 24h / yesterday / a date / --force / repeat last)
@@ -552,10 +555,60 @@ def _mcp_menu(console: Console) -> None:
     offer_install(console)
 
 
+def _settings_menu(console: Console, on_settings: Callable[[], None]) -> None:
+    """Settings & tools submenu — keeps the main menu inside the 1–9 quick-select
+    invariant (§5.2). Hosts the lower-frequency actions: run the setup wizard ·
+    edit Mattermost DM scope/partners · register the MCP server · maintenance ·
+    show the current config. Each row reuses the existing screen/callback."""
+    while True:
+        action = choose(
+            "Settings & tools",
+            [
+                ("setup", "Run the setup wizard"),
+                ("mm_dm", "Mattermost DMs — scope · partners"),
+                ("mcp", "MCP server — register into AI coding CLIs"),
+                ("maintenance", "Maintenance — disk usage · cleanup · logging"),
+                ("config", "Show current config (masked)"),
+                ("back", "Back"),
+            ],
+            default_index=5,
+            console=console,
+            cancel_value="back",
+        )
+        if action == "back":
+            return
+        try:
+            if action == "mm_dm":
+                _mm_dm_menu(console)
+                continue  # has its own loop — no pause
+            if action == "maintenance":
+                _maintenance(console)
+                continue  # has its own loop — no pause
+            if action == "setup":
+                on_settings()
+            elif action == "mcp":
+                _mcp_menu(console)
+            elif action == "config":
+                _show_config(console)
+        except KeyboardInterrupt:
+            console.print("\n[ap.warn]⚠ Interrupted — back to settings.[/]")
+        except Exception as exc:  # noqa: BLE001 - keep the submenu alive on errors
+            console.print(f"[ap.err]✗[/] {exc}")
+        # setup/mcp/config print and return at once — pause so the result is
+        # readable before the submenu re-renders.
+        console.print()
+        try:
+            console.input("[ap.dim]Enter — back to settings …[/]")
+        except (EOFError, KeyboardInterrupt):
+            return
+
+
 def _main_menu_options(store_enabled: bool) -> list[tuple[str, str]]:
-    """The launcher rows. Search/Ask appear ONLY when the encrypted store is enabled —
-    they are meaningless without it, and a dead row would mislead (the headline UX gap:
-    the store's retrieval pillar was invisible to menu-driven users)."""
+    """The launcher rows — kept within the 1–9 quick-select invariant (§5.2): the
+    primary actions stay top-level; setup / Mattermost DMs / MCP / maintenance /
+    show-config live under the "Settings & tools" submenu (`_settings_menu`).
+    Search/Ask appear ONLY when the encrypted store is enabled — they are
+    meaningless without it, and a dead row would mislead."""
     options = [
         ("run", "Run digest — pick period, full pipeline + delivery"),
         ("read", "Read digest — topics · authors · quotes"),
@@ -569,11 +622,7 @@ def _main_menu_options(store_enabled: bool) -> list[tuple[str, str]]:
     options += [
         ("dry", "Dry run — ingest only, no LLM"),
         ("diagnose", "Diagnose — check environment & config"),
-        ("mm_dm", "Mattermost DMs — scope · partners"),
-        ("maintenance", "Maintenance — disk usage · cleanup · logging"),
-        ("mcp", "MCP server — register into AI coding CLIs"),
-        ("settings", "Settings — run the setup wizard"),
-        ("config", "Show current config (masked)"),
+        ("settings", "Settings & tools — setup · Mattermost DMs · MCP · maintenance"),
         ("quit", "Quit"),
     ]
     return options
@@ -675,19 +724,9 @@ def run_menu(
                 on_run(True, None)
             elif choice == "diagnose":
                 on_diagnose()
-            elif choice == "mm_dm":
-                _mm_dm_menu(out)
-                continue  # the screen has its own loop; no Enter gate needed
-            elif choice == "maintenance":
-                _maintenance(out)
-                continue  # the screen has its own loop; no Enter gate needed
-            elif choice == "mcp":
-                _mcp_menu(out)
-                continue  # the screen prints its own result; no Enter gate needed
             elif choice == "settings":
-                on_settings()
-            elif choice == "config":
-                _show_config(out)
+                _settings_menu(out, on_settings)
+                continue  # the submenu has its own loop + pauses
         except KeyboardInterrupt:
             out.print("\n[ap.warn]⚠ Interrupted — back to menu.[/]")
         except Exception as exc:  # noqa: BLE001 - keep the menu alive on action errors

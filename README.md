@@ -69,7 +69,7 @@ make setup
 After installation the **`actionpulse`** command is available everywhere (a launcher in `~/.local/bin`). Secrets load automatically from `~/.config/actionpulse/env` — no manual `source` needed:
 
 ```bash
-actionpulse               # interactive menu: Run · Read · Dry run · Diagnose · Mattermost DMs · Maintenance · MCP · Settings
+actionpulse               # interactive menu: Run · Read · History · Dry run · Diagnose · Settings & tools
 actionpulse run --dry-run # ingest + normalize only, no LLM
 actionpulse run           # full pipeline + delivery
 actionpulse read          # browse the latest digest (or --date YYYY-MM-DD)
