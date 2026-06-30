@@ -64,10 +64,14 @@ class TestUsageAndClean:
         removed, _ = maintenance.clean_digests(maintenance.DEFAULT_KEEP_DAYS)
         out = tmp_path / "var" / "out"
         names = sorted(p.name for p in out.iterdir())
+        old = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+        new = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         assert removed == 2  # the 30-day-old json+md pair
-        assert all("digest-" not in n or "30" not in n for n in names)
-        # Recent pair + the trace meta (recent mtime) survive.
-        assert len(names) == 3
+        # The old pair is gone; the recent pair + the trace meta (recent mtime) survive.
+        # Assert on exact filenames — a bare "30" substring check collides with
+        # day-of-month dates (e.g. the 30th), failing the recent digest-YYYY-MM-30.*.
+        assert f"digest-{old}.json" not in names and f"digest-{old}.md" not in names
+        assert names == sorted([f"digest-{new}.json", f"digest-{new}.md", "trace-abc.meta.json"])
 
     def test_clean_digests_all(self, monkeypatch, tmp_path):
         _seed_data_home(monkeypatch, tmp_path)
