@@ -204,7 +204,7 @@ actionpulse run \
 **Если 0 писем:**
 ```bash
 # Попробовать шире — rolling 24h вместо calendar_day
-python -m digest_core.cli run \
+actionpulse run \
     --dry-run --force \
     --window rolling_24h \
     --dump-ingest /tmp/actionpulse/ews-snapshot-rolling.json \
@@ -223,7 +223,7 @@ python -m digest_core.cli run \
 Цель: реальный дайджест с доставкой в MM.
 
 ```bash
-python -m digest_core.cli run \
+actionpulse run \
     --force \
     --replay-ingest /tmp/actionpulse/ews-snapshot-$(date +%Y-%m-%d).json \
     --record-llm /tmp/actionpulse/llm-recording-$(date +%Y-%m-%d).json \
@@ -264,7 +264,7 @@ python -m digest_core.cli run \
 ## 4. Оценка качества (~5 мин)
 
 ```bash
-python -m digest_core.cli eval-prompt \
+actionpulse eval-prompt \
     --digest /tmp/actionpulse/out/digest-$(date +%Y-%m-%d).json \
     --ingest-snapshot /tmp/actionpulse/ews-snapshot-$(date +%Y-%m-%d).json \
     --output-json /tmp/actionpulse/eval-$(date +%Y-%m-%d).json
@@ -402,7 +402,7 @@ journalctl --user -u actionpulse-digest@$(whoami) -f
 
 ```bash
 cd digest-core
-python -m digest_core.cli run \
+actionpulse run \
     --force \
     --replay-ingest ~/corpus/ews-snapshot-2026-04-01.json \
     --replay-llm ~/corpus/llm-recording-2026-04-01.json \
@@ -419,13 +419,13 @@ Exit code 0, дайджест идентичен оригиналу. Тепер�
 vim prompts/extract_actions.v1.txt
 
 # 2. Прогнать с реальным evidence (нужен LLM — или replay)
-python -m digest_core.cli run \
+actionpulse run \
     --force \
     --replay-ingest ~/corpus/ews-snapshot-2026-04-01.json \
     --out /tmp/prompt-test
 
 # 3. Оценить
-python -m digest_core.cli eval-prompt \
+actionpulse eval-prompt \
     --digest /tmp/prompt-test/digest-2026-04-01.json \
     --ingest-snapshot ~/corpus/ews-snapshot-2026-04-01.json
 
@@ -506,13 +506,13 @@ Gold F1 = 0.601 измерялся на RU-пайплайне; качество 
 SNAP=/tmp/actionpulse/ews-snapshot-$(date +%Y-%m-%d).json
 
 # RU-референс (старый контракт вывода):
-DIGEST_REPORT_LANGUAGE=ru python -m digest_core.cli run --force \
+DIGEST_REPORT_LANGUAGE=ru actionpulse run --force \
     --replay-ingest "$SNAP" \
     --record-llm /tmp/actionpulse/llm-rec-ru.json \
     --out /tmp/actionpulse/out-ru --state /tmp/actionpulse/state-ru
 
 # EN (новый дефолт):
-python -m digest_core.cli run --force \
+actionpulse run --force \
     --replay-ingest "$SNAP" \
     --record-llm /tmp/actionpulse/llm-rec-en.json \
     --out /tmp/actionpulse/out-en --state /tmp/actionpulse/state-en
@@ -535,7 +535,7 @@ issue + рассмотреть `report.language: ru` как временный �
 
 Корп-профиль Terminal.app — 256 цветов, часто **светлый фон**:
 
-- [ ] мастер: `uv run python -m digest_core.cli setup` — баннер-градиент,
+- [ ] мастер: `actionpulse setup` — баннер-градиент,
       токены читаемы, стрелочное меню языка (↑↓/jk/Enter/Esc=default, 1-9)
 - [ ] live: повторный run с `--replay-llm /tmp/actionpulse/llm-rec-en.json` —
       спиннер, тикающий elapsed, постоянные ✓-строки над футером,
