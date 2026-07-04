@@ -13,6 +13,17 @@ on:
       - 'digest-core/**'
       - 'install.sh'
       - '.github/workflows/ci.yml'
+  # Nightly full-suite run. push/pull_request only fire on a commit, so a test that
+  # flips red with the wall-clock rather than a code change — a fixture aging past
+  # the store's 30-day TTL / 7-day retention window (see PR #210, and #207 before
+  # it) — can sit red on main for weeks until an unrelated push happens to re-run
+  # CI. This scheduled run resurfaces such date-rot within a day. GitHub only fires
+  # schedule from the default branch; 05:17 UTC dodges the top-of-hour backlog.
+  schedule:
+    - cron: '17 5 * * *'
+  # On-demand full-suite run (e.g. to confirm main is green after a date-rot fix)
+  # without needing a commit that touches the path filters above.
+  workflow_dispatch:
 
 defaults:
   run:
