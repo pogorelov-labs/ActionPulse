@@ -301,6 +301,30 @@ def _tool_fetch_source(source: str, digest_date: str) -> List[Dict[str, Any]]:
     return _records(_get_api().fetch_source(source, digest_date))
 
 
+# background ingestion daemon (status is always on; trigger_ingest is fetch-gated)
+
+
+def _tool_daemon_status() -> Dict[str, Any]:
+    """Background ingestion daemon status: last/next run, per-source message counts, whether
+    the LaunchAgent is installed, corp reachability, and staleness — so you can tell when the
+    store is going stale (e.g. because you've been off-corp). Read-only; no message content,
+    unaffected by ACTIONPULSE_MCP_REDACT_BODIES (counts and timestamps only)."""
+    from digest_core.daemon import status
+
+    return status.summarize()
+
+
+def _tool_trigger_ingest(sources: str = "mm") -> Dict[str, Any]:
+    """CORP-AWARE, off unless ACTIONPULSE_MCP_ENABLE_FETCH. Run one ingestion tick NOW and
+    PERSIST to the store — unlike ``fetch_source``, which never writes. ``sources`` is
+    comma-separated ('mm'|'ews'); MM ingests anywhere, EWS only when on-corp (an off-corp
+    tick skips it, non-fatal). Returns the tick summary (counts + reachability)."""
+    from digest_core.daemon import tick
+
+    src = [s.strip() for s in sources.split(",") if s.strip()] or None
+    return tick.ingest_once(sources=src).as_status()
+
+
 # -- resources -------------------------------------------------------------
 
 
@@ -355,6 +379,7 @@ _TOOLS = [
     (_tool_compare, "compare"),
     (_tool_open_loops, "open_loops"),
     (_tool_pending, "pending"),
+    (_tool_daemon_status, "daemon_status"),
 ]
 _MAINTENANCE_TOOLS = [
     (_tool_sweep_ttl, "sweep_ttl"),
@@ -385,6 +410,7 @@ def _build_app():
             app.tool(name=name)(fn)
     if os.getenv("ACTIONPULSE_MCP_ENABLE_FETCH"):
         app.tool(name="fetch_source")(_tool_fetch_source)
+        app.tool(name="trigger_ingest")(_tool_trigger_ingest)
     # Triple slash → the id is the URI PATH (not the authority), so a URN's ':'/'@'
     # survive instead of being mangled into a host/port/userinfo split.
     app.resource("message:///{message_id}")(_resource_message)

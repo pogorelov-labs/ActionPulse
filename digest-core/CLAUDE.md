@@ -214,6 +214,27 @@ actionpulse mcp install                  # consented, macOS; `mcp uninstall` rev
 - **Key never in client config**: the server self-loads `DIGEST_STORE_KEY` from
   `~/.config/actionpulse/env`; the installer writes no secret. CI: `test-mcp` lane.
 
+## Background ingestion daemon (opt-in, macOS launchd)
+
+Keeps the store fresh **without** an interactive session so the MCP tools / CLI read current
+data (not just the last manual `run`). A LaunchAgent runs `daemon tick` — the no-LLM
+fetch+persist path (`run --dry-run`'s engine) — on an interval. ADR-016.
+
+```bash
+actionpulse daemon install            # write + load the LaunchAgent (macOS; --dry-run anywhere)
+actionpulse daemon status             # last/next run · counts · exchange on/off-corp · staleness
+actionpulse daemon tick               # run one tick now (what the agent invokes each interval)
+actionpulse daemon start|stop|logs|uninstall
+```
+
+- **Corp-aware**: MM every tick; EWS only when the EWS host DNS-resolves (off-corp ticks skip
+  it, exit 0). `flock` = single writer; the daemon keeps its **own** watermark (`state/daemon`)
+  so it never starves the daily digest. Embed stays off on ticks (`daemon.embed` to opt in on-corp).
+- **Config** `DaemonConfig` (`daemon.interval_minutes`/`sources`/`embed`, `DIGEST_DAEMON_*`); needs
+  `store.enabled`. Status file: `var/state/daemon.json` (counts + timestamps only). Plist carries
+  no secrets (tick self-loads the key) + absolute `uv` path. MCP: `daemon_status` (always on) +
+  `trigger_ingest` (behind `ACTIONPULSE_MCP_ENABLE_FETCH`). Tests: `test_daemon_*`, `test_mcp_daemon`.
+
 ## Active Tech Debt
 
 Phase 0 hardening (prompts, path resolution, config precedence, LLM retry/degradation, Mattermost delivery, replay/diagnostics, E2E tests) is implemented on `main` as of 2026-03.
