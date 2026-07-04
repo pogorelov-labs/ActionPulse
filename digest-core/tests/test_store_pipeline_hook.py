@@ -6,7 +6,7 @@ the real NORMALIZE stage, so raw-vs-normalized capture is exercised.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -18,6 +18,15 @@ from digest_core.store import HAS_SQLCIPHER, MessageStore
 
 pytestmark = pytest.mark.skipif(not HAS_SQLCIPHER, reason="sqlcipher3 not installed (store extra)")
 
+# Fixtures must stay inside the store's 30-day TTL window. _persist_to_store sweeps
+# TTL right after upsert (run.py), so a message dated >30 days ago is inserted and
+# then immediately swept — the "persists" assertions below would see 0 rows. Anchor
+# the fixtures to a recent wall-clock date instead of a hardcoded one (a hardcoded
+# 2026-06-01 turned main red once now-30d passed it). The TTL sweep itself is
+# covered separately in test_store_db.py (test_ttl_sweep_removes_old).
+_RECENT = datetime.now(timezone.utc) - timedelta(days=1)
+_RECENT_DATE = _RECENT.date().isoformat()
+
 
 def _msg(msg_id: str, body: str, source: str = "email", mm_channel_type=None) -> NormalizedMessage:
     return NormalizedMessage(
@@ -26,7 +35,7 @@ def _msg(msg_id: str, body: str, source: str = "email", mm_channel_type=None) ->
         subject="Subject",
         text_body=body,
         sender_email="ivan@corp",
-        datetime_received=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        datetime_received=_RECENT,
         to_recipients=["u@corp"],
         cc_recipients=[],
         source=source,
@@ -60,7 +69,7 @@ def _ctx(tmp_path, monkeypatch, *, enabled=True, replay_ingest=None) -> runner.R
         trace_id="t-1",
         config=cfg,
         metrics=_DummyMetrics(),
-        digest_date="2026-06-01",
+        digest_date=_RECENT_DATE,
         output_dir=out,
         json_path=out / "d.json",
         md_path=out / "d.md",
@@ -122,7 +131,7 @@ def test_hook_is_non_fatal_on_store_error(tmp_path, monkeypatch):
 
 def test_replay_path_persists_store(tmp_path, monkeypatch):
     snap = tmp_path / "snap.json"
-    runner._dump_ingest_snapshot(snap, [_msg("r1@corp", "replayed body")], "2026-06-01")
+    runner._dump_ingest_snapshot(snap, [_msg("r1@corp", "replayed body")], _RECENT_DATE)
     ctx = _ctx(tmp_path, monkeypatch, enabled=True, replay_ingest=str(snap))
 
     runner._stage_ingest(ctx)
