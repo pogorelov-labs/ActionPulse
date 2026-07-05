@@ -15,6 +15,7 @@ from digest_core.deliver.mattermost import ping_mattermost_webhook
 from digest_core.run import run_digest, run_digest_dry_run
 from digest_core.observability.logs import setup_logging
 from digest_core.mcp.commands import mcp_app
+from digest_core.daemon.commands import daemon_app
 from digest_core.ui import resolve_sink
 from digest_core.ui.glyphs import FAIL, OK, WARN
 from digest_core.ui.menu import RunChoice, load_env_file, run_menu, stdin_is_tty
@@ -777,6 +778,7 @@ reactions_app = typer.Typer(help="EP-15 reaction feedback on delivered digests (
 app.add_typer(reactions_app, name="reactions")
 
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(daemon_app, name="daemon")
 
 
 @reactions_app.command("harvest")

@@ -157,8 +157,10 @@ def test_build_app_registers_read_reason_and_source_tools():
     assert {"search", "ask", "compare", "open_loops", "pending", "get_message"} <= tools
     assert "history" in tools  # cross-digest history is a first-class tool (C1 facade parity)
     assert {"list_containers", "get_reactions"} <= tools  # corp source reads always on
-    assert len(tools) == 20  # 18 read/reason + 2 source; maintenance + fetch OFF
+    assert "daemon_status" in tools  # background-ingestion status is always on (read-only)
+    assert len(tools) == 21  # 19 read/reason (incl. daemon_status) + 2 source; maint + fetch OFF
     assert "sweep_ttl" not in tools and "fetch_source" not in tools
+    assert "trigger_ingest" not in tools  # the persisting tick is fetch-gated
 
 
 @pytest.mark.skipif(not HAS_MCP, reason="mcp extra not installed")
@@ -169,5 +171,12 @@ def test_gated_tools_only_behind_flags(monkeypatch):
     monkeypatch.setenv("ACTIONPULSE_MCP_ENABLE_FETCH", "1")
     app = server._build_app()
     tools = {t.name for t in asyncio.run(app.list_tools())}
-    assert {"sweep_ttl", "embed_backlog", "reembed", "vacuum", "fetch_source"} <= tools
-    assert len(tools) == 25  # 20 + 4 maintenance + fetch_source
+    assert {
+        "sweep_ttl",
+        "embed_backlog",
+        "reembed",
+        "vacuum",
+        "fetch_source",
+        "trigger_ingest",
+    } <= tools
+    assert len(tools) == 27  # 21 + 4 maintenance + fetch_source + trigger_ingest

@@ -1266,6 +1266,69 @@ class StoreConfig(BaseModel):
         super().__init__(**kwargs)
 
 
+class DaemonConfig(BaseModel):
+    """Background ingestion daemon (opt-in; default OFF).
+
+    A macOS launchd LaunchAgent runs ``actionpulse daemon tick`` on an interval to keep
+    the encrypted store fresh WITHOUT an interactive session. The tick runs the no-LLM
+    fetch+persist path (same engine as ``run --dry-run``): Mattermost every tick;
+    Exchange only when the corp network is reachable (a DNS probe of the EWS host), so
+    an off-corp tick skips EWS quietly instead of failing. Needs ``store.enabled`` —
+    with the store off there is nothing to persist.
+
+    Env overrides: ``DIGEST_DAEMON_ENABLED`` / ``DIGEST_DAEMON_INTERVAL_MINUTES`` /
+    ``DIGEST_DAEMON_SOURCES`` / ``DIGEST_DAEMON_EMBED`` (and any field via the generic
+    ``DAEMON`` prefix).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the LaunchAgent should be installed/active (mirrors install state).",
+    )
+    interval_minutes: int = Field(
+        default=30,
+        ge=1,
+        description="Minutes between background ingestion ticks (launchd StartInterval).",
+    )
+    sources: str = Field(
+        default="mm,ews",
+        description=(
+            "Comma-separated sources to ingest per tick. MM ingests every tick; EWS only"
+            " when the corp network is reachable — off-corp ticks skip it (non-fatal)."
+        ),
+    )
+    embed: bool = Field(
+        default=False,
+        description=(
+            "Embed newly stored chunks during a tick (a corp-gateway /v1/embeddings call,"
+            " 15 RPM). Default OFF keeps ticks offline/cheap; warm semantic search with"
+            " `actionpulse store reembed` when on-corp."
+        ),
+    )
+
+    def source_list(self) -> list:
+        """The configured sources as a clean list (drops blanks/whitespace)."""
+        return [s.strip() for s in self.sources.split(",") if s.strip()]
+
+    def __init__(self, **kwargs):
+        # ENV overrides apply even without a YAML `daemon:` section (operator contract),
+        # mirroring StoreConfig — so DIGEST_DAEMON_ENABLED works for a bare Config().
+        for name, env in (
+            ("enabled", "DIGEST_DAEMON_ENABLED"),
+            ("embed", "DIGEST_DAEMON_EMBED"),
+        ):
+            value = os.getenv(env)
+            if name not in kwargs and value is not None and value.strip() != "":
+                kwargs[name] = _env_flag(value)
+        interval = os.getenv("DIGEST_DAEMON_INTERVAL_MINUTES")
+        if "interval_minutes" not in kwargs and interval and interval.strip().isdigit():
+            kwargs["interval_minutes"] = int(interval)
+        sources = os.getenv("DIGEST_DAEMON_SOURCES")
+        if "sources" not in kwargs and sources and sources.strip():
+            kwargs["sources"] = sources.strip()
+        super().__init__(**kwargs)
+
+
 class ReportConfig(BaseModel):
     """Digest report rendering options (L1, TERMINAL_DESIGN_ROADMAP)."""
 
@@ -1292,6 +1355,7 @@ class Config(BaseSettings):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
+    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     selection_buckets: SelectionBucketsConfig = Field(default_factory=SelectionBucketsConfig)
     selection_weights: SelectionWeightsConfig = Field(default_factory=SelectionWeightsConfig)
     context_budget: ContextBudgetConfig = Field(default_factory=ContextBudgetConfig)
@@ -1429,6 +1493,9 @@ class Config(BaseSettings):
         # generic DIGEST_STORE_<FIELD> env overrides, so e.g. DIGEST_STORE_DB_PATH /
         # DIGEST_STORE_VECTOR_DTYPE work for an operator who never wrote a store block.
         self._merge_model(self.store, yaml_config.get("store", {}), env_prefix="STORE")
+        # Merge daemon UNCONDITIONALLY (like store) so generic DIGEST_DAEMON_<FIELD> env
+        # overrides apply even without a YAML `daemon:` section.
+        self._merge_model(self.daemon, yaml_config.get("daemon", {}), env_prefix="DAEMON")
         if "selection_buckets" in yaml_config:
             self._merge_model(
                 self.selection_buckets,

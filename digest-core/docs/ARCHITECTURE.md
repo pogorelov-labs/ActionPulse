@@ -1234,6 +1234,42 @@ digest-core/
   `make test` stay SDK-free (`_build_app` imports the SDK lazily; MCP-registration tests
   skip without it, covered by a dedicated `test-mcp` CI lane).
 
+### ADR-016: Background ingestion daemon (opt-in, macOS launchd)
+
+- **Problem:** the MCP tools (ADR-015) read a **static** store — it is only written as a
+  side-effect of a manual `actionpulse run`. So the tools are always *available* (stdio, the
+  client spawns them per session) but the data is only as fresh as the last hand-run digest.
+- **Decision:** `digest_core/daemon/` + `actionpulse daemon` install a macOS **launchd
+  LaunchAgent** that runs `actionpulse daemon tick` on an interval (`StartInterval`,
+  default 30 min). A tick runs the existing **no-LLM** fetch+persist path
+  (`run.run_digest_dry_run` — the ADR-014 store persist is a dry-run side-effect), so it
+  never calls the corp gateway unless `daemon.embed` is set. Availability of the MCP tools
+  and freshness of the store are thus **separate concerns**: registration (ADR-015) solves
+  the first, this daemon the second.
+- **Corp-aware by construction (Network Topology):** Mattermost is reachable everywhere, so
+  it ingests **every tick**; EWS + gateway are corp-only, so a corp source is attempted
+  **only when a 1.5s DNS probe of the EWS host resolves** (`setup_autodetect._dns_resolves`).
+  An off-corp tick skips EWS quietly and exits 0 — it never trips the strict EWS source into
+  a failure. Embedding stays **off** on ticks by default (keeps them offline/cheap and never
+  burns the 15-RPM gateway unattended; warm semantic search with `store reembed` on-corp).
+- **Single-writer + non-interference:** each tick holds a non-blocking `flock`
+  (`var/state/daemon.lock`) so overlapping ticks skip rather than pile writers on SQLite; a
+  manual `run` serializes via the store's WAL + `busy_timeout` (a rare lock contention is
+  reported as a transient `skipped="busy"`, not a failure). The daemon keeps its **own** sync
+  watermark (a dedicated `state` dir) so a tick never advances — and thus never starves — the
+  daily digest's incremental window.
+- **Control surfaces (three, one status file):** `actionpulse daemon
+  install|uninstall|start|stop|status|logs|tick`; a Settings-menu row (shown only when the
+  store is on); and two MCP tools — read-only `daemon_status` (always on: last/next run,
+  counts, corp reachability, staleness) and `trigger_ingest` (a *persisting* tick, behind the
+  same `ACTIONPULSE_MCP_ENABLE_FETCH` gate as `fetch_source`, which by contrast never writes).
+  All three read one JSON at `var/state/daemon.json` (counts + timestamps only — never bodies).
+- **Safety / invariants:** the plist carries **no secrets** (the tick self-loads
+  `DIGEST_STORE_KEY` from the 0600 env file, like the MCP server) and uses the **absolute**
+  `uv` path (launchd has no shell PATH); install/uninstall are idempotent with a byte-exact
+  `.bak`; the daemon is macOS-gated (Linux would use a systemd timer calling the same
+  `daemon tick` — deferred). Needs `store.enabled` (nothing to persist otherwise).
+
 ---
 
 ## 13. Known Technical Debt

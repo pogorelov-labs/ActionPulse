@@ -279,6 +279,116 @@ def _maintenance(console: Console) -> None:
         )
 
 
+def _daemon_screen(console: Console) -> None:
+    """Background ingestion daemon (launchd): status read-out + install/start/stop/tick.
+
+    Keeps the encrypted store fresh without an open session — Mattermost every tick,
+    Exchange when on-corp. Only reachable when the store is enabled (the caller gates the
+    row). Mirrors the `mcp` install UX: macOS-gated writes, reversible, its own loop.
+    """
+    import sys as _sys
+
+    from digest_core import paths
+    from digest_core.config import Config
+    from digest_core.daemon import launchd, status, tick
+
+    while True:
+        s = status.summarize()
+        console.print()
+        installed = s.get("installed")
+        console.print(
+            "  [ap.dim]LaunchAgent[/]  "
+            + ("[ap.ok]installed[/]" if installed else "[ap.warn]not installed[/]")
+        )
+        if s.get("last_run"):
+            added = s.get("messages_added")
+            add = f"  (+{added})" if isinstance(added, int) else ""
+            er = s.get("ews_reachable")
+            erw = "on-corp" if er else "off-corp" if er is False else "n/a"
+            console.print(f"  [ap.dim]last run[/]    {s.get('last_run')}{add}")
+            console.print(f"  [ap.dim]next run[/]    {s.get('next_run') or '—'}")
+            total = s.get("messages_total")
+            if isinstance(total, int):
+                console.print(f"  [ap.dim]store[/]       {total} msgs   [ap.dim]exchange:[/] {erw}")
+            if s.get("is_stale"):
+                console.print("  [ap.warn]⚠ stale[/] — no successful tick recently")
+        else:
+            console.print("  [ap.dim]never run yet[/]")
+        console.print()
+
+        mac = _sys.platform == "darwin"
+        rows: list[tuple[str, str]] = []
+        if mac:
+            rows.append(
+                (
+                    "install",
+                    "Update the agent (re-apply interval)" if installed else "Install the agent",
+                )
+            )
+            if installed:
+                rows += [
+                    ("start", "Run now (kickstart)"),
+                    ("stop", "Stop (unload)"),
+                    ("uninstall", "Uninstall the agent"),
+                ]
+        rows += [
+            ("tick", "Ingest once now (foreground)"),
+            ("logs", "Show recent daemon logs"),
+            ("back", "Back"),
+        ]
+        action = choose(
+            "Background ingestion",
+            rows,
+            default_index=len(rows) - 1,
+            console=console,
+            cancel_value="back",
+        )
+        if action == "back":
+            return
+        try:
+            if action == "install":
+                minutes = Config().daemon.interval_minutes
+                res = launchd.install(minutes)
+                console.print(f"  [ap.ok]✓[/] {res.action} — runs every {minutes} min + at login")
+            elif action == "start":
+                launchd.start()
+                console.print("  [ap.ok]✓[/] kicked a run")
+            elif action == "stop":
+                launchd.stop()
+                console.print("  [ap.ok]✓[/] stopped (unloaded)")
+            elif action == "uninstall":
+                res = launchd.uninstall()
+                console.print(f"  [ap.ok]✓[/] {res.action}")
+            elif action == "tick":
+                console.print("  [ap.dim]ingesting… (MM always; EWS when on-corp)[/]")
+                r = tick.ingest_once()
+                if r.skipped:
+                    console.print(
+                        f"  [ap.warn]⚠ skipped ({r.skipped})[/] — another writer holds the store"
+                    )
+                else:
+                    added = f"+{r.messages_added}" if isinstance(r.messages_added, int) else "?"
+                    console.print(
+                        f"  [ap.ok]✓[/] ingested {r.sources_ingested or '—'} · {added} msgs"
+                    )
+            elif action == "logs":
+                logs = paths.logs_dir(create=False)
+                shown = False
+                for name in ("daemon.out.log", "daemon.err.log"):
+                    p = logs / name
+                    if p.exists() and p.stat().st_size:
+                        shown = True
+                        console.print(f"  [ap.dim]── {name} ──[/]")
+                        for line in p.read_text(errors="replace").splitlines()[-15:]:
+                            console.print(f"  {line}", highlight=False)
+                if not shown:
+                    console.print("  [ap.dim]No daemon logs yet.[/]")
+        except tick.DaemonError as exc:
+            console.print(f"  [ap.err]✗[/] {exc}")
+        except Exception as exc:  # noqa: BLE001 - keep the submenu alive on errors
+            console.print(f"  [ap.err]✗[/] {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Mattermost DMs (ingest) — scope · partners (first in-menu config editor)
 # ---------------------------------------------------------------------------
@@ -655,6 +765,7 @@ def _settings_menu(
         ]
         if store_enabled:
             rows.append(("store", "Message store — status · re-embed · purge"))
+            rows.append(("ingest", "Background ingestion — status · start/stop · interval"))
         rows += [("config", "Show current config (masked)"), ("back", "Back")]
         action = choose(
             "Settings & tools",
@@ -674,6 +785,9 @@ def _settings_menu(
                 continue  # has its own loop — no pause
             if action == "store":
                 _store_menu(console)
+                continue  # has its own loop — no pause
+            if action == "ingest":
+                _daemon_screen(console)
                 continue  # has its own loop — no pause
             if action == "setup":
                 on_settings()

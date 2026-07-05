@@ -16,6 +16,10 @@ from digest_core.api.inbox import InboxAPI
 _API_NON_VERBS = {"open", "close", "store"}
 # InboxAPI verbs deliberately NOT exposed over MCP (internal ops). Documented exceptions.
 _API_ONLY = {"checkpoint"}  # a SQLite WAL checkpoint — operator plumbing, not an agent verb
+# MCP tools that are deliberately NOT InboxAPI verbs: they belong to the background-ingestion
+# DAEMON layer (digest_core.daemon), not the store facade. `daemon_status` reads the status
+# file; `trigger_ingest` runs a fetch+persist tick (routes through daemon.tick, not InboxAPI).
+_MCP_ONLY = {"daemon_status", "trigger_ingest"}
 
 
 def _api_verbs() -> set[str]:
@@ -35,6 +39,7 @@ def _mcp_tool_names() -> set[str]:
 
     names = {name for _fn, name in server._TOOLS + server._SOURCE_TOOLS + server._MAINTENANCE_TOOLS}
     names.add("fetch_source")  # gated tool registered on its own (ACTIONPULSE_MCP_ENABLE_FETCH)
+    names.add("trigger_ingest")  # gated tool registered on its own (ACTIONPULSE_MCP_ENABLE_FETCH)
     return names
 
 
@@ -46,7 +51,7 @@ def test_every_inbox_api_verb_is_an_mcp_tool_and_vice_versa():
     mcp_tools = _mcp_tool_names()
 
     missing_tools = api_verbs - mcp_tools  # an InboxAPI verb with no MCP tool → drift
-    extra_tools = mcp_tools - api_verbs  # an MCP tool with no InboxAPI verb → drift
+    extra_tools = mcp_tools - api_verbs - _MCP_ONLY  # an MCP tool with no InboxAPI verb → drift
     assert not missing_tools, f"InboxAPI verbs missing an MCP tool: {sorted(missing_tools)}"
     assert not extra_tools, f"MCP tools with no InboxAPI verb: {sorted(extra_tools)}"
 
