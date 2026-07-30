@@ -8,8 +8,12 @@ accretion works: nobody decides to make it worse.
 
 This is a ratchet, not a limit. It fails when the file grows past the current
 extraction point, so adding to `run.py` becomes a visible decision instead of a
-silent one. Lower the numbers as phases 2–3 land; never raise them without saying
-why in the commit.
+silent one. Lower the numbers whenever an extraction lands; never raise them
+without saying why in the commit.
+
+Phases 1–3 are done (idempotency, posture, context+enrichment) and run.py is
+below the review's original 2,107 for the first time. What is left there is the
+orchestrator and its stages — the thing run.py is actually *for*.
 """
 
 from __future__ import annotations
@@ -19,10 +23,11 @@ from pathlib import Path
 
 RUN_PY = Path(__file__).resolve().parents[1] / "src" / "digest_core" / "run.py"
 
-#: Phase 2 (pipeline/posture.py extracted) left run.py here. Ratchet down.
-#: History: 2,107 at the review -> 2,607 peak -> 2,493 (phase 1) -> 2,396 (phase 2).
-MAX_LINES = 2400
-MAX_MODULE_FUNCTIONS = 55
+#: Phase 3 (pipeline/context.py + pipeline/enrichment.py extracted) left run.py here.
+#: History (lines/module-fns): 2,107/64 at the review -> 2,607/69 peak -> 2,493 (phase 1)
+#: -> 2,396/54 (phase 2) -> 1,743/37 (phase 3, first time below the review baseline).
+MAX_LINES = 1800
+MAX_MODULE_FUNCTIONS = 38
 
 #: How far below the ratchet run.py may sit before the honesty check complains.
 #: Was 200, which let phase 2's 97-line extraction land without tightening the
@@ -88,12 +93,41 @@ class TestExtractedModulesStayLeaves:
     #: Modules that import `run` today. `cli` at import time; the rest inside
     #: functions, which is why a line-anchored grep misses them — it did, and this
     #: test caught the overstatement.
+    #:
+    #: The last two were found only once this check started parsing imports instead
+    #: of substring-matching: they use `import digest_core.run as run_module`, which
+    #: matches neither "from digest_core.run import" nor "from digest_core import
+    #: run". The text version was under-counting, not just over-counting.
     KNOWN_IMPORTERS = {
         "cli.py",
         "daemon/tick.py",
         "eval/corpus.py",
         "eval/best_of_n_harness.py",
+        "eval/contract_parity.py",
+        "eval/replay_harness.py",
     }
+
+    @staticmethod
+    def _imports_run(tree: ast.Module) -> bool:
+        """True only for a real import of `run` — parsed, not text-matched.
+
+        This used to substring-match the file, which counted a *docstring*
+        explaining the re-export as an import and failed phase 3 on
+        `pipeline/context.py`. Prose about an import is not an import.
+        """
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if (node.module or "").startswith("digest_core.run"):
+                    return True
+                # `from digest_core import run`
+                if (node.module or "") == "digest_core" and any(
+                    a.name == "run" for a in node.names
+                ):
+                    return True
+            elif isinstance(node, ast.Import):
+                if any(a.name.startswith("digest_core.run") for a in node.names):
+                    return True
+        return False
 
     def test_no_new_importers_of_run_appear(self):
         """Every additional importer makes extraction harder — notice it early."""
@@ -102,8 +136,7 @@ class TestExtractedModulesStayLeaves:
         for path in src.rglob("*.py"):
             if path.name == "run.py":
                 continue
-            text = path.read_text(encoding="utf-8")
-            if "from digest_core.run import" in text or "from digest_core import run" in text:
+            if self._imports_run(ast.parse(path.read_text(encoding="utf-8"))):
                 importers.add(path.relative_to(src).as_posix())
         new = importers - self.KNOWN_IMPORTERS
         assert not new, (
