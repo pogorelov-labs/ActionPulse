@@ -6,6 +6,9 @@ import pytest
 import os
 from typing import List
 from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
+
 from pydantic import ValidationError
 
 from digest_core.config import (
@@ -518,3 +521,63 @@ class TestDmConsentGateWithEnvOverride:
         monkeypatch.setenv("DIGEST_MM_SOURCE_DM_SCOPE", "own_posts_only")
         cfg = _config_with_yaml(tmp_path, monkeypatch, "mm_source:\n  enabled: true\n")
         assert cfg.mm_source.dm_scope == "own_posts_only"
+
+
+class TestRelativeSyncStatePathIsResolvedUnderTheDataHome:
+    """ACTPULSE-96 — a pre-U5 config must not steer state to the working directory.
+
+    Wizard configs written before the U5 data-home work pin
+    `ews.sync_state_path: ".state/ews.syncstate"`. Honouring that literally put the
+    EWS watermark and the delivered-posts ledger wherever the process happened to be
+    launched from, and made ACTIONPULSE_HOME a no-op — because `resolved_state_dir()`
+    derives the state directory from this path. U5 fixed the default and never
+    migrated existing installs; this is that migration.
+    """
+
+    def _config(self, tmp_path, monkeypatch, sync_state_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("ews:\n  sync_state_path: " + f'"{sync_state_path}"\n', encoding="utf-8")
+        monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("DIGEST_CONFIG_PATH", str(cfg))
+        return Config()
+
+    def test_relative_path_resolves_under_the_data_home(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path, monkeypatch, ".state/ews.syncstate")
+        resolved = Path(config.ews.resolved_sync_state_path())
+        assert resolved.is_absolute()
+        assert str(tmp_path / "home") in str(resolved)
+        assert resolved.name == "ews.syncstate"
+
+    def test_actionpulse_home_actually_isolates_the_state_dir(self, tmp_path, monkeypatch):
+        """The property the ledger tests rely on, and that used to silently fail."""
+        config = self._config(tmp_path, monkeypatch, ".state/ews.syncstate")
+        assert str(config.resolved_state_dir()).startswith(str(tmp_path / "home"))
+
+    def test_absolute_path_is_honoured_verbatim(self, tmp_path, monkeypatch):
+        """An operator who pinned an absolute path meant it."""
+        pinned = "/var/lib/actionpulse/ews.syncstate"
+        config = self._config(tmp_path, monkeypatch, pinned)
+        assert config.ews.resolved_sync_state_path() == pinned
+
+    def test_unset_path_still_uses_the_data_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        resolved = Path(Config().ews.resolved_sync_state_path())
+        assert str(tmp_path / "home") in str(resolved)
+
+    def test_the_migration_is_announced_not_silent(self, tmp_path, monkeypatch):
+        """A relocating watermark means one re-ingest; the operator should know."""
+        import digest_core.config as config_module
+
+        config_module._relative_state_paths_warned.clear()
+        warnings = []
+        monkeypatch.setattr(
+            config_module.structlog,
+            "get_logger",
+            lambda *a, **k: SimpleNamespace(warning=lambda msg, **kw: warnings.append(msg)),
+        )
+        config = self._config(tmp_path, monkeypatch, ".state/ews.syncstate")
+        config.ews.resolved_sync_state_path()
+        config.ews.resolved_sync_state_path()  # repeated access must not re-warn
+        assert len(warnings) == 1
+        assert "relative" in warnings[0]

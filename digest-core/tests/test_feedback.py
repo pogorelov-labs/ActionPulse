@@ -116,6 +116,7 @@ def test_harvest_skips_a_failing_post():
 
 def test_record_delivered_posts_from_receipt(tmp_path, monkeypatch):
     monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path))
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "no-such-config.yaml"))
     ctx = SimpleNamespace(config=Config(), digest_date="2026-06-01", trace_id="t-1")
     digest = SimpleNamespace(
         sections=[
@@ -136,6 +137,11 @@ def test_record_delivered_posts_from_receipt(tmp_path, monkeypatch):
 
 def test_record_delivered_posts_noop_without_post_ids(tmp_path, monkeypatch):
     monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path))
+    # Ignore any developer-machine configs/config.yaml (gitignored, so CI never
+    # has one). A pre-U5 config pinning a relative ews.sync_state_path used to
+    # redirect the ledger to a cwd-relative .state/ and this read a previous
+    # test's rows — green in CI, red on a real install (ACTPULSE-96).
+    monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "no-such-config.yaml"))
     ctx = SimpleNamespace(config=Config(), digest_date="2026-06-01", trace_id="t-1")
     runner._record_delivered_posts(
         ctx, SimpleNamespace(sections=[]), {"status": "sent", "parts": 1}
