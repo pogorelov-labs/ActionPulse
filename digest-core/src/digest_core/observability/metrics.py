@@ -257,14 +257,6 @@ class MetricsCollector:
             registry=self.registry,
         )
 
-        # Hierarchical orchestration metrics
-        self.hierarchical_runs_total = Counter(
-            "hierarchical_runs_total",
-            "Total hierarchical digest runs",
-            ["trigger_reason"],  # auto_threads, auto_emails, manual
-            registry=self.registry,
-        )
-
         self.avg_subsummary_chunks = Gauge(
             "avg_subsummary_chunks",
             "Average number of chunks per thread subsummary",
@@ -542,11 +534,6 @@ class MetricsCollector:
         self.ranking_enabled.set(1.0 if enabled else 0.0)
         logger.debug("Set ranking enabled", enabled=enabled)
 
-    def record_hierarchical_run(self, trigger_reason: str):
-        """Record hierarchical digest run."""
-        self.hierarchical_runs_total.labels(trigger_reason=trigger_reason).inc()
-        logger.debug("Recorded hierarchical run", trigger_reason=trigger_reason)
-
     def update_avg_subsummary_chunks(self, avg_chunks: float):
         """Update average subsummary chunks gauge."""
         self.avg_subsummary_chunks.set(avg_chunks)
@@ -621,7 +608,6 @@ class MetricsCollector:
                 "rank_score_histogram",
                 "top10_actions_share",
                 "ranking_enabled",
-                "hierarchical_runs_total",
                 "avg_subsummary_chunks",
                 "saved_tokens_total",
                 "must_include_chunks_total",

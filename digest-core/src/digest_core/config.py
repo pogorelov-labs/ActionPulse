@@ -794,71 +794,6 @@ class EmailCleanerConfig(BaseModel):
     )
 
 
-class HierarchicalConfig(BaseModel):
-    """Configuration for hierarchical digest mode."""
-
-    enable: bool = Field(default=True, description="Enable hierarchical mode")
-    auto_enable: bool = Field(default=True, description="Auto-enable based on thresholds")
-    enable_auto: bool = Field(
-        default=True, description="Enable automatic hierarchical mode activation"
-    )
-    threshold_threads: int = Field(
-        default=40, description="Thread count threshold for auto activation"
-    )
-    threshold_emails: int = Field(
-        default=200, description="Email count threshold for auto activation"
-    )
-    min_threads_to_summarize: int = Field(
-        default=6, description="Minimum threads required to use hierarchical mode"
-    )
-    min_threads: int = Field(default=60, description="Min threads to auto-activate (was 30)")
-    min_emails: int = Field(default=300, description="Min emails to auto-activate (was 150)")
-
-    per_thread_max_chunks_in: int = Field(
-        default=8, description="Max chunks per thread for summarization"
-    )
-    per_thread_max_chunks_exception: int = Field(
-        default=12,
-        description="Max chunks in exceptional cases (mentions, last update)",
-    )
-    summary_max_tokens: int = Field(default=90, description="Max tokens for thread summary")
-    parallel_pool: int = Field(default=8, description="Max parallel thread summarization workers")
-    timeout_sec: int = Field(default=20, description="Timeout per thread summarization")
-    degrade_on_timeout: str = Field(
-        default="best_2_chunks", description="Degradation strategy on timeout"
-    )
-
-    # Must-include chunks
-    must_include_mentions: bool = Field(
-        default=True, description="Always include chunks with user mentions"
-    )
-    must_include_last_update: bool = Field(
-        default=True, description="Always include last update chunk per thread"
-    )
-
-    # Merge policy
-    merge_max_citations: int = Field(default=5, description="Max citations in merged summary (3-5)")
-    merge_include_title: bool = Field(
-        default=True, description="Include brief title in merged summary"
-    )
-
-    # Optimization
-    skip_llm_if_no_evidence: bool = Field(
-        default=True, description="Skip LLM call if no evidence after selection"
-    )
-
-    final_input_token_cap: int = Field(
-        default=4000, description="Max tokens for final aggregator input"
-    )
-    max_latency_increase_pct: int = Field(
-        default=50, description="Max acceptable latency increase %"
-    )
-    target_latency_increase_pct: int = Field(default=30, description="Target latency increase %")
-    max_cost_increase_per_email_pct: int = Field(
-        default=40, description="Max acceptable cost increase per email %"
-    )
-
-
 class NLPConfig(BaseModel):
     """Configuration for NLP features (lemmatization, action extraction)."""
 
@@ -1361,7 +1296,6 @@ class Config(BaseSettings):
     context_budget: ContextBudgetConfig = Field(default_factory=ContextBudgetConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     shrink: ShrinkConfig = Field(default_factory=ShrinkConfig)
-    hierarchical: HierarchicalConfig = Field(default_factory=HierarchicalConfig)
     email_cleaner: EmailCleanerConfig = Field(default_factory=EmailCleanerConfig)
     nlp: NLPConfig = Field(default_factory=NLPConfig)
     ranker: RankerConfig = Field(default_factory=RankerConfig)
@@ -1518,12 +1452,6 @@ class Config(BaseSettings):
             self._merge_model(self.chunking, yaml_config["chunking"], env_prefix="CHUNKING")
         if "shrink" in yaml_config:
             self._merge_model(self.shrink, yaml_config["shrink"], env_prefix="SHRINK")
-        if "hierarchical" in yaml_config:
-            self._merge_model(
-                self.hierarchical,
-                yaml_config["hierarchical"],
-                env_prefix="HIERARCHICAL",
-            )
         if "email_cleaner" in yaml_config:
             self._merge_model(
                 self.email_cleaner,

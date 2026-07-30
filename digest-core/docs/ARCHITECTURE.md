@@ -773,7 +773,7 @@ run_digest("2026-03-29", ...)
 | **6. LLM** | HTTP 429 (rate limit) | `RetryableLLMError` → до 2 попыток с ожиданием (`Retry-After` или дефолт), затем partial digest | OK (см. `gateway.py`, бюджет вызовов в рамках лимита run) |
 | **6. LLM** | HTTP 5xx (server error) | Повтор с backoff (через `RetryableLLMError`), затем partial digest | OK |
 | **6. LLM** | HTTP timeout | После исчерпания ретраев → partial digest с текстом про таймаут | OK (`_build_partial_digest` в `run.py`) |
-| **6. LLM** | Invalid JSON (unparseable body) | `json.loads` failure → `RetryableLLMError` → до 2 HTTP-попыток внутри `_make_request_with_retry`, с подсказкой strict JSON в system prompt. **`extractive_fallback` из `degrade.py` на этом пути не вызывается.** После исчерпания ретраев — исключение → **`_build_partial_digest`** в `run.py`. См. примечание ниже про `process_digest`. | OK |
+| **6. LLM** | Invalid JSON (unparseable body) | `json.loads` failure → `RetryableLLMError` → до 2 HTTP-попыток внутри `_make_request_with_retry`, с подсказкой strict JSON в system prompt. После исчерпания ретраев — исключение → **`_build_partial_digest`** в `run.py`. | OK |
 | **6. LLM** | Empty sections (no actions found) | Quality retry если есть позитивные сигналы | OK (реализовано) |
 | **7. Assemble** | Disk write failure | Exception → crash | Log error, attempt alternate path or fail with clear message |
 | **7. Assemble** | Word count > 400 | Truncate with Russian marker `*[Содержимое обрезано для соблюдения лимита слов]*` (`assemble/markdown.py`) | OK (implemented) |
@@ -786,9 +786,14 @@ run_digest("2026-03-29", ...)
 
 Реализовано в `_build_partial_digest()` (`run.py`).
 
-**`extract_actions` (default daily run) vs `process_digest`:** типичный `run` вызывает только **`LLMGateway.extract_actions`**. При любом необработанном исключении там пайплайн переходит к partial digest **без** `degrade.extractive_fallback`. Модуль **`degrade.py`** и **`extractive_fallback`** используются в **`LLMGateway.process_digest`** (legacy / enhanced digest path), в т.ч. при `enable_degrade=True` и отсутствии `custom_input` — это **отдельный** контракт от дневного `extract_actions`.
+**Единственный LLM-контракт — `LLMGateway.extract_actions`.** При любом необработанном
+исключении пайплайн переходит к partial digest (`_build_partial_digest`).
 
-**`process_digest` + `custom_input` (hierarchical final aggregation):** если передан **`custom_input`**, ветка с **`extractive_fallback` отключена** — при ошибке LLM исключение пробрасывается наверх (см. `gateway.py`). Не смешивать с поведением «обычного» `process_digest` без `custom_input`.
+> **Удалено 2026-07-30 (B1b).** Здесь описывался второй, параллельный контракт —
+> `LLMGateway.process_digest` + `degrade.extractive_fallback` (legacy «enhanced digest»
+> path, включая ветку `custom_input` для hierarchical-агрегации). `run.py` его никогда не
+> вызывал; он удалён вместе со всей v2-поверхностью (`EnhancedDigest`, `llm/degrade.py`,
+> `markdown.write_enhanced_digest`). Осталась **одна** точка входа.
 
 Пример формы partial JSON:
 ```json
@@ -822,7 +827,7 @@ run_digest("2026-03-29", ...)
 | `prompts/extract_actions.v1.txt` | Plain text | 6 (LLM) | **Yes** — default RU prompt | Active |
 | `prompts/extract_actions.en.v1.txt` | Plain text | 6 (LLM) | **Yes** — EN variant for qwen models | Active |
 | `prompts/extract_actions.v1.changelog` | Text | — | No (documentation only) | Reference |
-| `prompts/thread_summarize/v1/default.j2` | Jinja2 | 6 (LLM) | **No** — `hierarchical/processor.py` only | Active (experimental) |
+| `prompts/thread_summarize/v1/default.j2` | Jinja2 | — | **No** — its only consumer (`hierarchical/processor.py`) was deleted | Orphan file |
 
 **Dead entries in `prompt_registry.py`** (files do not exist on disk):
 
@@ -834,8 +839,9 @@ run_digest("2026-03-29", ...)
 | `summarize.en.v1` | `summarize/v1/en.j2` | Dead — file removed |
 
 **Loading mechanism:** `run.py` calls `get_prompt_template_path()` from `prompt_registry.py`,
-then reads the file via `Path.read_text()`. Jinja2 rendering is NOT used for extraction prompts (ADR-009);
-only `thread_summarize` in the hierarchical processor uses Jinja2.
+then reads the file via `Path.read_text()`. **Jinja2 is no longer used anywhere, and the
+dependency was dropped 2026-07-30 (B1b)** — its only consumers were `process_digest` and the
+deleted hierarchical processor. Every prompt the code actually loads is plain text (ADR-009).
 
 > **Not prompt-driven:** the **Meetings** section (calendar source) is assembled deterministically
 > in `run._enrich_digest_with_meetings()` — no LLM, no prompt (§9.3).
@@ -1030,7 +1036,7 @@ digest-core/
 | beautifulsoup4 | ≥4.12 | HTML parsing |
 | pytz | ≥2023.3 | Timezone handling |
 | pyyaml | ≥6.0 | YAML config parsing |
-| jinja2 | ≥3.1 | Template engine for **`process_digest`** / hierarchical prompts (`.j2` under `prompts/`); **extraction** prompts `.txt` остаются plain text (ADR-009) |
+| ~~jinja2~~ | — | **Removed 2026-07-30 (B1b)** — its only consumers (`process_digest`, hierarchical) are deleted; all loaded prompts are plain text (ADR-009) |
 **Not adding (and why):**
 - `tiktoken` — approximate `words * 1.3` is sufficient at configured `max_total_tokens` scale (default 7000); ±10% error is acceptable for chunk budgeting
 - `faiss` / `sentence-transformers` — rule-based context selection handles ≤100 emails
@@ -1116,9 +1122,10 @@ digest-core/
   загружаются через `Path.read_text()`, **без** Jinja2. Переменные шаблона (`{{ }}`)
   в extraction prompt не используются.
 - **Rationale:** Текст extraction — статический, проще ревью и воспроизводимость.
-  Отдельно: **Jinja2** подключён в зависимостях для **`LLMGateway.process_digest`**
-  и **hierarchical** путей (`.j2` под `prompts/`) — см. §11. Это не противоречит
-  отказу от шаблонизатора на hot-path `extract_actions`.
+  **Обновлено 2026-07-30 (B1b):** Jinja2 держался в зависимостях ради
+  `LLMGateway.process_digest` и hierarchical-путей; оба удалены, дистрибутив больше
+  не тянет шаблонизатор вовсе. ADR при этом только усилился: plain text — не «на
+  hot-path», а везде.
 - **Status:** Phase 0 (TD-010): extraction — `.txt`. Dynamic extraction через Jinja2
   не планируется без отдельного ADR.
 - **Note:** `prompts/thread_summarize/v1/default.j2` — hierarchical processor

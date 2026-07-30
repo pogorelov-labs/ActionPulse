@@ -1,10 +1,11 @@
 """
 ActionPulse Digest Core - Email digest generation with LLM.
 
-Note: SCHEMA_VERSION / DEFAULT_PROMPT_VERSION below describe the legacy
-EnhancedDigest gateway path. The live daily pipeline uses the Digest schema
-(1.0) + extract_actions prompts and its own authoritative ``run.PIPELINE_VERSION``
-(1.2.0); the constant here is kept aligned to it for package metadata.
+Note: SCHEMA_VERSION / DEFAULT_PROMPT_VERSION below are package metadata kept
+aligned to the authoritative ``run.PIPELINE_VERSION`` (1.2.0). The live daily
+pipeline uses the Digest schema (1.0) + the extract_actions prompts. (These
+constants used to describe the legacy EnhancedDigest gateway path, which was
+deleted with the rest of the v2 surface.)
 """
 
 __version__ = "1.2.0"

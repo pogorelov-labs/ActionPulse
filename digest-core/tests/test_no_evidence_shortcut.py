@@ -1,6 +1,4 @@
-"""
-Tests for LLM shortcut when no evidence is selected.
-"""
+"""Test the no-evidence shortcut: run.py skips the LLM when nothing is selected."""
 
 from unittest.mock import patch, MagicMock
 from pathlib import Path
@@ -91,58 +89,3 @@ def test_shortcut_when_no_evidence_selected(tmp_path):
                 with open(output_path, "r") as f:
                     digest = json.load(f)
                     assert digest.get("sections") == []
-
-
-def test_extractive_fallback_called_on_no_evidence():
-    """Test that extractive_fallback is used when no evidence selected."""
-    from digest_core.llm.degrade import extractive_fallback
-    from digest_core.evidence.split import EvidenceChunk
-
-    # Create dummy chunks
-    chunks = [
-        EvidenceChunk(
-            evidence_id="ev1",
-            conversation_id="conv1",
-            content="Test content",
-            source_ref={"msg_id": "msg1"},
-            token_count=10,
-            priority_score=1.0,
-            message_metadata={},
-            addressed_to_me=False,
-            user_aliases_matched=[],
-            signals={"action_verbs": ["please"]},
-        )
-    ]
-
-    # Call extractive fallback
-    digest = extractive_fallback(
-        evidence_chunks=chunks,
-        digest_date="2025-01-01",
-        trace_id="test-trace",
-        reason="no_evidence",
-    )
-
-    # Should return EnhancedDigest
-    assert digest is not None
-    assert digest.schema_version == "2.0"
-    assert digest.prompt_version == "extractive_fallback"
-    assert digest.trace_id == "test-trace"
-
-
-def test_no_evidence_creates_partial_output():
-    """Test that partial flag is set in output when no evidence."""
-    from digest_core.llm.degrade import extractive_fallback
-
-    # Empty chunks
-    digest = extractive_fallback(
-        evidence_chunks=[],
-        digest_date="2025-01-01",
-        trace_id="test-trace",
-        reason="no_evidence",
-    )
-
-    # Should create valid digest even with no chunks
-    assert digest is not None
-    assert len(digest.my_actions) == 0
-    assert len(digest.others_actions) == 0
-    assert len(digest.deadlines_meetings) == 0

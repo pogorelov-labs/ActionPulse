@@ -118,13 +118,18 @@ going live (PC-2 → `enable_relevance`).
 - **B1 Delete the dead set** (with tests). **B1a SHIPPED** in
   [#208](https://github.com/pogorelov-labs/ActionPulse/pull/208) — the rule-based extraction stack
   (`evidence/actions.py`, `evidence/lemmatizer.py`) and `llm/models.py`, 2,596 lines, suite green.
-  **B1b remains:** `gateway.process_digest` **and everything hanging off it** (`llm/degrade.py`,
-  the `EnhancedDigest` family, `markdown.write_enhanced_digest`) — delete as one connected
-  component, not symbol-by-symbol; `jsonout.py` (252 LOC, zero src callers); `HierarchicalConfig`
-  (`config.py:797`, still wired at `:1364`); dead prompt-registry entries; the `jinja2` dep.
-  `degrade.build_digest_with_fallback` **no longer exists** — do not go looking for it.
-  ⚠ See `audits/ARCH_REVIEW_2026-07.md` §8.2 before touching `ThreadSummary`: there are two
-  distinct classes with that name and one of them is live.
+  **B1b SHIPPED 2026-07-30** — `gateway.process_digest` and the whole connected component behind
+  it: `llm/degrade.py`, the `EnhancedDigest`/`ActionItem`/`ExtractedActionItem` families,
+  `markdown.write_enhanced_digest`, `HierarchicalConfig` + the orphaned `hierarchical_runs_total`
+  metric, and the **`jinja2` dependency** (its last consumers went with it). **−2,225 lines**;
+  `extract_actions` is now the only LLM entry point. The `*V3` classes were **kept** — they are
+  the D-A1 constrained-decoding target. Two things B1b found on the way: `ThreadSummary` really
+  was two classes (the live one, behind `InboxAPI.list_threads`, survives), and
+  `ranker.get_top_n_actions_share` had been returning `0.0` unconditionally for the live `Item`
+  type — it keyed off `has_due_date`, a *RankingFeatures* field that no item ever carries.
+  **Still open:** `jsonout.py` (252 LOC, zero src callers — deliberately kept once, needs an owner
+  call) and the dead `prompt_registry` entries (`run.py` reads that map live, so removing rows
+  needs its own check).
 - **B2 Collapse the digest surface.** One schema generation; delete v2 + v3 + `ThreadSummary`
   unless D-A1 picks v3 as the constrained-output target (then delete only the loser).
 - **B3 One scoring pass, one budget gate.** Fold the three scorers into one ranker feeding a single

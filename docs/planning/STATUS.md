@@ -251,8 +251,12 @@ the redesign plan had already once "lived only as an untracked local file".
 - **run.py idempotency / degrade extractions** — entangled with `_sanitize_config` /
   `_artifact_age_hours` / `PIPELINE_VERSION` (used elsewhere); a clean split needs shared modules
   with real circular-import risk. The god-module coupling is partly inherent.
-- **`NormalizedMessage` → `ingest/models.py`** (11 importers) and the **`EnhancedDigest` /
-  `process_digest`** dead subsystem (still test-coupled) — larger cleanups than warranted now.
+- **`NormalizedMessage` → `ingest/models.py`** (11 importers) — still deferred.
+  ~~and the **`EnhancedDigest` / `process_digest`** dead subsystem (still test-coupled)~~ —
+  **done 2026-07-30 (B1b):** deleted as one connected component, −2,225 lines. The
+  "test-coupled" objection was the thing to solve, not a reason to defer: the tests were
+  covering a path `run.py` never called, and the one guarantee worth keeping (ADR-006, no
+  local masking) was ported onto the live assembler as `tests/test_no_local_masking.py`.
 - **Wizard api-mode delivery channel** — MM-creds collection landed (#178); the channel pick is
   corp-interactive (needs the live API), so it's a Phase-B step.
 - **Everything in the critical path (§5)** — corp-network-only; cannot be validated offline.
