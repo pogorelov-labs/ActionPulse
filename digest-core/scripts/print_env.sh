@@ -53,6 +53,52 @@ for tool in uv docker pytest ruff black; do
     fi
 done
 
+# The `actionpulse` launcher is a console-script, not a file we own. A stale one
+# from an older install can sit earlier on PATH and shadow the project's — on one
+# machine `/Library/Frameworks/Python.framework/Versions/3.13/bin/actionpulse`
+# carried the shebang `#!/usr/local/bin/python3`, an interpreter with no
+# digest_core, so every documented `actionpulse …` command died on
+# `ModuleNotFoundError`. Existence is not the question; **working** is. So run it.
+echo ""
+echo "Launcher:"
+for launcher in actionpulse actionpulse-mcp; do
+    venv_launcher=""
+    if [ -n "$DIAG_BIN" ] && [ -x "$DIAG_BIN/$launcher" ]; then
+        venv_launcher="$DIAG_BIN/$launcher"
+    fi
+    path_launcher="$(command -v "$launcher" 2>/dev/null || true)"
+
+    if [ -z "$venv_launcher" ] && [ -z "$path_launcher" ]; then
+        echo "✗ $launcher: not found — use 'uv run $launcher'"
+        continue
+    fi
+
+    if [ -n "$venv_launcher" ]; then
+        echo "✓ $launcher: $venv_launcher (project env)"
+    fi
+
+    # Only a PATH copy can be the stale/shadowing one; prove it runs.
+    #
+    # `env -u PYTHONPATH` is load-bearing. `actionpulse diagnose` runs this script
+    # as a child, so without it the probe inherits the caller's PYTHONPATH, the
+    # broken shim imports digest_core through *that*, and the check cheerfully
+    # reports "works" — a false negative in a diagnostic, which is worse than no
+    # check at all. Measured: the same shim exits 0 with PYTHONPATH set and dies on
+    # ModuleNotFoundError without it. Probe what a bare shell would actually do.
+    if [ -n "$path_launcher" ] && [ "$path_launcher" != "$venv_launcher" ]; then
+        if env -u PYTHONPATH "$path_launcher" --help >/dev/null 2>&1; then
+            echo "    note: PATH also has $path_launcher (works)"
+        else
+            echo "    ✗ PATH has a BROKEN $launcher: $path_launcher"
+            echo "      shebang: $(head -1 "$path_launcher" 2>/dev/null || echo '(unreadable)')"
+            echo "      It shadows the project's launcher, so a bare '$launcher …' fails."
+            echo "      Fix: run 'uv run $launcher …', put the project env first on PATH,"
+            echo "      or delete that stale script. It is left over from an older install"
+            echo "      and is not managed by this project."
+        fi
+    fi
+done
+
 # Check environment variables (without showing values)
 echo ""
 echo "Environment variables:"
