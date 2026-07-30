@@ -119,6 +119,78 @@ class LLMAuthError(Exception):
     """
 
 
+def build_json_schema_response_format(
+    model_cls,
+    *,
+    name: str = "digest_extraction",
+    strict: bool = False,
+) -> Dict[str, Any]:
+    """Build an OpenAI/vLLM ``response_format`` that constrains generation to a
+    pydantic schema (A1 — REDESIGN_PLAN v0.3).
+
+    Replaces the loose ``{"type": "json_object"}`` mode: with guided decoding the
+    model can only emit tokens that keep the output valid against the schema, so
+    malformed / off-schema JSON is impossible by construction and the
+    parse-then-quality-retry recovery path stops being load-bearing. LiteLLM
+    (>= 1.72) passes this through to vLLM's guided decoding; tool-calling is the
+    fallback route — both verified on the corp gateway (ENDPOINT-FACTS §4/§5).
+
+    ``model_cls`` is any pydantic ``BaseModel`` subclass (duck-typed via
+    ``model_json_schema()`` so this stays import-light).
+
+    **``strict`` defaults to False, deliberately.** OpenAI's strict structured-output
+    mode is not "try harder" — it is a contract on the *schema*: every object must
+    set ``additionalProperties: false`` and list **every** property in ``required``.
+    A stock ``model_json_schema()`` satisfies neither (``EnhancedDigestV3`` violates
+    it in 13 places), so advertising ``strict: true`` over it asks a conforming
+    server to reject the request. vLLM's guided decoding — the actual target here —
+    constrains generation from the schema alone and does not need the flag.
+
+    Passing ``strict=True`` is supported and *makes the schema comply* (see
+    :func:`_strictify`) rather than merely asserting that it does. Note the cost:
+    strict mode forces the model to emit every field explicitly, including the
+    downstream-populated backbone ones (``citations: []``, ``support_score: null``,
+    …) on every item — real output tokens against a hard 16384 ceiling.
+    """
+    schema = model_cls.model_json_schema()
+    if strict:
+        schema = _strictify(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "schema": schema, "strict": strict},
+    }
+
+
+def _strictify(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite *schema* in place-ish to satisfy OpenAI strict structured outputs.
+
+    Every object node gets ``additionalProperties: false`` and a ``required`` list
+    naming all of its properties. Optional fields stay expressible because pydantic
+    already renders ``Optional[X]`` as a nullable union — the model must emit the
+    key, but ``null`` remains a legal value for it.
+
+    Recurses through ``$defs``, ``properties``, ``items`` and the union keywords so
+    nested models (``ActionItemV3``, ``Citation``, …) are covered too.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    out = dict(schema)
+    if out.get("type") == "object" and "properties" in out:
+        out["additionalProperties"] = False
+        out["required"] = list(out["properties"].keys())
+
+    for key in ("$defs", "properties", "definitions"):
+        if isinstance(out.get(key), dict):
+            out[key] = {k: _strictify(v) for k, v in out[key].items()}
+    if isinstance(out.get("items"), dict):
+        out["items"] = _strictify(out["items"])
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(key), list):
+            out[key] = [_strictify(v) for v in out[key]]
+    return out
+
+
 class LLMGateway:
     """Client for LLM Gateway API with retry logic and schema validation."""
 
@@ -405,7 +477,11 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
         )
 
     def _make_request_with_retry(
-        self, messages: List[Dict[str, str]], trace_id: str, digest_date: str = None
+        self,
+        messages: List[Dict[str, str]],
+        trace_id: str,
+        digest_date: str = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Make an LLM request with a single retry budget for retriable failures."""
         # Charge one logical call against the stage budget (transient retries below
@@ -452,7 +528,9 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
                     # One gen_ai.* span per attempt (EP-8) — structural attributes
                     # only; replay attempts are marked, never faked as network.
                     with tracing.llm_call_span(self.config.model) as llm_span:
-                        response_data = self._make_request_once(messages, trace_id)
+                        response_data = self._make_request_once(
+                            messages, trace_id, response_format=response_format
+                        )
                         if llm_span is not None:
                             meta = response_data.get("meta", {})
                             llm_span.set_attribute(
@@ -495,7 +573,12 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             tokens_out or 0
         ) / 1000.0 * cfg.price_per_1k_output_usd
 
-    def _make_request_once(self, messages: List[Dict[str, str]], trace_id: str) -> Dict[str, Any]:
+    def _make_request_once(
+        self,
+        messages: List[Dict[str, str]],
+        trace_id: str,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Perform a single HTTP request to the LLM gateway (or replay from file)."""
         # ── REPLAY MODE ──────────────────────────────────────────────
         if self._replay_data is not None:
@@ -518,7 +601,7 @@ Signals: action_verbs=[{action_verbs_str}]; dates=[{dates_str}]; contains_questi
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_output_tokens,
-            "response_format": {"type": "json_object"},
+            "response_format": response_format or {"type": "json_object"},
         }
 
         headers = self.config.headers.copy()
