@@ -265,9 +265,25 @@ the redesign plan had already once "lived only as an untracked local file".
 
 ## 7. Deferred (consciously not done)
 
-- **run.py idempotency / degrade extractions** — entangled with `_sanitize_config` /
+- ~~**run.py idempotency / degrade extractions** — entangled with `_sanitize_config` /
   `_artifact_age_hours` / `PIPELINE_VERSION` (used elsewhere); a clean split needs shared modules
-  with real circular-import risk. The god-module coupling is partly inherent.
+  with real circular-import risk. The god-module coupling is partly inherent.~~
+  **Done 2026-07-30/31 (ACTPULSE-23, PRs #228 / #230 / #231): `run.py` 2,396 → 1,743 lines,
+  54 → 37 module-level functions** — below the 2,107 the review measured when it called the file
+  a god object. Three modules: `pipeline/idempotency.py`, `pipeline/posture.py`,
+  `pipeline/context.py` + `pipeline/enrichment.py`.
+  The **circular-import objection was half right, and the wrong half was load-bearing.** For
+  idempotency and posture there was no cycle at all — verified by importing, not by reasoning.
+  The real coupling was `RunContext`: **31 definitions reference it**, so every carve-out needs
+  it and importing it back from `run` *would* be circular. That made it an argument **for**
+  extracting it first, not against splitting — moving it to `pipeline/context.py` is exactly what
+  unblocked the rest. "Partly inherent" was true of one type, not of the module.
+  A ratchet (`tests/test_run_module_size.py`) now fails if `run.py` regrows, and fails equally if
+  an extraction lands *without* tightening it.
+  Not done, deliberately: the issue's **stage registry / Stage protocol**. The pipeline has four
+  early exits and non-uniform stage signatures, a state bag would hide the data flow it claims to
+  clarify, and the stated motivation (inject MM ingest without rewriting run.py) was already
+  solved by the source-adapter seam. Recorded on the issue.
 - **`NormalizedMessage` → `ingest/models.py`** (11 importers) — still deferred.
   ~~and the **`EnhancedDigest` / `process_digest`** dead subsystem (still test-coupled)~~ —
   **done 2026-07-30 (B1b):** deleted as one connected component, −2,225 lines. The
