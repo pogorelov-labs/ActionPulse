@@ -263,7 +263,14 @@ jobs:
   # comment on it for each one after, so a run of failures is one thread, not spam.
   # Scheduled runs only — a push/PR failure already has someone watching it.
   notify-failure:
-    if: ${{ failure() && github.event_name == 'schedule' }}
+    # `always()` rather than `failure()`, deliberately. On a red nightly the lanes
+    # that depend on a failed one are *skipped*, not failed (2026-07-24: `test`
+    # failed, so `docker` — which needs it — skipped), and a skipped dependency can
+    # skip its dependents even under `if: failure()`. That would make this job a
+    # silent no-op on exactly the runs it exists for. `always()` guarantees it runs,
+    # and the explicit `contains(needs.*.result, 'failure')` keeps it quiet unless a
+    # lane genuinely failed.
+    if: ${{ always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
     needs:
       - lint
       - shellcheck
