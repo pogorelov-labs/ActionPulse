@@ -19,9 +19,15 @@ from pathlib import Path
 
 RUN_PY = Path(__file__).resolve().parents[1] / "src" / "digest_core" / "run.py"
 
-#: Phase 1 (pipeline/idempotency.py extracted) left run.py here. Ratchet down.
-MAX_LINES = 2500
-MAX_MODULE_FUNCTIONS = 62
+#: Phase 2 (pipeline/posture.py extracted) left run.py here. Ratchet down.
+#: History: 2,107 at the review -> 2,607 peak -> 2,493 (phase 1) -> 2,396 (phase 2).
+MAX_LINES = 2400
+MAX_MODULE_FUNCTIONS = 55
+
+#: How far below the ratchet run.py may sit before the honesty check complains.
+#: Was 200, which let phase 2's 97-line extraction land without tightening the
+#: ratchet — a slack wider than a typical extraction defeats the purpose.
+RATCHET_SLACK = 100
 
 
 def _tree() -> ast.Module:
@@ -51,7 +57,7 @@ def test_module_level_function_count_does_not_grow():
 def test_the_ratchet_is_honest_about_where_it_stands():
     """A ratchet set far above reality silently permits regrowth."""
     actual = len(RUN_PY.read_text(encoding="utf-8").splitlines())
-    assert actual > MAX_LINES - 200, (
+    assert actual > MAX_LINES - RATCHET_SLACK, (
         f"run.py ({actual}) is well under the ratchet ({MAX_LINES}) — an extraction "
         "landed without tightening it. Lower MAX_LINES to lock the gain in."
     )

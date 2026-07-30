@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -65,11 +65,9 @@ from digest_core.observability.logs import setup_logging
 from digest_core.observability import tracing
 from digest_core.assemble.labels import (
     DEFAULT_LANGUAGE,
-    STATUS,
     UNCONFIRMED,
     normalize_section,
     report_strings,
-    section_sort_weight,
     section_title,
     stage_banner,
 )
@@ -91,6 +89,14 @@ from digest_core.pipeline.idempotency import (  # noqa: F401  (re-exported)
     _sanitize_config,
     _should_skip_existing_artifacts,
     _write_idem_sidecar,
+)
+from digest_core.pipeline.posture import (  # noqa: F401  (re-exported)
+    _StageDegraded,
+    _build_empty_digest,
+    _build_partial_digest,
+    _is_operational_error,
+    _sort_sections,
+    degradation_policy,
 )
 
 # 1.2.0: items carry source_subject/source_from (U4 reader enrichment; renamed
@@ -2022,52 +2028,6 @@ STAGE_BANNERS_RU = {
     "select": "Сбой при отборе контекста. Дайджест неполный.",
 }
 
-_DEGRADE_ACTIONS = {
-    "ingest": "empty",
-    "normalize": "empty",
-    "threads": "partial",
-    "evidence": "partial",
-    "select": "partial",
-    "assemble": "crash",
-}
-
-
-class _StageDegraded(Exception):
-    """Internal signal carrying a degraded digest from a failed early stage."""
-
-    def __init__(self, digest: Digest):
-        super().__init__("stage degraded")
-        self.digest = digest
-
-
-def _is_operational_error(exc: Exception, *, replay: bool = False) -> bool:
-    """Operational (degradable) vs config/precondition failure.
-
-    Network errors always degrade. A missing/invalid file (OSError, e.g.
-    FileNotFoundError) degrades only in replay mode (a missing snapshot); in live
-    mode it is a configuration error (e.g. a bad ``verify_ca`` path) that must
-    fail loud rather than silently produce an empty digest.
-    """
-    if isinstance(exc, (ConnectionError, TimeoutError)):
-        return True
-    if replay and isinstance(exc, OSError):
-        return True
-    return False
-
-
-def degradation_policy(stage: str, exc: Exception, config: Config, *, replay: bool = False) -> str:
-    """Pure policy: how a failed `stage` degrades -> 'crash' | 'partial' | 'empty'."""
-    if not config.degrade.enable:
-        return "crash"
-    action = _DEGRADE_ACTIONS.get(stage, "crash")
-    # Ingest/normalize is the source boundary: a config/precondition error
-    # (missing credentials, bad verify_ca path, bad endpoint) must fail fast
-    # rather than silently produce an empty digest. Only operational failures
-    # (EWS unreachable; a missing replay snapshot in replay mode) degrade.
-    if action == "empty" and not _is_operational_error(exc, replay=replay):
-        return "crash"
-    return action
-
 
 def _degrade_stage(ctx: RunContext, stage: str, exc: Exception) -> Digest:
     """Apply the degradation policy for a failed stage; return a digest or re-raise."""
@@ -2191,63 +2151,6 @@ def _finish_degraded(ctx: RunContext, digest: Digest) -> RunDigestResult:
         degraded_stages=ctx.run_meta.get("degraded_stages"),
     )
     return RunDigestResult(True, citation_ok)
-
-
-def _build_empty_digest(digest_date: str, trace_id: str, prompt_version: str) -> Digest:
-    return Digest(
-        schema_version="1.0",
-        prompt_version=prompt_version,
-        digest_date=digest_date,
-        trace_id=trace_id,
-        sections=[],
-    )
-
-
-def _build_partial_digest(
-    digest_date: str,
-    trace_id: str,
-    error_message: str,
-    title: str | None = None,
-    language: str = DEFAULT_LANGUAGE,
-) -> Digest:
-    strings = report_strings(language)
-    if title is None:
-        title = strings["banner_llm_unavailable"]
-        if "timed out" in error_message.lower() or "timeout" in error_message.lower():
-            title = strings["banner_llm_timeout"]
-    return Digest(
-        schema_version="1.0",
-        prompt_version="none",
-        digest_date=digest_date,
-        trace_id=trace_id,
-        sections=[
-            {
-                "title": section_title(STATUS, language),
-                "items": [
-                    {
-                        "title": title,
-                        "due": None,
-                        "evidence_id": "system",
-                        "confidence": 0.0,
-                        "source_ref": {"type": "system", "error": error_message},
-                    }
-                ],
-            }
-        ],
-    )
-
-
-def _sort_sections(sections: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    normalized_sections = []
-    for section in sections:
-        items = section.get("items", [])
-        if not items:
-            continue
-        normalized_sections.append({"title": section.get("title", ""), "items": items})
-    return sorted(
-        normalized_sections,
-        key=lambda section: (section_sort_weight(section["title"]), section["title"]),
-    )
 
 
 #: Marker substituted for a DM body in an at-rest snapshot (payload-free).
