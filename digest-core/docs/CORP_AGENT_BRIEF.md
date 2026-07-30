@@ -25,8 +25,20 @@ survives after the session ends.
 1. Sync and verify the baseline.
    git fetch origin --prune
    git checkout -b corp/validation-<YYYY-MM-DD> origin/main
-   cd digest-core && make setup      # or: uv sync --native-tls
+   cd digest-core
+   uv sync --native-tls --extra store --extra mcp
    make test                          # MUST be green before you touch anything
+
+   Do NOT run `make setup` — it ends in an INTERACTIVE wizard (18 prompts) and
+   will hang a non-interactive agent. `uv sync` is the whole install. The extras
+   are not optional for this session: T5 needs `store`, T6 needs `mcp`, and a
+   plain `uv sync` deliberately omits both.
+
+   Run every ActionPulse command as `uv run actionpulse …`, never bare
+   `actionpulse`. The bare name is a console-script that only exists on PATH if
+   something installed it globally, and a stale one from an older install fails
+   with `ModuleNotFoundError: No module named 'digest_core'`. `uv run` always
+   resolves inside this project's environment.
 
 2. Read, in this order:
    - digest-core/docs/CORP_AGENT_BRIEF.md   (this file — §1 is your task list)
@@ -63,7 +75,7 @@ it is boring** — "reranker changed nothing" is a result.
 
 ### T1 · Baseline (always, first)
 - `make test` on a clean `origin/main`. Record: pass/skip counts, duration, Python version, OS.
-- `actionpulse diagnose`. Record the redacted output verbatim.
+- `uv run actionpulse diagnose`. Record the redacted output verbatim.
 - **Done when:** the suite is green and the environment is captured. If it is *not* green on
   `origin/main`, **stop and report that** — it outranks everything else here.
 
@@ -72,16 +84,19 @@ it is boring** — "reranker changed nothing" is a result.
 > machine's* config rather than from `origin/main`. The known case (ACTPULSE-96, fixed) was a
 > pre-U5 config pinning a **relative** `ews.sync_state_path`, which redirected the watermark and
 > the delivered-posts ledger to a working-directory-relative `.state/` and made
-> `ACTIONPULSE_HOME` a no-op. Re-running `make setup` writes a current config. Report **which**
-> it was — "red because of a stale local config" and "red on origin/main" are very different
-> results, and only the second one should stop the session.
+> `ACTIONPULSE_HOME` a no-op. To test the hypothesis without the interactive wizard, move
+> `configs/config.yaml` aside and re-run `make test`: green means the machine's config is the
+> cause, not the code. (Re-running `make setup` would fix it properly, but it is interactive —
+> that is a step for the owner, not for you.) Report **which** it was — "red because of a stale
+> local config" and "red on origin/main" are very different results, and only the second one
+> should stop the session.
 
 ### T2 · Prove ingest live (Stream 1)
-- EWS: `actionpulse run --dry-run` → record message count, folder coverage, watermark behaviour on
+- EWS: `uv run actionpulse run --dry-run` → record message count, folder coverage, watermark behaviour on
   a second run (it must not re-fetch).
 - Mattermost: with `mm_source.enabled=true` and an allowlist → record channels scanned, messages
   fetched, AIMD concurrency settling behaviour.
-- Calendar: `actionpulse run --dry-run --sources calendar` → record event count and the Meetings
+- Calendar: `uv run actionpulse run --dry-run --sources calendar` → record event count and the Meetings
   section (E1–E3 have **never** run against live EWS).
 - **Done when:** each source has a real count and any error is captured with its trace_id.
 
@@ -95,14 +110,14 @@ The second recording is what unblocks A1.7 (flipping `extract.contract` to `v3`)
 
 ```bash
 # 1. One ingest snapshot, shared by both runs — this is what makes them comparable.
-actionpulse run --dump-ingest ~/ap-snapshot.json
+uv run actionpulse run --dump-ingest ~/ap-snapshot.json
 
 # 2. Baseline: today's live contract.
-DIGEST_EXTRACT_CONTRACT=v1 actionpulse run --force \
+DIGEST_EXTRACT_CONTRACT=v1 uv run actionpulse run --force \
   --replay-ingest ~/ap-snapshot.json --record-llm ~/ap-recording-v1.json
 
 # 3. Candidate: the constrained v3 contract (A1). Same evidence, different contract.
-DIGEST_EXTRACT_CONTRACT=v3 actionpulse run --force \
+DIGEST_EXTRACT_CONTRACT=v3 uv run actionpulse run --force \
   --replay-ingest ~/ap-snapshot.json --record-llm ~/ap-recording-v3.json
 ```
 
@@ -117,7 +132,7 @@ produced any `extract_v3` drop counts in its `*.meta.json` (`dropped_unknown_evi
 Once the owner has all three files, the comparison runs **offline, with no gateway**:
 
 ```bash
-actionpulse eval-contract-parity \
+uv run actionpulse eval-contract-parity \
   --snapshot ~/ap-snapshot.json \
   --baseline-recording ~/ap-recording-v1.json \
   --candidate-recording ~/ap-recording-v3.json \
