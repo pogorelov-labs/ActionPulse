@@ -6,10 +6,13 @@ import pytest
 import os
 from typing import List
 from unittest.mock import patch
+from pydantic import ValidationError
+
 from digest_core.config import (
     EWSConfig,
     Config,
     LLMConfig,
+    ReportConfig,
     TimeConfig,
     ObservabilityConfig,
     _coerce_env_value,
@@ -340,6 +343,51 @@ class TestCoerceEnvValue:
 
     def test_list_json_literal(self):
         assert _coerce_env_value(List[str], '["x", "y"]') == ["x", "y"]
+
+
+class TestEnvOverrideRejectsInvalidValues:
+    """A typo'd ENV var must stop the run, not change behaviour invisibly.
+
+    `_coerce_env_value` returns the raw string when nothing coerces, on the stated
+    assumption that "the model's own validation surfaces a clear error". It did
+    not: `_merge_model` assigns onto an already-constructed model and these models
+    do not set `validate_assignment`, so an out-of-enum value simply landed.
+    """
+
+    def test_out_of_enum_language_is_rejected_with_the_allowed_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DIGEST_REPORT_LANGUAGE", "klingon")
+        monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        with pytest.raises(ValueError) as excinfo:
+            Config()
+        message = str(excinfo.value)
+        assert "DIGEST_REPORT_LANGUAGE" in message
+        assert "'en'" in message and "'ru'" in message
+
+    def test_out_of_enum_extract_contract_is_rejected(self, tmp_path, monkeypatch):
+        """The dangerous one: `== "v3"` means a typo silently runs the v1 path."""
+        monkeypatch.setenv("DIGEST_EXTRACT_CONTRACT", "v2")
+        monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        with pytest.raises(ValueError, match="DIGEST_EXTRACT_CONTRACT"):
+            Config()
+
+    def test_valid_enum_values_still_apply(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DIGEST_REPORT_LANGUAGE", "ru")
+        monkeypatch.setenv("DIGEST_EXTRACT_CONTRACT", "v3")
+        monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        config = Config()
+        assert config.report.language == "ru"
+        assert config.extract.contract == "v3"
+
+    def test_non_enum_coercions_are_unaffected(self, tmp_path, monkeypatch):
+        """The guard must not break the ordinary int/bool/list overrides."""
+        monkeypatch.setenv("DIGEST_LLM_TIMEOUT_S", "999")
+        monkeypatch.setenv("DIGEST_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        assert Config().llm.timeout_s == 999
+
+    def test_report_language_is_typed_not_just_documented(self):
+        """The constraint lived only in the field description before this fix."""
+        with pytest.raises(ValidationError):
+            ReportConfig(language="klingon")
 
 
 def _config_with_yaml(tmp_path, monkeypatch, yaml_text):
