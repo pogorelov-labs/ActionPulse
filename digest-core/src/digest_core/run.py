@@ -1743,6 +1743,10 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         # Stage 6: LLM
         digest, llm_error = _stage_llm(ctx, selected_evidence, normalized_messages)
 
+        # The extraction is on disk from here on. Everything below enriches it,
+        # and every pass below is allowed to fail without costing the call.
+        _persist_raw_digest(ctx, digest)
+
         (
             digest,
             citation_ok,
@@ -1750,7 +1754,24 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
             recall_floor,
             items_weak,
             items_repaired,
-        ) = _post_llm_digest_enrichment(ctx, digest, normalized_messages, selected_evidence)
+        ) = _enrich_guard(
+            ctx,
+            "citations_and_gate",
+            lambda: _post_llm_digest_enrichment(
+                ctx, digest, normalized_messages, selected_evidence
+            ),
+            # A skipped gate has NOT validated anything, so it cannot report
+            # success: mirror the degraded path and only claim ok when the caller
+            # never asked for validation.
+            default=(
+                digest,
+                not ctx.validate_citations,
+                0.0,
+                ctx.config.reranker.recall_floor,
+                0,
+                0,
+            ),
+        )
         ctx.run_meta["citation_validation_ok"] = citation_ok
         ctx.run_meta["support_recall"] = round(support_recall, 4)
         ctx.run_meta["items_weak"] = items_weak
@@ -1760,25 +1781,36 @@ def _run_pipeline_traced(ctx: RunContext, sources: Sequence[str]) -> RunDigestRe
         # Only meaningful when citation validation ran — without it spans are never
         # resolved and *every* item looks weak (quarantining all would be a drop).
         if ctx.validate_citations and ctx.config.reranker.quarantine_weak:
-            ctx.run_meta["items_quarantined"] = _quarantine_weak_items(
-                digest, ctx.config.report.language
+            ctx.run_meta["items_quarantined"] = _enrich_guard(
+                ctx,
+                "quarantine_weak",
+                lambda: _quarantine_weak_items(digest, ctx.config.report.language),
+                default=0,
             )
 
         # Cross-run dedup annotation (EP-7; no-op unless memory.dedup_ledger)
-        _apply_dedup_ledger(ctx, digest)
+        _enrich_guard(ctx, "dedup_ledger", lambda: _apply_dedup_ledger(ctx, digest))
 
         # U4: items gain subject/author from the message behind their msg_id —
         # the artifact stays self-contained for the reader (no snapshot join).
-        _enrich_items_from_messages(digest, normalized_messages)
+        _enrich_guard(
+            ctx,
+            "source_enrichment",
+            lambda: _enrich_items_from_messages(digest, normalized_messages),
+        )
 
         # E2: append a deterministic "Meetings" section from the run's calendar events
         # (source='calendar'), so today's meetings surface even without an extractable
-        # agenda action. No-op unless `--sources calendar` ingested events. Non-fatal.
-        _enrich_digest_with_meetings(ctx, digest, normalized_messages)
+        # agenda action. No-op unless `--sources calendar` ingested events.
+        _enrich_guard(
+            ctx,
+            "meetings_section",
+            lambda: _enrich_digest_with_meetings(ctx, digest, normalized_messages),
+        )
 
         # P3 memory pillar: append a store-derived "Open loops" section (cross-day
-        # carryover). Opt-in (store.carryover) and non-fatal.
-        _enrich_digest_from_store(ctx, digest)
+        # carryover). Opt-in (store.carryover).
+        _enrich_guard(ctx, "store_carryover", lambda: _enrich_digest_from_store(ctx, digest))
 
         # Stage 7: ASSEMBLE
         _stage_assemble(ctx, digest)
@@ -2159,6 +2191,66 @@ def _guard(ctx: RunContext, stage: str, thunk):
         return thunk()
     except Exception as exc:
         raise _StageDegraded(_degrade_stage(ctx, stage, exc)) from exc
+
+
+def _persist_raw_digest(ctx: RunContext, digest: Digest) -> None:
+    """Write the extraction to disk **before** anything enriches it.
+
+    The LLM call is the scarcest thing this pipeline spends: corp-only, 15 RPM,
+    and on a capture run it cannot be retaken. Yet ``_guard`` covers only the four
+    stages *before* it (ingest / threads / evidence / select) — the cheap,
+    re-runnable ones — while the post-LLM chain runs unprotected and the digest
+    first touches disk at ASSEMBLE. So until now a crash anywhere in quarantine,
+    dedup, enrichment, meetings or carryover discarded a paid extraction.
+
+    The sidecar makes that unrecoverable case recoverable. It is deliberately
+    ``digest-{date}.raw.json``: the reader's precise ``digest-????-??-??.json``
+    glob does not match it (so it never appears as a digest), while retention's
+    ``digest-*.json`` does (so it is pruned like everything else, no new class of
+    file to accumulate).
+
+    Best-effort by construction — failing to write the safety net must never be
+    the thing that breaks the run it exists to protect.
+    """
+    raw_path = ctx.json_path.with_suffix(".raw.json")
+    try:
+        _write_json(raw_path, digest.model_dump(exclude_none=True))
+        ctx.run_meta["raw_digest_path"] = str(raw_path)
+    except Exception as exc:  # noqa: BLE001 - the net must not become the failure
+        logger.warning(
+            "Could not persist the raw digest",
+            trace_id=ctx.trace_id,
+            path=str(raw_path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def _enrich_guard(ctx: RunContext, name: str, thunk, *, default=None):
+    """Run a post-LLM enrichment pass; on failure **skip it and keep going**.
+
+    The missing posture in this pipeline. Pre-LLM stages degrade (they can be
+    re-run cheaply); ASSEMBLE crashes by policy. But an enrichment pass sits
+    between a paid extraction and the report, and neither posture fits: aborting
+    throws away the call, and degrading throws away the items. Skipping the pass
+    keeps both — the digest is simply less enriched.
+
+    Every skip is recorded in ``run_meta["enrichment_skipped"]`` and surfaces in
+    the run's ``.meta.json``. No silent caps: a section quietly missing from a
+    digest is exactly the kind of loss that has to be visible.
+    """
+    try:
+        return thunk()
+    except Exception as exc:  # noqa: BLE001 - a bad pass must not cost the call
+        logger.warning(
+            "Post-LLM enrichment pass failed; skipping it",
+            trace_id=ctx.trace_id,
+            enrichment=name,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        ctx.run_meta.setdefault("enrichment_skipped", []).append(
+            {"pass": name, "error": f"{type(exc).__name__}: {exc}"}
+        )
+        return default
 
 
 def _finish_degraded(ctx: RunContext, digest: Digest) -> RunDigestResult:
