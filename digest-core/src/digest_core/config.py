@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, get_args
 
 import structlog
 from pydantic import (
@@ -54,6 +54,33 @@ def _coerce_env_value(annotation: Any, raw: str) -> Any:
         return adapter.validate_python([part.strip() for part in raw.split(",") if part.strip()])
     except ValidationError:
         return raw
+
+
+def _reject_invalid_env_value(*, env_name: str, annotation: Any, value: Any) -> None:
+    """Fail fast when an ENV override does not satisfy its field's declared type.
+
+    A typo'd env var must stop the run, not change its behaviour invisibly. The two
+    real cases this catches:
+
+    * ``DIGEST_REPORT_LANGUAGE=klingon`` — would reach ``labels.section_title()`` and
+      either raise mid-run or silently produce a report in the wrong language.
+    * ``DIGEST_EXTRACT_CONTRACT=v2`` — the v3 branch tests ``== "v3"``, so a typo
+      silently runs the **v1** path while the operator believes constrained decoding
+      is on. Quietly doing the other thing is the worst available outcome.
+
+    Only annotation validity is enforced. Semantic validators that need a fully
+    constructed model (the ``mm_source`` DM-consent gate) still run where they do
+    today — on the reconstruct the caller performs afterwards.
+    """
+    try:
+        TypeAdapter(annotation).validate_python(value)
+    except ValidationError as exc:
+        allowed = get_args(annotation)
+        hint = f" Allowed values: {', '.join(map(repr, allowed))}." if allowed else ""
+        raise ValueError(
+            f"{env_name}={value!r} is not valid for this setting.{hint}"
+            " Fix or unset the environment variable."
+        ) from exc
 
 
 def _env_flag(raw: str) -> bool:
@@ -1281,7 +1308,10 @@ class DaemonConfig(BaseModel):
 class ReportConfig(BaseModel):
     """Digest report rendering options (L1, TERMINAL_DESIGN_ROADMAP)."""
 
-    language: str = Field(
+    # Literal, not str: the constraint used to live only in this description, so
+    # DIGEST_REPORT_LANGUAGE=klingon was accepted and carried into
+    # labels.section_title(). Keep in sync with labels.SUPPORTED_LANGUAGES.
+    language: Literal["en", "ru"] = Field(
         default="en",
         description=(
             "Report output language: 'en' (default) or 'ru'. Drives the LLM"
@@ -1533,15 +1563,20 @@ class Config(BaseSettings):
         """
         env_field_map = env_field_map or {}
 
-        def _env_raw(field_name: str) -> Optional[str]:
-            """Overriding ENV string for *field_name*, or None when unset/empty."""
+        def _env_name(field_name: str) -> Optional[str]:
+            """The ENV variable that overrides *field_name*, if any."""
             if field_name in env_field_map:
                 # Explicit mapping takes priority and does NOT fall back to the
                 # generic prefix (so EWS_ENDPOINT beats DIGEST_EWS_ENDPOINT).
-                return os.getenv(env_field_map[field_name]) or None
+                return env_field_map[field_name]
             if env_prefix:
-                return os.getenv(f"DIGEST_{env_prefix}_{field_name}".upper()) or None
+                return f"DIGEST_{env_prefix}_{field_name}".upper()
             return None
+
+        def _env_raw(field_name: str) -> Optional[str]:
+            """Overriding ENV string for *field_name*, or None when unset/empty."""
+            name = _env_name(field_name)
+            return (os.getenv(name) or None) if name else None
 
         # `model_fields` is a class attribute (instance access is deprecated in
         # pydantic v2.11); `model` is always a BaseModel instance here.
@@ -1560,7 +1595,19 @@ class Config(BaseSettings):
             raw = _env_raw(field_name)
             if raw is None:
                 continue
-            setattr(model, field_name, _coerce_env_value(field_info.annotation, raw))
+            value = _coerce_env_value(field_info.annotation, raw)
+            # `_coerce_env_value` hands back the raw string when nothing coerces,
+            # on the assumption that "the model's own validation surfaces a clear
+            # error". It does not: we `setattr` onto an already-constructed model
+            # and these models do not set `validate_assignment`, so an invalid
+            # value would simply land. Check it here, where the ENV var name is
+            # known and the message can be actionable.
+            _reject_invalid_env_value(
+                env_name=_env_name(field_name) or field_name,
+                annotation=field_info.annotation,
+                value=value,
+            )
+            setattr(model, field_name, value)
 
     def resolved_state_dir(self) -> "Path":
         """The run's state directory (single source of truth for all sources).
