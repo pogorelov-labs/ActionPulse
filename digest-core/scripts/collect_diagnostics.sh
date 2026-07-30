@@ -91,8 +91,16 @@ echo "Collecting system information..."
     echo "OS: $(uname -a)"
     echo ""
     echo "=== Python Environment ==="
-    python3 --version
-    echo "Python path: $(which python3)"
+    # Prefer the interpreter ActionPulse actually runs on (passed down by
+    # `actionpulse diagnose`); PATH python3 is often a different install
+    # (ACTPULSE-97). This bundle is evidence — it has to name the right one.
+    if [ -n "${ACTIONPULSE_DIAG_PY:-}" ]; then
+        "${ACTIONPULSE_DIAG_PY}" --version
+        echo "Python path: ${ACTIONPULSE_DIAG_PY} (project interpreter)"
+    else
+        python3 --version
+        echo "Python path: $(command -v python3) (PATH — may not be the project's)"
+    fi
     echo ""
     echo "=== Environment Variables (sanitized) ==="
     env | grep -E "^(EWS_|LLM_|DIGEST_|MM_)" | sed -E 's/^([A-Za-z0-9_]*(PASSWORD|TOKEN|SECRET|KEY|PAT|WEBHOOK_URL))=.*/\1=REDACTED/' || true
