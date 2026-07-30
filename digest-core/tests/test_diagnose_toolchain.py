@@ -131,3 +131,86 @@ class TestEwsPreflightNamesActionPulseKeys:
     def test_whitespace_only_values_do_not_count_as_configured(self):
         with pytest.raises(ValueError, match="ews.endpoint"):
             self._ingest(endpoint="   ", user_upn="user@corp.example")._check_configured()
+
+
+class TestLauncherShadowingIsDetected:
+    """A stale `actionpulse` on PATH silently breaks every documented command.
+
+    Real case: `/Library/Frameworks/Python.framework/Versions/3.13/bin/actionpulse`
+    carried the shebang `#!/usr/local/bin/python3` — an interpreter with no
+    digest_core — so a bare `actionpulse …` died on ModuleNotFoundError while the
+    project's own launcher worked fine. The docs said the simple thing; the simple
+    thing did not run.
+    """
+
+    def _run(self, env, tmp_path):
+        return subprocess.run(
+            [str(SCRIPTS / "print_env.sh")], capture_output=True, text=True, env=env, cwd=tmp_path
+        ).stdout
+
+    def _fake_broken_launcher(self, tmp_path):
+        """A shim whose interpreter cannot import digest_core — the real failure."""
+        shim_dir = tmp_path / "stale"
+        shim_dir.mkdir()
+        shim = shim_dir / "actionpulse"
+        shim.write_text(
+            '#!/bin/sh\nexec python3 -c "import digest_core_definitely_missing"\n',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+        return shim_dir, shim
+
+    def test_a_broken_path_launcher_is_reported_with_its_shebang_and_a_fix(self, tmp_path):
+        shim_dir, shim = self._fake_broken_launcher(tmp_path)
+        env = _diagnostics_env()
+        env["PATH"] = f"{shim_dir}:{env['PATH']}"
+        out = self._run(env, tmp_path)
+        assert "BROKEN actionpulse" in out
+        assert str(shim) in out
+        assert "shebang:" in out
+        assert "uv run actionpulse" in out
+
+    def test_the_probe_ignores_an_inherited_PYTHONPATH(self, tmp_path):
+        """The bug this check nearly shipped with — and that two earlier versions of
+        THIS test could not detect.
+
+        `diagnose` runs the script as a child, so without `env -u PYTHONPATH` the
+        broken shim imports through the *caller's* PYTHONPATH and the check reports
+        "works": a false negative in a diagnostic, worse than no check.
+
+        Getting a discriminating shim right took three tries, which is the point of
+        mutation-checking a guard:
+          1. import a never-existing module -> fails either way, proves nothing;
+          2. import `digest_core` -> the venv already has it, so it *succeeds*
+             either way, and the test failed against the correct implementation;
+          3. import a marker module that exists ONLY on the injected PYTHONPATH ->
+             fails in a bare shell (BROKEN, correct) and succeeds when PYTHONPATH
+             leaks in ("works", wrong). Only this one can tell them apart.
+        """
+        fake_lib = tmp_path / "fakelib"
+        fake_lib.mkdir()
+        (fake_lib / "_ap_launcher_probe_marker.py").write_text("", encoding="utf-8")
+
+        shim_dir = tmp_path / "stale"
+        shim_dir.mkdir()
+        shim = shim_dir / "actionpulse"
+        shim.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" -c "import _ap_launcher_probe_marker"\n',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+
+        env = _diagnostics_env()
+        env["PATH"] = f"{shim_dir}:{env['PATH']}"
+        env["PYTHONPATH"] = str(fake_lib)  # would mask the breakage if inherited
+        out = self._run(env, tmp_path)
+        assert "BROKEN actionpulse" in out, (
+            "an inherited PYTHONPATH masked the broken launcher — the probe must run "
+            "it the way a bare shell would (env -u PYTHONPATH)"
+        )
+
+    def test_a_working_path_launcher_is_only_a_note(self):
+        """Two working copies is normal; it must not read as an error."""
+        out = self._run(_diagnostics_env(), Path(SCRIPTS).parent)
+        assert "Launcher:" in out
+        assert "✗ PATH has a BROKEN actionpulse-mcp" not in out
