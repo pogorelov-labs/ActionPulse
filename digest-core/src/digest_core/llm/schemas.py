@@ -1,5 +1,5 @@
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from typing import List, Optional, Dict, Any
+from typing import Any, ClassVar, Dict, List, Optional
 
 
 # Citation model for extractive traceability
@@ -126,6 +126,27 @@ class _TraceBackbone(BaseModel):
     straight off the model while still carrying the full P2 chain by the time it
     reaches assemble.
     """
+
+    #: Backbone fields the **extractor must never emit** — each is owned by the
+    #: machinery that computes it (``citations`` by CitationBuilder; the gate
+    #: annotations by the shadow gate / reranker / ranker / dedup ledger).
+    #: ``evidence_spans`` is the one exception: producing it *is* the model's job.
+    #:
+    #: A1.2a projects these out of the constrained-decoding schema, so the model is
+    #: not asked for values it has no basis to produce. ``test_v3_traceable_schema``
+    #: pins this against the actual field set, so growing the backbone without
+    #: classifying the new field fails loudly rather than silently leaking it into
+    #: the extraction contract.
+    DOWNSTREAM_ONLY: ClassVar[frozenset] = frozenset(
+        {
+            "citations",
+            "citation_fidelity_ok",
+            "support_score",
+            "weak_evidence",
+            "rank_score",
+            "seen_before",
+        }
+    )
 
     evidence_spans: List[EvidenceSpan] = Field(
         default_factory=list, description="Verbatim source-language spans supporting the item (R2)"
