@@ -14,8 +14,12 @@ from unittest.mock import Mock
 import pytest
 
 from digest_core.config import LLMConfig
-from digest_core.llm.gateway import LLMGateway, build_json_schema_response_format
-from digest_core.llm.schemas import EnhancedDigestV3
+from digest_core.llm.gateway import (
+    LLMGateway,
+    build_extraction_response_format,
+    build_json_schema_response_format,
+)
+from digest_core.llm.schemas import EnhancedDigestV3, _TraceBackbone
 
 
 def _mock_response(content: str, *, prompt_tokens: int = 100, completion_tokens: int = 50) -> Mock:
@@ -149,6 +153,90 @@ def test_strict_shaped_payload_still_validates_into_the_model():
     )
     assert digest.my_actions[0].evidence_spans[0].quote == "please send the report"
     assert digest.my_actions[0].citations == []
+
+
+class TestExtractionSchemaProjection:
+    """A1.2a — constrain on what the extractor produces, not on the whole model."""
+
+    def test_downstream_only_fields_are_projected_out(self):
+        schema = build_extraction_response_format(EnhancedDigestV3)["json_schema"]["schema"]
+        props = set(schema["$defs"]["ActionItemV3"]["properties"])
+        assert not (props & _TraceBackbone.DOWNSTREAM_ONLY), (
+            "the extractor must never be asked for fields the pipeline computes: "
+            f"{sorted(props & _TraceBackbone.DOWNSTREAM_ONLY)}"
+        )
+
+    def test_evidence_spans_is_kept(self):
+        """The one backbone field the model *does* own — the root of the P2 chain."""
+        schema = build_extraction_response_format(EnhancedDigestV3)["json_schema"]["schema"]
+        for item_type in ("ActionItemV3", "DeadlineMeetingV3", "RiskBlockerV3", "FYIItemV3"):
+            assert "evidence_spans" in schema["$defs"][item_type]["properties"], item_type
+
+    def test_orphaned_defs_are_pruned_and_no_ref_dangles(self):
+        """Dropping `citations` orphans `Citation`; leaving it implies the model needs it."""
+        schema = build_extraction_response_format(EnhancedDigestV3)["json_schema"]["schema"]
+        assert "Citation" not in schema["$defs"]
+        assert "EvidenceSpan" in schema["$defs"]  # still reachable via evidence_spans
+
+        def refs(node, acc):
+            if isinstance(node, dict):
+                ref = node.get("$ref")
+                if isinstance(ref, str):
+                    acc.add(ref.rsplit("/", 1)[-1])
+                for value in node.values():
+                    refs(value, acc)
+            elif isinstance(node, list):
+                for value in node:
+                    refs(value, acc)
+            return acc
+
+        assert refs(schema, set()) <= set(schema["$defs"])
+
+    def test_required_stays_consistent_after_projection(self):
+        """A required-but-absent property is an invalid schema."""
+        schema = build_extraction_response_format(EnhancedDigestV3, strict=True)["json_schema"][
+            "schema"
+        ]
+        for name, node in schema["$defs"].items():
+            assert not set(node.get("required", [])) - set(node.get("properties", {})), name
+        assert _strict_violations(schema) == []
+
+    def test_projected_payload_still_validates_into_the_full_model(self):
+        """The projection is a view, not a second model: v3 keeps one definition."""
+        digest = EnhancedDigestV3.model_validate(
+            {
+                "schema_version": "3.0",
+                "prompt_version": "extract_actions.v3",
+                "digest_date": "2026-03-29",
+                "trace_id": "t-1",
+                "my_actions": [
+                    {
+                        "title": "Send the report",
+                        "description": "By Friday",
+                        "evidence_id": "ev-1",
+                        "quote": "please send the report",
+                        "owners": [],
+                        "confidence": "High",
+                        "evidence_spans": [{"msg_id": "msg-1", "quote": "please send the report"}],
+                    }
+                ],
+                "others_actions": [],
+                "deadlines_meetings": [],
+                "risks_blockers": [],
+                "fyi": [],
+            }
+        )
+        item = digest.my_actions[0]
+        assert item.evidence_spans[0].quote == "please send the report"
+        # the downstream-owned fields keep their defaults, ready to be filled
+        assert item.citations == []
+        assert item.support_score is None and item.weak_evidence is None
+
+    def test_projection_is_materially_smaller(self):
+        """Not cosmetic: fewer keys per item against a hard 16384-token output cap."""
+        full = build_json_schema_response_format(EnhancedDigestV3)["json_schema"]["schema"]
+        ext = build_extraction_response_format(EnhancedDigestV3)["json_schema"]["schema"]
+        assert len(json.dumps(ext)) < len(json.dumps(full)) * 0.75
 
 
 def test_default_request_uses_json_object(gateway):

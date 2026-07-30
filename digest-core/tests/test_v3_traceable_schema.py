@@ -66,3 +66,21 @@ def test_v3_item_round_trips_with_spans_and_gate():
     assert dumped["citation_fidelity_ok"] is True
     # Re-validate from the dump (the contract round-trips).
     assert ActionItemV3.model_validate(dumped).support_score == pytest.approx(0.91)
+
+
+def test_every_backbone_field_is_classified_as_extractor_or_downstream():
+    """Growing the backbone must force a decision about who fills the new field.
+
+    Without this, adding a field to `_TraceBackbone` silently leaks it into the
+    constrained-decoding contract (A1.2a projects out `DOWNSTREAM_ONLY`), and the
+    model gets asked for a value it has no basis to produce.
+    """
+    from digest_core.llm.schemas import _TraceBackbone
+
+    backbone = set(_TraceBackbone.model_fields)
+    extractor_owned = {"evidence_spans"}
+    assert backbone == extractor_owned | _TraceBackbone.DOWNSTREAM_ONLY, (
+        "unclassified backbone field(s): "
+        f"{sorted(backbone - extractor_owned - _TraceBackbone.DOWNSTREAM_ONLY)} — "
+        "decide whether the extractor emits it or the pipeline computes it"
+    )

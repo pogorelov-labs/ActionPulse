@@ -7,13 +7,13 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, Iterable, List, Optional
 import httpx
 import tenacity
 import structlog
 from digest_core.config import LLMConfig
 from digest_core.evidence.split import EvidenceChunk
-from digest_core.llm.schemas import Citation
+from digest_core.llm.schemas import Citation, _TraceBackbone
 from digest_core.llm.rate_broker import RateBroker
 from digest_core.observability import tracing
 from digest_core.observability.metrics import MetricsCollector
@@ -159,6 +159,121 @@ def build_json_schema_response_format(
         "type": "json_schema",
         "json_schema": {"name": name, "schema": schema, "strict": strict},
     }
+
+
+def build_extraction_response_format(
+    model_cls,
+    *,
+    name: str = "digest_extraction",
+    strict: bool = False,
+    exclude: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """Constrain generation to **only what the extractor should produce** (A1.2a).
+
+    Same as :func:`build_json_schema_response_format`, but the downstream-owned
+    backbone fields are projected out of the schema first. Two reasons, both real:
+
+    * **Output budget.** Under ``strict`` the model must emit every field in the
+      schema, so each item would carry ``citations: []``, ``support_score: null``
+      and four more dead keys. Output is capped at a hard 16384 tokens on the corp
+      gateway (429-not-413) — the one budget ACTPULSE-77 did *not* lift — and a
+      30-item digest pays that six times over per item, for nothing.
+    * **Provenance.** A field in the schema is an invitation to fill it. Asking the
+      model for ``support_score`` or ``citation_fidelity_ok`` invites hallucinated
+      values into exactly the P2 chain the backbone exists to protect. Those are
+      computed by CitationBuilder, the shadow gate, the reranker and the ranker —
+      never generated.
+
+    ``evidence_spans`` is deliberately **kept**: producing verbatim supporting
+    quotes is the model's job and the root of the whole traceability chain.
+
+    The projection is a *view*, not a second model — v3 keeps one definition, and
+    the result still validates into it because every excluded field is defaulted.
+    """
+    exclude = frozenset(exclude if exclude is not None else _TraceBackbone.DOWNSTREAM_ONLY)
+    schema = _prune_unreferenced_defs(_project_out(model_cls.model_json_schema(), exclude))
+    if strict:
+        schema = _strictify(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "schema": schema, "strict": strict},
+    }
+
+
+def _prune_unreferenced_defs(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop ``$defs`` entries nothing ``$ref``s any more.
+
+    Projecting out ``citations`` orphans the ``Citation`` definition. Leaving it
+    behind is valid JSON Schema but dishonest in a schema whose whole point is
+    "here is what you should produce" — it implies the model might need to emit a
+    citation. Iterates to a fixed point so a def referenced only by another orphan
+    goes too.
+    """
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict):
+        return schema
+
+    def refs_in(node, found):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                found.add(ref.rsplit("/", 1)[-1])
+            for value in node.values():
+                refs_in(value, found)
+        elif isinstance(node, list):
+            for value in node:
+                refs_in(value, found)
+        return found
+
+    out = dict(schema)
+    kept = dict(defs)
+    while True:
+        root = {k: v for k, v in out.items() if k != "$defs"}
+        reachable = refs_in(root, set())
+        frontier = set(reachable)
+        while frontier:
+            name = frontier.pop()
+            if name in kept:
+                new = refs_in(kept[name], set()) - reachable
+                reachable |= new
+                frontier |= new
+        pruned = {k: v for k, v in kept.items() if k in reachable}
+        if pruned == kept:
+            break
+        kept = pruned
+
+    if kept:
+        out["$defs"] = kept
+    else:
+        out.pop("$defs", None)
+    return out
+
+
+def _project_out(schema: Dict[str, Any], drop: frozenset) -> Dict[str, Any]:
+    """Remove *drop* fields from every object node in *schema*, recursively.
+
+    Also prunes them from each node's ``required`` list, so the projected schema
+    stays internally consistent (a required-but-absent property is invalid).
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    out = dict(schema)
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {
+            k: _project_out(v, drop) for k, v in out["properties"].items() if k not in drop
+        }
+        if isinstance(out.get("required"), list):
+            out["required"] = [k for k in out["required"] if k not in drop]
+    for key in ("$defs", "definitions"):
+        if isinstance(out.get(key), dict):
+            out[key] = {k: _project_out(v, drop) for k, v in out[key].items()}
+    if isinstance(out.get("items"), dict):
+        out["items"] = _project_out(out["items"], drop)
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(key), list):
+            out[key] = [_project_out(v, drop) for v in out[key]]
+    return out
 
 
 def _strictify(schema: Dict[str, Any]) -> Dict[str, Any]:
