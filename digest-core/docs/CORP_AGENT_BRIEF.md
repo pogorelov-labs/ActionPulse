@@ -54,6 +54,9 @@ survives after the session ends.
    artifacts that turn corp-only work into offline work. If time runs short,
    do those first and drop something else.
 
+   T1b (one curl, 30 seconds) gates T3 — a wrong gateway path means the captures
+   fail. Run it before T3 even if you skip T2.
+
 4. Obey the privacy contract in §2 without exception. It is the reason this is
    allowed to run at all.
 
@@ -91,6 +94,58 @@ it is boring** — "reranker changed nothing" is a result.
 > local config" and "red on origin/main" are very different results, and only the second one
 > should stop the session.
 
+### T1b · Settle the gateway path (30 seconds — do this before T3)
+
+**This question has been answered three times, twice by reasoning, and reversed each time.**
+It takes one curl to end it, and everything in T3 depends on the answer: if the path is wrong,
+the captures fail and the session's most valuable artifact is lost.
+
+The state of the argument:
+
+| Source | Says | Basis |
+|---|---|---|
+| `ENDPOINT-FACTS §1` + `CORP_VALIDATION_FINDINGS` F-04 | `/v1/chat/completions` | official doc + live probe |
+| the corp machine's own `config.yaml` | `/api/v1/chat` | it is what was configured |
+| owner, 2026-07-30 | `/api/v1/chat` | recalls it working |
+
+F-04 explicitly weighed "the corp config carries this path" and **rejected it** — a config
+holding a value does not prove requests through it succeeded, and the URL was never recorded.
+So do not settle this by inspecting config again. **Observe it.**
+
+```bash
+# Both paths, same minimal request. 1 output token — costs nothing.
+# The `|| true` matters: curl exits non-zero on a TRANSPORT failure (TLS, DNS,
+# timeout), and under `set -e` that would abort the loop after the first path —
+# losing the second result exactly when the comparison is the point. A `000`
+# status means "never got an HTTP response", which is itself an answer.
+for P in /v1/chat/completions /api/v1/chat; do
+  printf '%-24s -> ' "$P"
+  curl -s -o /tmp/probe.json -w '%{http_code}\n' --max-time 20 \
+    -X POST "https://llm-api.cibaa.raiffeisen.ru${P}" \
+    -H "Authorization: Bearer ${LLM_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"qwen35-397b-a17b","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' \
+    || true
+  head -c 200 /tmp/probe.json 2>/dev/null || true; echo
+done
+```
+
+⚠ **Do not run this under `set -x`**, and do not paste the command back with `${LLM_TOKEN}`
+expanded. Record **status codes** and, if non-2xx, the error `message` field only — never
+headers, never the token, never the full body.
+
+Decision rule:
+- **Exactly one 2xx** → that is the answer. Record it and use it for T3.
+- **Both 2xx** → the gateway mounts both; record that, and prefer the documented
+  `/v1/chat/completions`. This is the outcome that would explain why the question keeps
+  flip-flopping — nobody was wrong, and nobody checked.
+- **Neither** → the host or token is wrong; stop and report before T3, because the captures
+  cannot succeed either.
+
+- **Done when:** the report carries a status code for **both** paths. That single line retires
+  a question that has consumed three rounds of reasoning, and it lets `config.example.yaml`,
+  `RUNBOOK.md` §2 and F-04 be corrected from evidence instead of argued about again.
+
 ### T2 · Prove ingest live (Stream 1)
 - EWS: `uv run actionpulse run --dry-run` → record message count, folder coverage, watermark behaviour on
   a second run (it must not re-fetch).
@@ -103,6 +158,10 @@ it is boring** — "reranker changed nothing" is a result.
 ### T3 · Capture a replayable snapshot (highest leverage — do not skip)
 - **This is the single most valuable artifact a corp session can produce**: it converts
   corp-only work into offline work forever after.
+
+**Use the gateway path T1b established** — set `llm.endpoint` in `configs/config.yaml` to
+whichever path returned 2xx before running the two recordings. A capture taken against a
+404 is worth nothing, and you cannot tell from the exit code alone.
 
 **Capture the snapshot once, then record the LLM twice — once per extraction contract.**
 The second recording is what unblocks A1.7 (flipping `extract.contract` to `v3`), and it can
