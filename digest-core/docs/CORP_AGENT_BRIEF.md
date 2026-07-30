@@ -67,6 +67,15 @@ it is boring** — "reranker changed nothing" is a result.
 - **Done when:** the suite is green and the environment is captured. If it is *not* green on
   `origin/main`, **stop and report that** — it outranks everything else here.
 
+> **If the suite is red, check the machine before blaming the code.** `configs/config.yaml` is
+> gitignored, so CI and fresh clones never have one — a failure here can come from *this
+> machine's* config rather than from `origin/main`. The known case (ACTPULSE-96, fixed) was a
+> pre-U5 config pinning a **relative** `ews.sync_state_path`, which redirected the watermark and
+> the delivered-posts ledger to a working-directory-relative `.state/` and made
+> `ACTIONPULSE_HOME` a no-op. Re-running `make setup` writes a current config. Report **which**
+> it was — "red because of a stale local config" and "red on origin/main" are very different
+> results, and only the second one should stop the session.
+
 ### T2 · Prove ingest live (Stream 1)
 - EWS: `actionpulse run --dry-run` → record message count, folder coverage, watermark behaviour on
   a second run (it must not re-fetch).

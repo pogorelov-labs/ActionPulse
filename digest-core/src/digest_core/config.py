@@ -56,6 +56,34 @@ def _coerce_env_value(annotation: Any, raw: str) -> Any:
         return raw
 
 
+#: Relative `sync_state_path` values already reported, so a long-lived process
+#: says it once rather than on every accessor call.
+_relative_state_paths_warned: set = set()
+
+
+def _warn_relative_state_path_once(configured: str, resolved: Path) -> None:
+    """Tell the operator their config moved the watermark, and how to make it stick.
+
+    Silent would be wrong: the watermark relocating means one re-ingest, and an
+    operator who sees a fuller-than-usual digest deserves to know why.
+    """
+    if configured in _relative_state_paths_warned:
+        return
+    _relative_state_paths_warned.add(configured)
+    structlog.get_logger().warning(
+        "ews.sync_state_path is relative; resolving it under the data home",
+        configured=configured,
+        resolved=str(resolved),
+        hint=(
+            "A relative path would follow the working directory and silently reset the "
+            "sync watermark. Unset ews.sync_state_path in configs/config.yaml to use the "
+            "data home (the current default), or set an absolute path to pin it. Re-running "
+            "`make setup` writes a current config. The first run after this may re-ingest, "
+            "because the watermark now lives at the resolved path."
+        ),
+    )
+
+
 def _reject_invalid_env_value(*, env_name: str, annotation: Any, value: Any) -> None:
     """Fail fast when an ENV override does not satisfy its field's declared type.
 
@@ -156,12 +184,38 @@ class EWSConfig(BaseModel):
     )
 
     def resolved_sync_state_path(self) -> str:
-        """Effective sync-state path: explicit config wins, else the data home."""
-        if self.sync_state_path:
-            return self.sync_state_path
+        """Effective sync-state path: explicit config wins, else the data home.
+
+        A **relative** configured path is resolved against the data home, never
+        against the current working directory. Wizard-written configs from before
+        the U5 data-home work pin ``sync_state_path: ".state/ews.syncstate"``, and
+        honouring that literally has two consequences an operator never asked for:
+
+        * the EWS watermark and the delivered-posts ledger land wherever the
+          process happened to be launched from, so running from a different
+          directory silently resets the watermark — meaning re-ingestion, or
+          missed mail;
+        * ``ACTIONPULSE_HOME`` stops working entirely, because
+          ``resolved_state_dir()`` derives the state directory from this path.
+
+        U5 fixed the *default*; it never migrated existing installs. This does.
+        Absolute paths are still honoured verbatim — an operator who deliberately
+        pinned ``/var/lib/actionpulse/...`` means it.
+        """
         from digest_core.paths import state_dir
 
-        return str(state_dir() / "ews.syncstate")
+        if not self.sync_state_path:
+            return str(state_dir() / "ews.syncstate")
+
+        configured = Path(self.sync_state_path).expanduser()
+        if configured.is_absolute():
+            return str(configured)
+
+        # Converge the legacy relative path onto the documented default location
+        # rather than preserving its odd parent (".state/" et al).
+        resolved = state_dir() / configured.name
+        _warn_relative_state_path_once(self.sync_state_path, resolved)
+        return str(resolved)
 
     def __init__(self, **kwargs):
         # Читаем значения из переменных окружения если они не заданы
