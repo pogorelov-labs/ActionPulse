@@ -860,6 +860,30 @@ def reactions_harvest(
         )
 
 
+def _diagnostics_env() -> dict:
+    """Environment for the shell diagnostics, naming the toolchain actually in use.
+
+    The scripts used to report whatever ``python3`` and ``command -v pytest``
+    resolved to on ``PATH``. On a developer machine that is routinely a *different*
+    interpreter than the one running ActionPulse — measured on one: the project on
+    3.11.15, the report claiming 3.14.6, and pytest/ruff/black from a third install
+    (ACTPULSE-97).
+
+    That matters because corp-brief T1 records this output verbatim as *the*
+    environment record, and a corp-only failure often has no other evidence about
+    the machine. A wrong Python version there sends a later debugging session after
+    the wrong hypothesis with nothing to contradict it.
+
+    The CLI knows its own interpreter, so it passes it down rather than letting the
+    script guess. Standalone `./scripts/print_env.sh` still works — it falls back to
+    PATH and says so.
+    """
+    env = os.environ.copy()
+    env["ACTIONPULSE_DIAG_PY"] = sys.executable
+    env["ACTIONPULSE_DIAG_BIN"] = str(Path(sys.executable).parent)
+    return env
+
+
 @app.command()
 def diagnose():
     """Run environment diagnostics.
@@ -877,7 +901,9 @@ def diagnose():
         env_script = script_dir / "print_env.sh"
         if env_script.exists():
             typer.echo("Running environment diagnostics (shell)...")
-            result = subprocess.run([str(env_script)], capture_output=True, text=True)
+            result = subprocess.run(
+                [str(env_script)], capture_output=True, text=True, env=_diagnostics_env()
+            )
             typer.echo(result.stdout)
             if result.stderr:
                 typer.echo(result.stderr, err=True)
@@ -886,7 +912,9 @@ def diagnose():
         collect_script = script_dir / "collect_diagnostics.sh"
         if collect_script.exists():
             typer.echo("Collecting comprehensive diagnostics (shell)...")
-            result = subprocess.run([str(collect_script)], capture_output=True, text=True)
+            result = subprocess.run(
+                [str(collect_script)], capture_output=True, text=True, env=_diagnostics_env()
+            )
             typer.echo(result.stdout)
             if result.stderr:
                 typer.echo(result.stderr, err=True)

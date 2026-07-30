@@ -5,16 +5,49 @@ set -euo pipefail
 echo "Digest-core environment diagnostics..."
 echo "======================================"
 
-# Check Python version
-echo "Python version:"
-python3 --version
+# The interpreter and tools ActionPulse ACTUALLY runs on. `actionpulse diagnose`
+# passes these down; standalone use falls back to PATH and says so. A developer
+# machine routinely carries several toolchains, and silently reporting the wrong
+# one is how a later debugging session loses a day chasing the wrong Python
+# (ACTPULSE-97) — corp-brief T1 records this output as *the* environment record.
+DIAG_PY="${ACTIONPULSE_DIAG_PY:-}"
+DIAG_BIN="${ACTIONPULSE_DIAG_BIN:-}"
 
-# Check required tools
+echo "Python version:"
+if [ -n "$DIAG_PY" ]; then
+    echo "✓ $("$DIAG_PY" --version 2>&1) — project interpreter"
+    echo "  path: $DIAG_PY"
+    if command -v python3 &> /dev/null; then
+        path_py="$(command -v python3)"
+        if [ "$path_py" != "$DIAG_PY" ]; then
+            echo "  note: PATH python3 is different ($("$path_py" --version 2>&1) at $path_py)."
+            echo "        The project's interpreter above is the one that matters."
+        fi
+    fi
+else
+    echo "  $(python3 --version 2>&1) — PATH python3 at $(command -v python3 || echo 'not found')"
+    echo "  note: this may NOT be the interpreter ActionPulse runs on."
+    echo "        Run 'actionpulse diagnose' to report the project's."
+fi
+
+# Check required tools. Prefer the project environment; uv and docker are host
+# tools and correctly fall through to PATH.
 echo ""
 echo "Required tools:"
 for tool in uv docker pytest ruff black; do
-    if command -v "$tool" &> /dev/null; then
-        echo "✓ $tool: $(which $tool)"
+    venv_tool=""
+    if [ -n "$DIAG_BIN" ] && [ -x "$DIAG_BIN/$tool" ]; then
+        venv_tool="$DIAG_BIN/$tool"
+    fi
+    path_tool="$(command -v "$tool" 2>/dev/null || true)"
+
+    if [ -n "$venv_tool" ]; then
+        echo "✓ $tool: $venv_tool (project env)"
+        if [ -n "$path_tool" ] && [ "$path_tool" != "$venv_tool" ]; then
+            echo "    ⚠ PATH has a different $tool: $path_tool — the project env one is used"
+        fi
+    elif [ -n "$path_tool" ]; then
+        echo "✓ $tool: $path_tool (PATH)"
     else
         echo "✗ $tool: not found"
     fi

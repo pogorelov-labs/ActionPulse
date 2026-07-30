@@ -346,11 +346,45 @@ class EWSIngest:
             # Use default system CA
             logger.warning("Using system CA certificates for SSL verification")
 
+    def _check_configured(self) -> None:
+        """Report EVERY missing EWS setting at once, in this project's own names.
+
+        Without this the operator learns their config is empty one field at a time:
+        the NTLM-username derivation fails first and masks the missing endpoint, and
+        when the endpoint finally surfaces it does so as exchangelib's
+        ``'config.service_endpoint' must be set`` — an attribute that does not exist
+        in any ActionPulse config. Grepping for it finds nothing (ACTPULSE-97).
+
+        One root cause ("nothing is configured") deserves one message that names the
+        YAML keys and env vars the reader can actually act on.
+        """
+        missing = []
+        if not (self.config.endpoint or "").strip():
+            missing.append("ews.endpoint (or the EWS_ENDPOINT env var)")
+        identity_ok = (self.config.user_upn or "").strip() or (
+            (self.config.user_login or "").strip() and (self.config.user_domain or "").strip()
+        )
+        if not identity_ok:
+            missing.append(
+                "ews.user_upn (or both ews.user_login and ews.user_domain) "
+                "— env: EWS_USER_UPN / EWS_USER_LOGIN / EWS_USER_DOMAIN"
+            )
+        if not missing:
+            return
+        raise ValueError(
+            "EWS is not configured. Missing: "
+            + "; ".join(missing)
+            + ". Run `make setup` to write configs/config.yaml and "
+            "~/.config/actionpulse/env, or set the environment variables directly. "
+            "(EWS is reachable only from the corp network — ADR-012.)"
+        )
+
     def _connect(self) -> Account:
         """Establish EWS connection with NTLM authentication."""
         if self.account is not None:
             return self.account
 
+        self._check_configured()
         logger.info("Connecting to EWS", endpoint=self.config.endpoint)
 
         # Create credentials with NTLM username (login@domain)
