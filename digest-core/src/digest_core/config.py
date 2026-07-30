@@ -942,6 +942,20 @@ class JudgeConfig(BaseModel):
 class ExtractConfig(BaseModel):
     """Extraction-stage knobs (EP-10). ``best_of_n=1`` == today's single-shot path."""
 
+    contract: Literal["v1", "v3"] = Field(
+        default="v1",
+        description=(
+            "Extraction contract. 'v1' (default) is today's live path: a free-form"
+            " prompt in json_object mode, validated afterwards, with a quality"
+            " retry for malformed/off-schema output. 'v3' constrains generation to"
+            " the projected EnhancedDigestV3 schema (A1) — the model cannot emit"
+            " off-schema output, so that retry is not spent, section identity is"
+            " structural rather than string-matched, and source_ref is derived from"
+            " the evidence chunk instead of echoed by the model. Flip only after the"
+            " replay/citation harness shows parity (A1.7)."
+        ),
+    )
+
     best_of_n: int = Field(
         default=1,
         ge=1,

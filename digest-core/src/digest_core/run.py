@@ -56,7 +56,8 @@ from digest_core.llm.fleet import RerankerClient
 from digest_core.llm.gateway import LLMAuthError, LLMGateway
 from digest_core.llm.prompt_registry import get_prompt_template_path
 from digest_core.llm.rate_broker import RateBroker
-from digest_core.llm.schemas import Digest, Section
+from digest_core.llm.schemas import Digest, EnhancedDigestV3, Section
+from digest_core.llm.v3_adapter import v3_to_digest
 from digest_core.select.ranker import DigestRanker
 from digest_core.normalize.html import HTMLNormalizer
 from digest_core.normalize.quotes import QuoteCleaner
@@ -784,8 +785,9 @@ def _stage_llm(
         digest = _build_empty_digest(ctx.digest_date, ctx.trace_id, prompt_version="none")
         llm_error = None
     else:
+        contract = ctx.config.extract.contract
         prompt_version, prompt_text = _load_extract_prompt(
-            ctx.config.llm.model, ctx.config.report.language
+            ctx.config.llm.model, ctx.config.report.language, contract
         )
         provenance = ctx.run_meta.get("provenance")
         if isinstance(provenance, dict):
@@ -793,18 +795,50 @@ def _stage_llm(
             provenance["prompt_sha256"] = prompt_sha256(prompt_text)
         try:
             _emit(ctx, "on_llm_attempt", ctx.config.llm.model, 1, 2)
-            llm_response = llm_gateway.extract_actions(
-                evidence=selected_evidence,
-                prompt_template=prompt_text,
-                trace_id=ctx.trace_id,
-            )
-            digest = Digest(
-                schema_version="1.0",
-                prompt_version=prompt_version,
-                digest_date=ctx.digest_date,
-                trace_id=ctx.trace_id,
-                sections=_sort_sections(llm_response.get("sections", [])),
-            )
+            if contract == "v3":
+                # A1: generation is constrained to the projected v3 schema, so the
+                # off-schema failure class is gone and the quality retry is not
+                # spent. The payload is adapted straight back to the live Digest —
+                # everything downstream keeps running on `Item`.
+                llm_response = llm_gateway.extract_actions_v3(
+                    evidence=selected_evidence,
+                    prompt_template=prompt_text,
+                    trace_id=ctx.trace_id,
+                )
+                v3_payload = {k: v for k, v in llm_response.items() if k != "meta"}
+                v3_digest = EnhancedDigestV3.model_validate(
+                    {
+                        **v3_payload,
+                        # Run metadata is ours, never the model's (A1.2).
+                        "digest_date": ctx.digest_date,
+                        "trace_id": ctx.trace_id,
+                        "prompt_version": prompt_version,
+                    }
+                )
+                digest, adapt_stats = v3_to_digest(
+                    v3_digest,
+                    evidence=selected_evidence,
+                    digest_date=ctx.digest_date,
+                    trace_id=ctx.trace_id,
+                    prompt_version=prompt_version,
+                    language=ctx.config.report.language,
+                )
+                # No silent caps: an item dropped between the model and the report
+                # is exactly the loss that has to stay visible.
+                ctx.run_meta["extract_v3"] = adapt_stats
+            else:
+                llm_response = llm_gateway.extract_actions(
+                    evidence=selected_evidence,
+                    prompt_template=prompt_text,
+                    trace_id=ctx.trace_id,
+                )
+                digest = Digest(
+                    schema_version="1.0",
+                    prompt_version=prompt_version,
+                    digest_date=ctx.digest_date,
+                    trace_id=ctx.trace_id,
+                    sections=_sort_sections(llm_response.get("sections", [])),
+                )
             llm_error = None
         except Exception as exc:
             auth_failure = isinstance(exc, LLMAuthError)
@@ -2011,14 +2045,21 @@ _EXTRACT_PROMPT_BY_MODEL = {
 _DEFAULT_EXTRACT_PROMPT = "extract_actions.v1"
 
 
-def _load_extract_prompt(model_name: str, language: str = DEFAULT_LANGUAGE) -> tuple[str, str]:
-    """Prompt variant by (model, report language).
+def _load_extract_prompt(
+    model_name: str, language: str = DEFAULT_LANGUAGE, contract: str = "v1"
+) -> tuple[str, str]:
+    """Prompt variant by (extraction contract, model, report language).
 
     EN reports use the v2 prompt (EN instructions + EN output) for every
     model; RU reports keep the per-model instruction-language map below
-    (output RU in both of those prompts).
+    (output RU in both of those prompts). The v3 contract (A1) has one prompt
+    per language — the model is chosen by the schema, not by the model name,
+    because guided decoding removes the format-compliance differences the
+    per-model map exists to work around.
     """
-    if language == "en":
+    if contract == "v3":
+        prompt_version = "extract_actions.en.v3" if language == "en" else "extract_actions.v3"
+    elif language == "en":
         prompt_version = "extract_actions.en.v2"
     else:
         prompt_version = _EXTRACT_PROMPT_BY_MODEL.get(model_name or "", _DEFAULT_EXTRACT_PROMPT)
