@@ -253,3 +253,85 @@ jobs:
       - name: pip-audit (report-only)
         run: uvx pip-audit -r requirements.ci.lock --disable-pip
         continue-on-error: true
+
+  # A scheduled run has no PR author watching it, and CI does not gate the deploy
+  # here, so a red nightly is effectively invisible: the 2026-07-16..07-24 outage
+  # ran NINE consecutive nights unnoticed, on a repo that had been dormant 25 days.
+  # GitHub's default behaviour (email the cron's last editor) demonstrably was not
+  # enough — nine such emails would have been sent. So put the signal on the board
+  # instead of in an inbox: open a tracking issue on the first red nightly, and
+  # comment on it for each one after, so a run of failures is one thread, not spam.
+  # Scheduled runs only — a push/PR failure already has someone watching it.
+  notify-failure:
+    # `always()` rather than `failure()`, deliberately. On a red nightly the lanes
+    # that depend on a failed one are *skipped*, not failed (2026-07-24: `test`
+    # failed, so `docker` — which needs it — skipped), and a skipped dependency can
+    # skip its dependents even under `if: failure()`. That would make this job a
+    # silent no-op on exactly the runs it exists for. `always()` guarantees it runs,
+    # and the explicit `contains(needs.*.result, 'failure')` keeps it quiet unless a
+    # lane genuinely failed.
+    if: ${{ always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    needs:
+      - lint
+      - shellcheck
+      - terminal-matrix
+      - test
+      - test-store
+      - test-mcp
+      - coverage
+      - docker
+      - eval-replay
+      - audit
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the nightly-failure tracking issue
+        # No checkout: `gh` addresses the repo over the API. The workflow-level
+        # `working-directory: digest-core` would fail without one, hence the override.
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # This repo's default GITHUB_TOKEN permission is `read`; the job-level
+          # `permissions: issues: write` above is what grants the write scope. If an
+          # org policy ever caps that, the API call 403s — and because this job only
+          # runs on an already-red nightly, a silent failure here would recreate
+          # exactly the blind spot it exists to remove. So say so, loudly.
+          fail() {
+            echo "::error::notify-failure could not file the tracking issue. If this is a 403, the GITHUB_TOKEN lacks 'issues: write' — check Settings > Actions > General > Workflow permissions (repo default is currently 'read'), or the org-level Actions policy. The nightly failure this was reporting is still real: $RUN_URL"
+            exit 1
+          }
+
+          # Idempotent; a pre-existing label (or a races-with-itself rerun) is fine.
+          gh label create ci-nightly --repo "$REPO" --color B60205 \
+            --description "Automated: scheduled CI failure tracking" >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --state open --label ci-nightly \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body \
+              "Still red — [run]($RUN_URL) at commit \`${GITHUB_SHA:0:12}\`." || fail
+          else
+            gh issue create --repo "$REPO" --label ci-nightly \
+              --title "CI: the nightly run is failing on main" \
+              --body "The scheduled CI run failed on \`main\`.
+
+          - **Run:** $RUN_URL
+          - **Commit:** \`$GITHUB_SHA\`
+
+          Filed automatically by the \`notify-failure\` job. Subsequent failures are added
+          as comments here rather than as new issues. **Close this once \`main\` is green** —
+          a fresh issue opens if the nightly fails again.
+
+          A red nightly usually means a test flipped without a code change. Two classes seen
+          so far: **date-rot** (a fixture aging past the store's 30-day TTL or the 7-day
+          retention window — #210, #207) and **environment-dependence** (a filesystem-ordering
+          flake that tracked the CI runner image, not the calendar — #212). Check whether any
+          commit landed in the failure window before assuming the code broke." || fail
+          fi
