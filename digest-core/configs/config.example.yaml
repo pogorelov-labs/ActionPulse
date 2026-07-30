@@ -347,6 +347,15 @@ eval:
   judge_mode: "pointwise"
 
 extract:
+  # Extraction contract (A1). "v1" is the live path: a free-form prompt in
+  # json_object mode, validated afterwards, with a quality retry when the model
+  # returns malformed/off-schema JSON — that retry spends the scarce second call.
+  # "v3" constrains generation to the projected EnhancedDigestV3 schema, so
+  # off-schema output is impossible and the retry is never spent; section identity
+  # becomes structural (typed lists, not a matched title string) and source_ref is
+  # derived from the evidence chunk instead of echoed by the model.
+  # Flip to v3 only after the replay/citation harness shows parity (A1.7).
+  contract: v1
   # Best-of-N extraction selected by the citation gate (EP-10). 1 = today's
   # single-shot path. Raising N requires raising llm.stage_call_budgets.extractor
   # alongside (ADR-008 v2) — with the default budget of 2, sampling degrades

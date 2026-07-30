@@ -13,7 +13,7 @@ import tenacity
 import structlog
 from digest_core.config import LLMConfig
 from digest_core.evidence.split import EvidenceChunk
-from digest_core.llm.schemas import Citation, _TraceBackbone
+from digest_core.llm.schemas import Citation, EnhancedDigestV3, _TraceBackbone
 from digest_core.llm.rate_broker import RateBroker
 from digest_core.observability import tracing
 from digest_core.observability.metrics import MetricsCollector
@@ -397,6 +397,60 @@ class LLMGateway:
         self.client = httpx.Client(
             timeout=httpx.Timeout(self.config.timeout_s), headers=self.config.headers
         )
+
+    def extract_actions_v3(
+        self, evidence: List[EvidenceChunk], prompt_template: str, trace_id: str
+    ) -> Dict[str, Any]:
+        """Schema-constrained extraction against the v3 contract (A1.4).
+
+        A sibling of :meth:`extract_actions` rather than a flag on it, because the
+        two differ in exactly the way A1 is about:
+
+        * generation is constrained to the **projected** v3 schema
+          (:func:`build_extraction_response_format`), so malformed / off-schema
+          output — the failure class the quality retry exists to recover from —
+          cannot occur, and that second scarce call is never spent;
+        * there is no ``_validate_response`` pass, because "conforms to the schema"
+          is now a property of the generation, not something to check afterwards.
+
+        Returns the raw parsed payload plus ``meta``. Validation into
+        ``EnhancedDigestV3`` happens in ``run.py``, which owns the run metadata the
+        extractor is forbidden to emit (digest_date / trace_id).
+        """
+        logger.info(
+            "Starting constrained v3 extraction",
+            evidence_count=len(evidence),
+            trace_id=trace_id,
+        )
+
+        spotlight_tag = uuid.uuid4().hex[:12] if self.config.spotlight_evidence else None
+        evidence_text = self._prepare_evidence_text(evidence, spotlight_tag=spotlight_tag)
+        messages = [
+            {"role": "system", "content": prompt_template},
+            {"role": "user", "content": evidence_text},
+        ]
+        if spotlight_tag:
+            messages[0]["content"] += _spotlight_brief(spotlight_tag)
+
+        response_data = self._make_request_with_retry(
+            messages,
+            trace_id,
+            None,
+            response_format=build_extraction_response_format(
+                EnhancedDigestV3, name="digest_extraction_v3"
+            ),
+        )
+
+        payload = response_data.get("data") or {}
+        if not isinstance(payload, dict):
+            raise RetryableLLMError(
+                f"v3 extraction returned {type(payload).__name__}, expected an object",
+                MIN_RETRY_BACKOFF_SECONDS,
+            )
+        result = dict(payload)
+        if "meta" in response_data:
+            result["meta"] = response_data["meta"]
+        return result
 
     def extract_actions(
         self, evidence: List[EvidenceChunk], prompt_template: str, trace_id: str
