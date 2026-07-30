@@ -225,6 +225,23 @@ Three PR waves landed this day, all squash-merged to `main`:
 | [#211](https://github.com/pogorelov-labs/ActionPulse/pull/211) | **Nightly + manual-dispatch CI** | Catches time-dependent failures on a dormant repo. It worked — see below. |
 | [#212](https://github.com/pogorelov-labs/ActionPulse/pull/212) | Pinned the digest-artifact glob; ignored 176M of corp bulk | Fixes the incident below. |
 
+**Later the same day (#213–#220).** Eight further PRs: the nightly-failure tracking issue
+(#214, closing ACTPULSE-88), the **B1b dead-code shed** (#215, −2,240 lines, `jinja2`
+dropped), the **A1 constrained-decoding programme** (#216 foundation · #217 extraction-schema
+projection · #218 v3 EN/RU prompts · #219 the wired path behind `extract.contract`), and an
+env-override validation fix (#220, ACTPULSE-95). Suite **1530 passed / 5 skipped**.
+
+Three of those were bugs found *while building something else*, which is worth noting as a
+pattern: constrained decoding advertised `strict: true` over a schema breaking that contract
+in 13 places (would have 400'd the live path the moment A1.4 flipped it); `ranker.get_top_n_actions_share`
+returned `0.0` unconditionally for the live `Item` type; and every `Literal` env override was
+applied unvalidated (`DIGEST_REPORT_LANGUAGE=klingon` was accepted). None were found by looking
+for them.
+
+**None of this moved a "live" number below.** Every one of those PRs is offline work. The
+built-vs-live gap in §2 is unchanged and stays unchanged until a corp run produces a report
+file (§5) — see [`ROADMAP.md`](./ROADMAP.md) §0.3a.
+
 **The incident (worth recording).** The nightly failed **nine consecutive nights**, 2026-07-16
 through 07-24, then self-healed on 07-25 — with **no commit in the window**. It was not date-rot:
 `test_reader.py` selected its artifact with `glob("digest-*.json")`, which also matches the

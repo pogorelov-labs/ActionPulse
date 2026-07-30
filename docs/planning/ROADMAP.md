@@ -71,6 +71,29 @@ the W3 row.
 **W1 and the corp brief run in parallel with everything.** The corp round trip is not a phase; it
 is a standing protocol, and the brief is offline work.
 
+### 0.3a Wave progress (2026-07-30, end of day)
+
+Nine PRs merged the same day this amendment was written. Recorded here because the
+whole point of §0 is that a plan which stops matching the code is worse than none.
+
+| Wave | State | What landed |
+|---|---|---|
+| **W1** stabilize + truth | **done** | Glob flake ([#212](https://github.com/pogorelov-labs/ActionPulse/pull/212)) · nightly-failure tracking issue, ACTPULSE-88 ([#214](https://github.com/pogorelov-labs/ActionPulse/pull/214)) · review + v0.3 + corp brief committed ([#213](https://github.com/pogorelov-labs/ActionPulse/pull/213)) · doc-truth fixes |
+| **W2** shed legacy | **B1b done**, rest open | [#215](https://github.com/pogorelov-labs/ActionPulse/pull/215) removed the v2 surface as one connected component, **−2,240 lines**, and dropped the `jinja2` dependency. **B2–B5 remain.** |
+| **W3** extraction modernization | **A1 build half done** | [#216](https://github.com/pogorelov-labs/ActionPulse/pull/216) foundation · [#217](https://github.com/pogorelov-labs/ActionPulse/pull/217) extraction-schema projection · [#218](https://github.com/pogorelov-labs/ActionPulse/pull/218) v3 EN/RU prompts · [#219](https://github.com/pogorelov-labs/ActionPulse/pull/219) the wired path behind `extract.contract`. **ACTPULSE-79/80/81/82/83/84/85 remain.** |
+| **W4** daemon depth | open | ACTPULSE-92 (nothing schedules the digest) untouched. |
+
+**A1 is build-complete but not live**, and the remaining step is deliberately not code:
+`extract.contract` defaults to `v1`, and flipping it (A1.7) needs the replay/citation
+harness showing v3 at **parity** with v1 on real captures. That is corp-gated — which
+puts A1.7 behind the corp round trip (§0.1), and makes brief task **T3** (capture a
+snapshot + LLM recording) the thing that unblocks it.
+
+That is the morning's finding repeating itself: **the offline build keeps running ahead
+of the evidence.** Six of today's nine PRs were offline work; none of them moved a single
+"live" number in [`STATUS.md`](./STATUS.md) §2, and none of them can until a corp run
+produces a report file.
+
 ### 0.4 What landed since this roadmap was written
 
 #208 (B1a dead-code shed, −2,596 lines) · #209 (**background ingestion daemon**, ADR-016) · #210
