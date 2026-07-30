@@ -84,6 +84,15 @@ ehthumbs.db
 .fixtures/
 *.snapshot.json
 *-recording.json
+# Match the SHAPE, not one spelling. The corp brief's own example filenames
+# (`ap-snapshot.json`, `ap-recording-v1.json`) matched NEITHER pattern above —
+# `*.snapshot.json` needs a dot, `*-recording.json` must end there. So the brief
+# told an agent to write real mail to names one hyphen away from committable,
+# while promising they were ignored. A privacy rule that depends on exact
+# spelling is not a rule.
+*snapshot*.json
+*recording*.json
+parity*.json
 
 # Corp notebook + diagnostics bundles land in the checkout root during corp
 # sessions and carry real payloads; `export-diagnostics` redacts secrets but the
