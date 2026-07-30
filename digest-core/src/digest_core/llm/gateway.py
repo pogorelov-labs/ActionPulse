@@ -123,7 +123,7 @@ def build_json_schema_response_format(
     model_cls,
     *,
     name: str = "digest_extraction",
-    strict: bool = True,
+    strict: bool = False,
 ) -> Dict[str, Any]:
     """Build an OpenAI/vLLM ``response_format`` that constrains generation to a
     pydantic schema (A1 — REDESIGN_PLAN v0.3).
@@ -137,15 +137,58 @@ def build_json_schema_response_format(
 
     ``model_cls`` is any pydantic ``BaseModel`` subclass (duck-typed via
     ``model_json_schema()`` so this stays import-light).
+
+    **``strict`` defaults to False, deliberately.** OpenAI's strict structured-output
+    mode is not "try harder" — it is a contract on the *schema*: every object must
+    set ``additionalProperties: false`` and list **every** property in ``required``.
+    A stock ``model_json_schema()`` satisfies neither (``EnhancedDigestV3`` violates
+    it in 13 places), so advertising ``strict: true`` over it asks a conforming
+    server to reject the request. vLLM's guided decoding — the actual target here —
+    constrains generation from the schema alone and does not need the flag.
+
+    Passing ``strict=True`` is supported and *makes the schema comply* (see
+    :func:`_strictify`) rather than merely asserting that it does. Note the cost:
+    strict mode forces the model to emit every field explicitly, including the
+    downstream-populated backbone ones (``citations: []``, ``support_score: null``,
+    …) on every item — real output tokens against a hard 16384 ceiling.
     """
+    schema = model_cls.model_json_schema()
+    if strict:
+        schema = _strictify(schema)
     return {
         "type": "json_schema",
-        "json_schema": {
-            "name": name,
-            "schema": model_cls.model_json_schema(),
-            "strict": strict,
-        },
+        "json_schema": {"name": name, "schema": schema, "strict": strict},
     }
+
+
+def _strictify(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite *schema* in place-ish to satisfy OpenAI strict structured outputs.
+
+    Every object node gets ``additionalProperties: false`` and a ``required`` list
+    naming all of its properties. Optional fields stay expressible because pydantic
+    already renders ``Optional[X]`` as a nullable union — the model must emit the
+    key, but ``null`` remains a legal value for it.
+
+    Recurses through ``$defs``, ``properties``, ``items`` and the union keywords so
+    nested models (``ActionItemV3``, ``Citation``, …) are covered too.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    out = dict(schema)
+    if out.get("type") == "object" and "properties" in out:
+        out["additionalProperties"] = False
+        out["required"] = list(out["properties"].keys())
+
+    for key in ("$defs", "properties", "definitions"):
+        if isinstance(out.get(key), dict):
+            out[key] = {k: _strictify(v) for k, v in out[key].items()}
+    if isinstance(out.get("items"), dict):
+        out["items"] = _strictify(out["items"])
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(key), list):
+            out[key] = [_strictify(v) for v in out[key]]
+    return out
 
 
 class LLMGateway:

@@ -42,11 +42,40 @@ def gateway(monkeypatch):
     )
 
 
+def _strict_violations(schema) -> list[str]:
+    """Every way *schema* breaks OpenAI's strict structured-output contract.
+
+    Strict mode is a contract on the schema, not an effort level: every object must
+    set ``additionalProperties: false`` and name **all** its properties in
+    ``required``.
+    """
+    bad: list[str] = []
+
+    def walk(node, path):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "object" and "properties" in node:
+            if node.get("additionalProperties") is not False:
+                bad.append(f"{path}: additionalProperties is not false")
+            missing = set(node["properties"]) - set(node.get("required", []))
+            if missing:
+                bad.append(f"{path}: not in required: {sorted(missing)}")
+        for key in ("$defs", "properties", "definitions"):
+            for name, sub in (node.get(key) or {}).items():
+                walk(sub, f"{path}.{name}")
+        walk(node.get("items"), f"{path}[]")
+        for key in ("anyOf", "oneOf", "allOf"):
+            for i, sub in enumerate(node.get(key) or []):
+                walk(sub, f"{path}.{key}[{i}]")
+
+    walk(schema, "root")
+    return bad
+
+
 def test_helper_builds_json_schema_block_from_pydantic_model():
     rf = build_json_schema_response_format(EnhancedDigestV3, name="digest_v3")
     assert rf["type"] == "json_schema"
     assert rf["json_schema"]["name"] == "digest_v3"
-    assert rf["json_schema"]["strict"] is True
     schema = rf["json_schema"]["schema"]
     # v3's typed sections survive into the constrained schema...
     assert "my_actions" in schema["properties"]
@@ -54,6 +83,72 @@ def test_helper_builds_json_schema_block_from_pydantic_model():
     blob = json.dumps(schema)
     assert "ActionItemV3" in blob
     assert "evidence_spans" in blob
+
+
+def test_strict_defaults_off_because_a_stock_schema_cannot_honour_it():
+    """We must not advertise a contract the schema breaks.
+
+    A stock `model_json_schema()` violates strict mode in a dozen places, so
+    claiming `strict: true` over it invites a conforming server to 400 the request.
+    vLLM guided decoding — the real target — needs only the schema.
+    """
+    rf = build_json_schema_response_format(EnhancedDigestV3)
+    assert rf["json_schema"]["strict"] is False
+    assert _strict_violations(rf["json_schema"]["schema"]), (
+        "the stock schema is expected to be non-compliant — if this ever passes, "
+        "pydantic changed and the strict default can be revisited"
+    )
+
+
+def test_strict_true_actually_makes_the_schema_comply():
+    rf = build_json_schema_response_format(EnhancedDigestV3, strict=True)
+    assert rf["json_schema"]["strict"] is True
+    assert _strict_violations(rf["json_schema"]["schema"]) == []
+
+
+def test_strict_shaped_payload_still_validates_into_the_model():
+    """Strict mode forces every key to be present; the model must still accept it.
+
+    Optionals stay expressible as explicit `null`, and list fields as `[]`, so a
+    strict-mode response round-trips into `EnhancedDigestV3` without loosening it.
+    """
+    item = {
+        "title": "Send the report",
+        "description": "By Friday",
+        "evidence_id": "ev-1",
+        "quote": "please send the report",
+        "due_date": None,
+        "due_date_normalized": None,
+        "due_date_label": None,
+        "owners": [],
+        "confidence": "High",
+        "response_channel": None,
+        # backbone fields the extractor does not fill, emitted explicitly under strict
+        "evidence_spans": [{"msg_id": "msg-1", "quote": "please send the report"}],
+        "citations": [],
+        "citation_fidelity_ok": None,
+        "support_score": None,
+        "weak_evidence": None,
+        "rank_score": None,
+        "seen_before": None,
+    }
+    digest = EnhancedDigestV3.model_validate(
+        {
+            "schema_version": "3.0",
+            "prompt_version": "extract_actions.v3",
+            "digest_date": "2026-03-29",
+            "trace_id": "t-1",
+            "my_actions": [item],
+            "others_actions": [],
+            "deadlines_meetings": [],
+            "risks_blockers": [],
+            "fyi": [],
+            "total_emails_processed": 1,
+            "emails_with_actions": 1,
+        }
+    )
+    assert digest.my_actions[0].evidence_spans[0].quote == "please send the report"
+    assert digest.my_actions[0].citations == []
 
 
 def test_default_request_uses_json_object(gateway):
