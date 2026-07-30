@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import httpx
 
-import digest_core.run as run_module
+import digest_core.pipeline.enrichment as enrichment_module
 from digest_core.config import LLMConfig, RerankerConfig
 from digest_core.evidence.citation_gate import CitationGate
 from digest_core.llm.fleet import RerankerClient
@@ -213,7 +213,11 @@ def test_flag_off_constructs_no_reranker(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("RerankerClient must not be constructed with the flag off")
 
-    monkeypatch.setattr(run_module, "RerankerClient", boom)
+    # Patch where `_build_reranker` *resolves* the name — it moved to
+    # pipeline/enrichment.py (ACTPULSE-23 phase 3). Patching it on `run` would
+    # still import and pass, but `boom` would never be reachable: a green test
+    # proving nothing.
+    monkeypatch.setattr(enrichment_module, "RerankerClient", boom)
     ctx = _ctx(RerankerConfig())  # enabled=False is the default
     messages = [SimpleNamespace(msg_id="m-1", text_body=BODY)]
     digest = _apply_shadow_citation_gate(ctx, _digest([_item()]), messages)

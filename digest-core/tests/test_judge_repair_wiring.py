@@ -15,6 +15,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
+import digest_core.pipeline.enrichment as enrichment_module
 import digest_core.run as run_module
 from digest_core.config import JudgeConfig, LLMConfig, RerankerConfig
 from digest_core.eval.judge import JudgeVerdict, LLMJudge
@@ -165,7 +166,10 @@ def test_flag_off_constructs_no_judge_gateway(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("LLMGateway must not be constructed for a disabled judge")
 
-    monkeypatch.setattr(run_module, "LLMGateway", boom)
+    # Same reason as test_reranker_wiring: `_build_repair_judge` resolves
+    # LLMGateway in pipeline/enrichment.py's namespace since phase 3, so the
+    # sentinel has to be installed there to stay reachable.
+    monkeypatch.setattr(enrichment_module, "LLMGateway", boom)
     judge, gateway = _build_repair_judge(_ctx(JudgeConfig()))  # enabled=False default
     assert judge is None and gateway is None
 
