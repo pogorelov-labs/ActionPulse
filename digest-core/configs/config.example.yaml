@@ -242,38 +242,6 @@ shrink:
   enable_auto_shrink: true  # Enable auto-shrink on overflow
   preserve_min_quotas: true # Preserve minimum bucket quotas during shrink
 
-hierarchical:
-  enable: true              # Enable hierarchical mode
-  auto_enable: true         # Auto-enable based on thresholds
-  enable_auto: true         # Enable automatic hierarchical mode activation
-  threshold_threads: 40     # Thread count threshold for auto activation (умеренный порог)
-  threshold_emails: 200     # Email count threshold for auto activation
-  min_threads_to_summarize: 6  # Minimum threads required to use hierarchical mode
-  min_threads: 60           # Min threads to auto-activate (was 30)
-  min_emails: 300           # Min emails to auto-activate (was 150)
-  per_thread_max_chunks_in: 8  # Max chunks per thread for summarization
-  per_thread_max_chunks_exception: 12  # Max chunks in exceptional cases (mentions, last update)
-  summary_max_tokens: 90    # Max tokens for thread summary
-  parallel_pool: 8          # Max parallel thread summarization workers
-  timeout_sec: 20           # Timeout per thread summarization
-  degrade_on_timeout: "best_2_chunks"  # Degradation strategy on timeout
-  
-  # Must-include chunks (guarantee critical info)
-  must_include_mentions: true  # Always include chunks with user mentions
-  must_include_last_update: true  # Always include last update chunk per thread
-  
-  # Merge policy (citation enrichment)
-  merge_max_citations: 5    # Max citations in merged summary (3-5)
-  merge_include_title: true # Include brief title in merged summary
-  
-  # Optimization
-  skip_llm_if_no_evidence: true  # Skip LLM call if no evidence after selection
-  
-  final_input_token_cap: 4000  # Max tokens for final aggregator input
-  max_latency_increase_pct: 50  # Max acceptable latency increase %
-  target_latency_increase_pct: 30  # Target latency increase %
-  max_cost_increase_per_email_pct: 40  # Max acceptable cost increase per email %
-
 email_cleaner:
   enabled: true             # Enable email body cleaning
   keep_top_quote_head: true # Keep 1-2 paragraphs from top-level quote (inline replies)

@@ -24,6 +24,11 @@ from pydantic import BaseModel
 
 logger = structlog.get_logger()
 
+#: Item fields that can carry a deadline. The live v1 ``Item`` uses ``due``; the
+#: others are tolerated so the ranker stays type-agnostic (it is duck-typed, and
+#: the v3 constrained-extraction schema names its deadline field differently).
+_DUE_DATE_FIELDS = ("due", "due_date", "due_date_normalized", "date_time")
+
 
 @dataclass
 class RankingFeatures:
@@ -198,26 +203,17 @@ class DigestRanker:
                         features.user_in_cc = True
                         break
 
-        # Feature 2: action/mention (check if item is ExtractedActionItem or has action markers)
-        item_type = type(item).__name__
-        if item_type == "Item":
+        # Feature 2: action markers in the title. run.py only ever ranks v1 `Item`s
+        # (run.py:1003 passes section.items); the ExtractedActionItem/ActionItem/
+        # DeadlineMeeting branches that used to live here keyed off the v2 digest
+        # surface, which no longer exists.
+        if type(item).__name__ == "Item":
             title = getattr(item, "title", "") or ""
             if self._has_action_markers(title):
                 features.has_action = True
-        elif item_type == "ExtractedActionItem":
-            if getattr(item, "type", "") == "action":
-                features.has_action = True
-            elif getattr(item, "type", "") == "mention":
-                features.has_mention = True
-        elif item_type in ("ActionItem", "DeadlineMeeting"):
-            # Check if description/quote contains action markers
-            text = getattr(item, "description", "") or getattr(item, "quote", "")
-            if self._has_action_markers(text):
-                features.has_action = True
 
         # Feature 3: due date
-        due_date_fields = ["due", "due_date", "due_date_normalized", "date_time"]
-        for field in due_date_fields:
+        for field in _DUE_DATE_FIELDS:
             if hasattr(item, field) and getattr(item, field):
                 features.has_due_date = True
                 break
@@ -397,14 +393,17 @@ class DigestRanker:
         action_count = 0
 
         for item in top_n:
-            # Check if item has action
-            item_type = type(item).__name__
-            if item_type == "ExtractedActionItem":
-                if getattr(item, "type", "") in ("action", "question"):
-                    action_count += 1
-            elif item_type == "ActionItem":
-                action_count += 1
-            elif hasattr(item, "has_due_date") and item.has_due_date:
+            # Mirrors _extract_features: an item counts as an action when its title
+            # carries an action marker or it carries a deadline.
+            #
+            # This used to branch on the v2 ExtractedActionItem/ActionItem types with
+            # a `hasattr(item, "has_due_date")` fallback — but `has_due_date` is a
+            # RankingFeatures field, never an item field, so for the v1 `Item` the
+            # ranker actually receives this returned 0.0 unconditionally. The v2 types
+            # went with the rest of that surface; the fallback was already wrong.
+            title = getattr(item, "title", "") or ""
+            has_deadline = any(getattr(item, field, None) for field in _DUE_DATE_FIELDS)
+            if has_deadline or self._has_action_markers(title):
                 action_count += 1
 
         return action_count / len(top_n)

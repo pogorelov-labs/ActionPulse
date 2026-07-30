@@ -304,7 +304,7 @@ def enrich_item_with_citations(
     Enrich a digest item with citations.
 
     Args:
-        item: Digest item (ActionItem, DeadlineMeeting, etc.)
+        item: Digest item carrying ``evidence_id`` and ``citations``
         evidence_chunks: All evidence chunks
         citation_builder: CitationBuilder instance
 

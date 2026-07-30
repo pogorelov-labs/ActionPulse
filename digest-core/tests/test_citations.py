@@ -9,7 +9,7 @@ Covers:
 """
 
 import pytest
-from digest_core.llm.schemas import Citation, ActionItem
+from digest_core.llm.schemas import Citation, Item
 from digest_core.evidence.citations import (
     CitationBuilder,
     CitationValidator,
@@ -371,13 +371,12 @@ class TestEnrichItemWithCitations:
     """Test enrich_item_with_citations functionality."""
 
     def test_enrich_action_item(self, simple_normalized_map, simple_evidence_chunk):
-        """Test enriching ActionItem with citations."""
-        action = ActionItem(
+        """Test enriching an Item with citations."""
+        action = Item(
             title="Complete task",
-            description="Finish by Friday",
             evidence_id="ev-001",
-            quote="important action items to complete by Friday",
-            confidence="High",
+            confidence=0.9,
+            source_ref={"type": "email", "msg_id": "msg-001"},
         )
 
         builder = CitationBuilder(simple_normalized_map)
@@ -389,12 +388,11 @@ class TestEnrichItemWithCitations:
 
     def test_enrich_item_no_matching_chunk(self, simple_normalized_map, simple_evidence_chunk):
         """Test enriching item when no matching chunk found."""
-        action = ActionItem(
+        action = Item(
             title="Complete task",
-            description="Test",
             evidence_id="ev-999",  # Non-existent
-            quote="test",
-            confidence="High",
+            confidence=0.9,
+            source_ref={"type": "email", "msg_id": "msg-001"},
         )
 
         builder = CitationBuilder(simple_normalized_map)
@@ -432,12 +430,11 @@ class TestEnrichItemWithCitations:
             ),
         ]
 
-        action = ActionItem(
+        action = Item(
             title="Test",
-            description="Test",
             evidence_id="ev-multi",
-            quote="test",
-            confidence="High",
+            confidence=0.9,
+            source_ref={"type": "email", "msg_id": "msg-001"},
         )
 
         builder = CitationBuilder(simple_normalized_map)

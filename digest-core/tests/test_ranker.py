@@ -11,8 +11,27 @@ Coverage:
 import pytest
 from datetime import datetime, timedelta, timezone
 from digest_core.select.ranker import DigestRanker, RankingFeatures
-from digest_core.llm.schemas import ActionItem, DeadlineMeeting, ExtractedActionItem, Item
+from digest_core.llm.schemas import Item
 from digest_core.evidence.split import EvidenceChunk
+
+
+def _item(title="Action", evidence_id="ev1", *, due=None, source_subject=None):
+    """A v1 ``Item`` carrier.
+
+    These tests used to build ActionItem/DeadlineMeeting/ExtractedActionItem, but
+    ``run.py`` only ever ranks ``Item`` (run.py passes ``section.items``), so the
+    v2 types exercised branches production could not reach. They went with the v2
+    digest surface; the assertions below are unchanged and now run against the
+    type the ranker actually sees.
+    """
+    return Item(
+        title=title,
+        evidence_id=evidence_id,
+        confidence=0.9,
+        source_ref={"type": "email", "msg_id": evidence_id.replace("ev", "msg")},
+        due=due,
+        source_subject=source_subject,
+    )
 
 
 class TestRankingFeatures:
@@ -36,13 +55,7 @@ class TestRankingFeatures:
             },
         )
 
-        item = ActionItem(
-            title="Action",
-            description="Do something",
-            evidence_id="ev1",
-            quote="Test",
-            confidence="High",
-        )
+        item = _item(evidence_id="ev1")
 
         features = ranker._extract_features(item, [chunk])
         assert features.user_in_to is True
@@ -65,13 +78,7 @@ class TestRankingFeatures:
             },
         )
 
-        item = ActionItem(
-            title="Action",
-            description="Do something",
-            evidence_id="ev1",
-            quote="Test",
-            confidence="High",
-        )
+        item = _item(evidence_id="ev1")
 
         features = ranker._extract_features(item, [chunk])
         assert features.user_in_to is False
@@ -108,27 +115,16 @@ class TestRankingFeatures:
         )
 
         # Item with due date
-        item_with_due = DeadlineMeeting(
-            title="Meeting",
-            evidence_id="ev1",
-            quote="Test",
-            date_time="2024-12-31T15:00:00-03:00",
-        )
+        item_with_due = _item("Meeting", due="2024-12-31T15:00:00-03:00")
 
         features = ranker._extract_features(item_with_due, [chunk])
         assert features.has_due_date is True
 
         # Item without due date
-        item_without_due = ActionItem(
-            title="Action",
-            description="Do something",
-            evidence_id="ev1",
-            quote="Test",
-            confidence="High",
-        )
+        item_without_due = _item()
 
         features = ranker._extract_features(item_without_due, [chunk])
-        # ActionItem without due_date field set
+        # Item with `due` unset
         assert features.has_due_date is False
 
     def test_feature_extraction_sender_importance(self):
@@ -162,13 +158,7 @@ class TestRankingFeatures:
             for i in range(5)
         ]
 
-        item = ActionItem(
-            title="Action",
-            description="Do something",
-            evidence_id="ev0",
-            quote="Test",
-            confidence="High",
-        )
+        item = _item(evidence_id="ev0")
 
         features = ranker._extract_features(item, chunks)
         assert features.thread_length == 5
@@ -188,13 +178,7 @@ class TestRankingFeatures:
             message_metadata={"subject": "Test"},
         )
 
-        item = ActionItem(
-            title="Action",
-            description="Do something",
-            evidence_id="ev1",
-            quote="Test",
-            confidence="High",
-        )
+        item = _item(evidence_id="ev1")
 
         features = ranker._extract_features(item, [chunk_recent])
         assert features.hours_since_received < 2.0
@@ -212,13 +196,7 @@ class TestRankingFeatures:
             message_metadata={"subject": "Test", "has_attachments": True},
         )
 
-        item = ActionItem(
-            title="Action",
-            description="Do something",
-            evidence_id="ev1",
-            quote="Test",
-            confidence="High",
-        )
+        item = _item(evidence_id="ev1")
 
         features = ranker._extract_features(item, [chunk_with_attachments])
         assert features.has_attachments is True
@@ -338,35 +316,22 @@ class TestRankerIntegration:
 
         # Create items
         items = [
-            ActionItem(
-                title="FYI update",
-                description="Just for info",
-                evidence_id="ev2",
-                quote="Status update",
-                confidence="Low",
-            ),
-            ActionItem(
-                title="Urgent review",
-                description="Please review this urgently",
-                evidence_id="ev1",
-                quote="Please review",
-                confidence="High",
-                due_date="2024-12-31",
-            ),
+            _item("FYI update", "ev2"),
+            _item("Please review this urgently", "ev1", due="2024-12-31"),
         ]
 
         # Rank
         ranked = ranker.rank_items(items, chunks)
 
         # Check that urgent item is ranked higher
-        assert ranked[0].title == "Urgent review"
+        assert ranked[0].title == "Please review this urgently"
         assert ranked[1].title == "FYI update"
 
         # Check scores
         assert ranked[0].rank_score > ranked[1].rank_score
 
-    def test_rank_items_with_extracted_actions(self):
-        """Test ranking of ExtractedActionItem."""
+    def test_rank_items_action_addressed_to_user_scores_high(self):
+        """An actionable item addressed to the user, with a due date, ranks high."""
         ranker = DigestRanker(user_aliases=["user@example.com"])
 
         now = datetime.now(timezone.utc)
@@ -383,15 +348,7 @@ class TestRankerIntegration:
             },
         )
 
-        item = ExtractedActionItem(
-            type="action",
-            who="user",
-            verb="send",
-            text="can you send me the report",
-            due="Friday",
-            confidence=0.9,
-            evidence_id="ev1",
-        )
+        item = _item("Can you send me the report", "ev1", due="Friday")
 
         ranked = ranker.rank_items([item], [chunk])
 
@@ -417,31 +374,10 @@ class TestRankerIntegration:
             for i in range(10)
         ]
 
-        # 7 action items, 3 FYI items
-        items = []
-        for i in range(7):
-            items.append(
-                ExtractedActionItem(
-                    type="action",
-                    who="user",
-                    verb="do",
-                    text="action",
-                    confidence=0.8 - i * 0.05,  # Varying confidence
-                    evidence_id=f"ev{i}",
-                )
-            )
-
-        for i in range(7, 10):
-            items.append(
-                ExtractedActionItem(
-                    type="mention",
-                    who="user",
-                    verb="info",
-                    text="fyi",
-                    confidence=0.3,
-                    evidence_id=f"ev{i}",
-                )
-            )
+        # 7 actionable items (a due date is what get_top_n_actions_share counts on a
+        # v1 Item), 3 FYI items with neither a due date nor an action marker.
+        items = [_item("Please do the thing", f"ev{i}", due="2024-12-31") for i in range(7)]
+        items += [_item("fyi", f"ev{i}") for i in range(7, 10)]
 
         # Rank and calculate share
         ranked = ranker.rank_items(items, chunks)
@@ -489,20 +425,8 @@ class TestRankerIntegration:
         ]
 
         items = [
-            ActionItem(
-                title="Old",
-                description="Old message",
-                evidence_id="ev_old",
-                quote="Old",
-                confidence="High",
-            ),
-            ActionItem(
-                title="New",
-                description="Recent message",
-                evidence_id="ev_new",
-                quote="New",
-                confidence="High",
-            ),
+            _item("Old", "ev_old"),
+            _item("New", "ev_new"),
         ]
 
         ranked = ranker.rank_items(items, chunks)
@@ -521,13 +445,7 @@ class TestRankerIntegration:
         """Test ranking when evidence_id doesn't match any chunks."""
         ranker = DigestRanker()
 
-        item = ActionItem(
-            title="Orphan",
-            description="No matching evidence",
-            evidence_id="nonexistent",
-            quote="Test",
-            confidence="High",
-        )
+        item = _item("Orphan", "nonexistent")
 
         chunk = EvidenceChunk(
             evidence_id="ev1",
