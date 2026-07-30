@@ -190,14 +190,63 @@ def build_extraction_response_format(
     The projection is a *view*, not a second model — v3 keeps one definition, and
     the result still validates into it because every excluded field is defaulted.
     """
-    exclude = frozenset(exclude if exclude is not None else _TraceBackbone.DOWNSTREAM_ONLY)
+    if exclude is None:
+        # Item-level backbone plus whatever the target model declares as
+        # pipeline-owned (run metadata, computed counters, ADR-001's
+        # markdown_summary). Both levels answer the same question — "would the
+        # model have any basis for this value?" — so they share one mechanism.
+        exclude = _TraceBackbone.DOWNSTREAM_ONLY | getattr(
+            model_cls, "DOWNSTREAM_ONLY", frozenset()
+        )
+    exclude = frozenset(exclude)
     schema = _prune_unreferenced_defs(_project_out(model_cls.model_json_schema(), exclude))
+    schema = _require_evidence_spans(schema)
     if strict:
         schema = _strictify(schema)
     return {
         "type": "json_schema",
         "json_schema": {"name": name, "schema": schema, "strict": strict},
     }
+
+
+def _require_evidence_spans(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Make ``evidence_spans`` mandatory and non-empty on every item that has it.
+
+    P2 (Traceability) is the #1 golden rule, but on the model ``evidence_spans``
+    carries a ``default_factory`` so it is *optional* — which means guided decoding
+    would happily accept an item with no supporting quote. That is precisely the
+    failure constrained decoding is supposed to make impossible, so the extraction
+    view tightens it: ``required`` + ``minItems: 1``.
+
+    The default stays permissive on the model itself, because downstream code
+    legitimately constructs items before spans are attached. Only the *extraction
+    contract* is strict.
+
+    A model that cannot quote an item must now drop the item rather than emit an
+    unsupported one. If it fabricates a quote instead, the citation gate catches it
+    — the quote has to appear verbatim in the normalized body — so this tightens
+    the contract without removing the backstop.
+    """
+    out = dict(schema)
+    for key in ("$defs", "definitions"):
+        defs = out.get(key)
+        if not isinstance(defs, dict):
+            continue
+        rebuilt = {}
+        for name, node in defs.items():
+            node = dict(node) if isinstance(node, dict) else node
+            props = node.get("properties") if isinstance(node, dict) else None
+            if isinstance(props, dict) and "evidence_spans" in props:
+                spans = dict(props["evidence_spans"])
+                spans["minItems"] = 1
+                node["properties"] = {**props, "evidence_spans": spans}
+                required = list(node.get("required", []))
+                if "evidence_spans" not in required:
+                    required.append("evidence_spans")
+                node["required"] = required
+            rebuilt[name] = node
+        out[key] = rebuilt
+    return out
 
 
 def _prune_unreferenced_defs(schema: Dict[str, Any]) -> Dict[str, Any]:

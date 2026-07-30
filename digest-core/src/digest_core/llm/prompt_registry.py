@@ -15,6 +15,11 @@ PROMPT_TEMPLATE_MAP: Dict[str, str] = {
     "extract_actions.v1": "extract_actions.v1.txt",
     "extract_actions.en.v1": "extract_actions.en.v1.txt",
     "extract_actions.en.v2": "extract_actions.en.v2.txt",
+    # v3 (A1.2) — targets the five typed lists of EnhancedDigestV3 instead of
+    # free-form `sections[]`. Registered but NOT selected by run.py yet; A1.4 wires
+    # it together with constrained decoding, A1.7 flips the default.
+    "extract_actions.v3": "extract_actions.v3.txt",
+    "extract_actions.en.v3": "extract_actions.en.v3.txt",
 }
 
 
