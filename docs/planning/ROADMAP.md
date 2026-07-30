@@ -1,7 +1,12 @@
 # ActionPulse — Product Roadmap
 
 > **What this is:** the *forward* plan — per-stream plans, integrated into a phased roadmap.
-> Updated **2026-06-19**.
+> Updated **2026-07-30** (was 2026-06-19).
+>
+> **Read §0 first.** The 2026-06-19 roadmap below was built on a diagnosis that turned out to be
+> wrong, and it predates four merged PRs, a nine-night CI outage, and a locked owner decision that
+> reverses one of its constraints. §0 states what changed; §§1–7 are kept because the per-stream
+> detail is still good, but where §0 and a later section disagree, **§0 wins**.
 >
 > **Where we are now** (stream-by-stream % built vs live, the dark inventory) → [`STATUS.md`](./STATUS.md).
 >
@@ -16,6 +21,63 @@
 > - Terminal/UX program → `docs/development/TERMINAL_DESIGN_ROADMAP.md`.
 > - Quality program (EP-1…EP-15) → `digest-core/docs/audits/`.
 > - Corp bring-back lists → `digest-core/docs/{CORP_SESSION_RUNBOOK,VISIT_CHECKLIST_EP14,STORE_VALIDATION_CHECKLIST}.md`.
+
+## 0. Amendment — 2026-07-30
+
+### 0.1 The diagnosis that was wrong
+
+Everything below is organized around "one corp session" as the pivot. Asked directly, the owner
+confirmed: **corp sessions have been run several times.** What never happened is the **round
+trip** — no session wrote its results back into the repo, so `STATUS.md` reported "never validated
+live" for six weeks while live runs were happening.
+
+So the gate was never *access*. It was that a corp session had **no defined output artifact**. The
+replacement gate is offline-buildable and now exists:
+[`digest-core/docs/CORP_AGENT_BRIEF.md`](../../digest-core/docs/CORP_AGENT_BRIEF.md) — a
+self-contained brief a corp-side agent executes end-to-end (pull repo → `make test` → validation
+pack → **PR or issue comment**), with reports landing in `digest-core/docs/corp-runs/`.
+
+**Highest-leverage item on this roadmap: get one corp run to produce one report file.** Everything
+in Phase C is downstream of that, and it is a *protocol* problem, not a scheduling one.
+
+### 0.2 The constraint that was reversed
+
+The evidence-token budget and the per-run LLM-call count are **policy, not hard limits** (owner,
+2026-07-04 as ACTPULSE-77; re-confirmed 2026-07-30). This reverses `REDESIGN_PLAN.md` §0.3.1 #4
+("hold ~7K"), which was written the same week. The **retrieval spine stays** — evidence spans,
+citations, the P2 gate. What is lifted is *how much* we retrieve and *how many* calls we spend.
+
+Guard rail: **ACTPULSE-86 (calibrate before raising defaults) is not optional.** "Cost is no
+object" removes the cost argument for restraint, not the correctness one. Full amendment:
+`REDESIGN_PLAN.md` §0.3.7.
+
+### 0.3 The four waves, sequenced
+
+All four were selected as in-scope (owner, 2026-07-30). They are **ordered by what each unblocks**,
+not by appeal:
+
+| # | Wave | Why here | Key items |
+|---|------|----------|-----------|
+| **W1** | **Stabilize + tell the truth** | Everything else is measured against a baseline. Right now the baseline is *assumed* — the suite went red for nine nights unnoticed, and the forward plan lived only in an uncommitted file. Cheapest wave; unblocks trust in every later measurement. | Glob flake ([#212](https://github.com/pogorelov-labs/ActionPulse/pull/212) ✓) · nightly-failure notification (**ACTPULSE-88**) · commit the review + v0.3 (✓) · doc-truth fixes (**ACTPULSE-78**) · **the corp brief** (§0.1) |
+| **W2** | **Shed legacy + refactor** | Do this *before* W3, not after. W3 rewires the extraction path; doing that on top of three schema generations and a 2,474-line `run.py` multiplies the blast radius. `#208` already proved the pattern. | REDESIGN_PLAN **B1b** (delete `process_digest` + its whole connected component) · **B2** schema collapse · **B3** one scoring pass / one budget gate · **B4** stage-protocol `run.py` · **B5** project structure |
+| **W3** | **Extraction modernization** | The capability wave, and the one the budget lift is *for*. Ordered inside itself: **A1 constrained decoding first** — map-reduce merges many partial extractions, which is only safe when each is schema-conformant by construction. | **A1** (half-built on `feat/constrained-v3-extraction`, unmerged) · **A3**/ACTPULSE-80 tokenizer · ACTPULSE-79 un-cap · ACTPULSE-81 single-large-context · ACTPULSE-82 map-reduce · ACTPULSE-83 adaptive router · ACTPULSE-84 visibility · ACTPULSE-85 RateBroker-for-large-N · **ACTPULSE-86 calibration gate** |
+| **W4** | **Deepen the daemon / product surface** | ADR-016 (#209) quietly changed the product from a batch job into a background service with a continuously-fresh store — and **no planning doc had caught up**. Last because it compounds best on a modernized, measured pipeline. | Schedule the **digest** (the daemon only schedules *ingestion*) · Linux/systemd parity · daemon soak (**T6** in the brief) · lean into always-fresh-store + MCP |
+
+**Two reversals inside W3, inherited from the budget lift.** REDESIGN_PLAN **A4** said "right-size
+the `RateBroker` down"; with map-reduce and a lifted call count, real concurrency arrives and the
+broker becomes load-bearing instead (ACTPULSE-85). And **A1 is a prerequisite, not a peer** — see
+the W3 row.
+
+**W1 and the corp brief run in parallel with everything.** The corp round trip is not a phase; it
+is a standing protocol, and the brief is offline work.
+
+### 0.4 What landed since this roadmap was written
+
+#208 (B1a dead-code shed, −2,596 lines) · #209 (**background ingestion daemon**, ADR-016) · #210
+(date-rot fixture fix) · #211 (nightly CI) · #212 (glob flake + corp-bulk gitignore). `main` was
+otherwise **dormant for 25 days**. Detail and the CI-outage post-mortem: [`STATUS.md`](./STATUS.md) §7a.
+
+---
 
 ## 1. The thesis
 
@@ -165,3 +227,9 @@ only missing link is **fuel**: one corp api-delivery window (Phase B) + the cali
 **Bottom line:** the offline build is essentially done. The remaining progress is **one corp day**
 (Phase B) plus a short calibration pass (Phase C) — preceded by a few days of offline prep (Phase
 A). Everything in this roadmap after that is depth, not unlock.
+
+> **Superseded 2026-07-30 — see §0.** Two claims here are now known false. "The offline build is
+> essentially done": ACTPULSE-77's nine children (W3) and REDESIGN_PLAN Phase B (W2) are a
+> substantial *offline* programme opened after this was written. "One corp day": corp days have
+> already happened — the missing piece is a **report artifact**, not a session (§0.1).
+> The accurate bottom line: **W1 → W2 → W3 → W4, with the corp round trip running alongside.**

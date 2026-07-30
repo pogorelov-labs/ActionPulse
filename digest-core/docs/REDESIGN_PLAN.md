@@ -3,8 +3,14 @@
 > **Status:** LARGELY SHIPPED — see the reconciliation table below. First committed to the
 > repo 2026-06-12 (the plan previously lived only as an untracked local file while
 > `ARCHITECTURE.md` and `TERMINAL_DESIGN.md` referenced it).
-> **Version:** 0.2 (0.1 created 2026-06-09 as a proposal; the body below is preserved as the
-> dated design record — per-PR specs read as "what was planned", the table as "what is true").
+> **Version:** 0.3.1 — the **v0.3 Next-Wave roadmap** (2026-07-01) sits just below this status block,
+> before Part 0; the v0.2 body is the shipped record. (0.1 created 2026-06-09 as a proposal; the body
+> below is preserved as the dated design record — per-PR specs read as "what was planned", the table
+> as "what is true").
+> **0.3.1 (2026-07-30)** — first commit of the v0.3 section, which had lived only as an uncommitted
+> local edit for four weeks. Adds §0.3.7 (the budget/call-count lift, which reverses §0.3.1 #4 and a
+> §0.3.5 risk row) and re-verifies the plan's code claims against `origin/main` — several were stale
+> branch artifacts. Companion review: [`audits/ARCH_REVIEW_2026-07.md`](audits/ARCH_REVIEW_2026-07.md) §8.
 > **Scope:** Refactor the single-call, rule-based daily digest CLI into a multi-agent,
 > traceability-enforced pipeline using the corporate LLM gateway **fleet**.
 
@@ -42,6 +48,198 @@ going live (PC-2 → `enable_relevance`).
 > disagree about *current behavior*, this plan's Appendix A is the verified statement.
 >
 > This is a **code-level dev document → English** (product docs are RU per repo convention).
+
+---
+
+## v0.3 — Next Wave (2026-H2): modernize the interface, enable the fleet, add semantic retrieval
+
+> **Status:** PLANNED (forward roadmap). Source: code-grounded architecture review **2026-07-01**
+> (3-agent audit + corp-gateway facts `gpu/ENDPOINT-FACTS-AND-LIMITS.md` + external research).
+> v0.2 above is the **shipped record**; this section is the **forward plan** and supersedes v0.2's
+> "remaining/gated" rows where they conflict. `file:line` anchors are 2026-07-01 observations —
+> re-verify before editing (trust code first).
+>
+> **What this wave optimizes for:** reliability + capability, *not* minimalism. The owner has set
+> **cost as a non-constraint**, so v0.2's posture "keep the fleet dark to save calls" is retired.
+> **Quality calibration still gates live use** (reason: correctness, not cost) — flip a fleet flag
+> *after* it beats its baseline on the existing gold-set/τ harness, never before.
+
+### 0.3.1 Owner decisions (locked 2026-07-01)
+
+| # | Decision | Effect on plan |
+|---|----------|----------------|
+| 1 | **Modernize the LLM interface** | Phase A — constrained decoding + result cache + real tokenizer. |
+| 2 | **Shed legacy impl; refactor structure & old digest surface** | Phase B — delete dead set, collapse schema generations, stage-protocol `run.py`, fix project structure + drifted docs. |
+| 3 | **Adaptive best-of-N** | Phase C (C3) — sample only when the deterministic candidate is weak. |
+| 4 | ~~**Keep retrieval (no long-context dump)** — keep retrieve-to-~7K~~ **SUPERSEDED 2026-07-04, re-confirmed 2026-07-30** | The *retrieval spine* stays (evidence + citations + P2). The **~7K ceiling does not**: the owner lifted both the evidence-token budget and the per-run call count (ACTPULSE-77). See §0.3.7. |
+| 5 | **Enable the full fleet stack** (cost no object) | Phase C — reverses v0.2 "stay dark". reranker + judge + embeddings go live **after calibration + PC-2**. |
+| 6 | **Add a vector DB / embeddings retrieval** | Phase D — persistent embedding index over the encrypted store; hybrid keyword+vector; unlocks U8 "chat with your inbox" + InboxAPI/MCP. |
+
+### 0.3.2 Findings this wave acts on (2026-07-01 review, code-cited)
+
+- **Output contract is JSON-*mode*, not schema-constrained** — `llm/gateway.py:482` sends
+  `response_format:{type:"json_object"}` (valid JSON, *not* schema-conformant), so a malformed/empty
+  result triggers the "quality retry" — **that retry is the scarce 2nd call**. The gateway supports
+  `json_schema`/`guided_json` (LiteLLM ≥1.72 passthrough) **and** tool-calling (verified live). → A1
+- **217-line RPM machinery for a 1–2 call load** — `llm/rate_broker.py`; production batch on this
+  gateway hit **1.6 of 15 RPM**, latency-bound (~33 s/call), not rate-bound. RPM enforcement only
+  matters once the fleet is live. → A4
+- **~2.7k dead LOC + an old digest surface** — gateway v2/v3 methods, `evidence/actions.py` +
+  `lemmatizer.py` (abandoned rule-based extractor), `llm/models.py`, `assemble/jsonout.py`,
+  `degrade.build_digest_with_fallback`, `hierarchical/` ghost; `llm/schemas.py` carries **13 of 19
+  classes dead** (v2 `EnhancedDigest`, v3 `*V3`, `ThreadSummary`). → B1/B2
+- **`words*1.3` token estimate** (`evidence/split.py:262`) despite `/v1/tokenize` on the gateway. → A3
+- **Three scoring passes + two-stage token budget** (`split.py` priority → `select/context.py`
+  11-term → `select/ranker.py` 10-term). → B3
+- **No prompt caching on the gateway** → only viable cache = **client-side content-hash of results**;
+  current idempotency is all-or-nothing on the whole run. → A2
+- **Docs drift**: "max 2 calls" (vs budget ceiling ~70); TD-003 env-overrides marked *resolved*
+  (dead until `d66bf2f`); evidence "≤3000" (code 7000). → B6
+- **External grounding:** retrieval sweet-spot 4K–8K beats context-dumping (arXiv:2501.01880) — the
+  7K budget is *correct*; adaptive sampling cuts ~70% samples at equal accuracy (arXiv:2502.18581).
+
+### 0.3.3 Workstreams
+
+**Phase A — Modernize the LLM interface** *(highest ROI · low risk · dev-side · unblocked now)*
+- **A1 Constrained decoding.** Replace `json_object` + post-hoc validate + quality-retry with
+  server-side schema constraint (`response_format:{type:"json_schema"}`; fallback tool-calling).
+  Schema-conformant by construction → delete the quality-retry call and the JSON-repair path.
+  **OPEN D-A1:** target schema = evolve live v1 `Digest`, or revive the richer dead v3
+  `EnhancedDigestV3` (typed `ActionItem`/`DeadlineMeeting`/`RiskBlocker`/`FYIItem`)? Recommend
+  evolve-v1-now, mine-v3-for-fields. One corp probe to confirm passthrough.
+- **A2 Client-side result cache.** Key = `md5(model + prompt_sha + per-evidence content-hash)`,
+  jsonl beside artifacts; re-extract only changed evidence on prompt iteration (no prompt caching
+  upstream). Finer-grained than the run-level idem sidecar.
+- **A3 Real tokenizer.** `/v1/tokenize` (or local qwen tokenizer) for budget fill; retire `words*1.3`.
+- **A4 Right-size RateBroker.** Reframe "RPM enforcer" → "parallelism(≤3)+latency guard". Keep it
+  (Phase C needs concurrency control), shed the dead-load assumptions.
+
+**Phase B — Shed legacy + refactor structure** *(clears the path · dev-side · unblocked now)*
+- **B1 Delete the dead set** (with tests). **B1a SHIPPED** in
+  [#208](https://github.com/pogorelov-labs/ActionPulse/pull/208) — the rule-based extraction stack
+  (`evidence/actions.py`, `evidence/lemmatizer.py`) and `llm/models.py`, 2,596 lines, suite green.
+  **B1b remains:** `gateway.process_digest` **and everything hanging off it** (`llm/degrade.py`,
+  the `EnhancedDigest` family, `markdown.write_enhanced_digest`) — delete as one connected
+  component, not symbol-by-symbol; `jsonout.py` (252 LOC, zero src callers); `HierarchicalConfig`
+  (`config.py:797`, still wired at `:1364`); dead prompt-registry entries; the `jinja2` dep.
+  `degrade.build_digest_with_fallback` **no longer exists** — do not go looking for it.
+  ⚠ See `audits/ARCH_REVIEW_2026-07.md` §8.2 before touching `ThreadSummary`: there are two
+  distinct classes with that name and one of them is live.
+- **B2 Collapse the digest surface.** One schema generation; delete v2 + v3 + `ThreadSummary`
+  unless D-A1 picks v3 as the constrained-output target (then delete only the loser).
+- **B3 One scoring pass, one budget gate.** Fold the three scorers into one ranker feeding a single
+  ~7K budget (budget *size* is research-validated; the duplication is not).
+- **B4 Stage-protocol `run.py`** (retire ADR-005): typed `PipelineState` replacing the `run_meta`
+  bag; uniform `_guard` over *all* stages incl. post-LLM passes (add the missing `skip` posture so an
+  enrichment bug can't discard a paid extraction); **persist raw digest before enrichment**. (See the
+  2026-07-01 orchestration deep-dive.)
+- **B5 Project structure.** Remove the dual `digest_core/` shim (canonical = `cd digest-core` /
+  editable install); gitignore + purge worktree pollution (`out/` 110 artifacts, `ActionPulse.zip`
+  45M, `ActionPulseCorpNotebook` 131M, stray `diagnostics-*` dirs); decide monorepo-vs-single-package.
+- **B6 Fix the 3 drifted docs** (`ARCHITECTURE.md` max-2→budget model; TD-003 resolved→dead-till-
+  `d66bf2f`; evidence 3000→7000) + the digest-core `CLAUDE.md` "≤3000"/"max 2 calls" lines.
+
+**Phase C — Enable & calibrate the fleet** *(owner: cost no object; gated on PC-2 + calibration, not cost)*
+- **C0 PC-1/PC-2 (corp).** Still required: service-account identity + per-endpoint data-handling ADR.
+  This is a *privacy/governance* gate — embeddings/rerank/judge ship evidence text to extra endpoints.
+  Corp-side **critical path**; start in parallel with A/B.
+- **C1 Calibrate then flip.** Use existing `eval/calibrate.py` + gold-set + τ. Enable in order, each
+  behind a measured win: P2 reranker gate (`reranker.enabled`) → cross-model repair judge
+  (`judge.enabled`) → fused relevance (`enable_relevance`). Cheap models where apt (`bge-m3` rerank,
+  `glm-47-flash` judge).
+- **C3 Adaptive best-of-N.** Trigger sampling only when deterministic `support_recall < τ`; keep the
+  citation-gate-as-selector (already a domain-appropriate verifier); raise `stage_call_budgets.extractor`
+  alongside.
+
+**Phase D — Semantic retrieval / vector DB** *(new strategy; needs C embeddings live + the store; gated on PC-2)*
+- **D1 Embeddings retrieval.** Score evidence by `bge-m3` cosine (`EmbeddingsClient` exists in
+  `llm/fleet.py`) instead of hand-rolled keyword passes; feeds the **same ~7K budget** (honors #4).
+- **D2 Vector store.** Persist an embedding index in the encrypted store (SQLCipher+FTS5+cosine).
+  ~~**Branch caveat:** `store/` is **empty in this checkout**~~ — **resolved 2026-07-30:** that was
+  a stale-branch artifact. `store/` is real on `origin/main` (2,056 LOC; inbox program #150–#155),
+  as are `api/` (531) and `mcp/` (970). Extend them, don't rebuild them.
+- **D3 Hybrid retrieval.** FTS5 lexical + vector cosine + the addressing/sender buckets (keep the
+  bucket strategy as the final re-rank). Default-on only behind a measured win vs the keyword baseline
+  on the replay/fidelity harness.
+- **D4 Unlock U8 "chat with your inbox" + InboxAPI/MCP** on the persistent index.
+
+### 0.3.4 Sequencing & critical path
+
+```
+A (interface)   ─┐
+                 ├─►  C (fleet — needs clean base + PC-2)  ─►  D (vector — needs C embeddings + store)
+B (shed/refactor)┘
+```
+- **A and B run in parallel, now** — both dev-side, no corp dependency. Do them first; they de-risk
+  everything downstream and shrink the surface C/D build on.
+- **C and D are gated on PC-2 (corp)** — the real critical path, and not a coding task. Open the
+  PC-1/PC-2 ADR in parallel with A/B.
+
+### 0.3.5 New risk rows
+- Constrained decoding has version-specific vLLM guided-decoding bugs → keep tool-calling as the
+  fallback contract; pin/probe.
+- Enabling fleet without calibration → silent quality regressions → calibrate-then-flip is mandatory
+  even with free cost.
+- Vector index of mail at rest → privacy surface → keep the store's DM-body redaction; embeddings live
+  under the same PC-2 ADR.
+- ~~Recall↑ tempting budget creep → hold ~7K (lost-in-the-middle; research-backed).~~
+  **SUPERSEDED — see §0.3.7.** The lost-in-the-middle risk is *real* and does not go away; it is
+  now managed by **calibration** (ACTPULSE-86) rather than by a fixed ceiling. Raising the budget
+  without a measured win is the failure mode to guard against, not raising it at all.
+
+### 0.3.6 Open decisions for the owner
+- **D-A1** — constrained-output target schema: evolve v1, or revive v3 typed schema? *(rec: evolve-v1, mine-v3)*
+  **RESOLVED 2026-07-01:** v3, built P2-preserving (see §5 of the review). Slices A1.1 + A1.3 are on
+  `feat/constrained-v3-extraction` — **unmerged, 4 commits behind `main`.**
+- **D-B5** — keep monorepo-with-one-package, or flatten to a single root package?
+- **D-D** — vector backend: extend the SQLCipher store (privacy-aligned, in-tree) vs a dedicated vector DB (more capable; new dep + privacy review)?
+
+### 0.3.7 Amendment — the budget/call-count lift (2026-07-04, re-confirmed 2026-07-30)
+
+> This section resolves a direct contradiction. §0.3.1 #4 and the §0.3.5 risk row (both written
+> 2026-07-01) said **hold ~7K**. ACTPULSE-77 — created 2026-07-04 and attributing the decision to
+> the owner *on the same date, 2026-07-01* — says the budget and call-count caps are **lifted**.
+> Asked directly on 2026-07-30, the owner confirmed: **the lift wins.** The rows above are struck
+> through rather than deleted so the reversal stays visible.
+
+**What changed.** The two constraints that shaped the minimalist design — the evidence-token
+budget and the per-run LLM-call count — are **policy, not hard limits**, and may be raised.
+
+**What did *not* change.** The retrieval spine (evidence spans → citations → P2 gate) stays. This
+is a decision about *how much* context to retrieve, not about replacing retrieval with a
+context dump. The research that motivated ~7K (retrieval sweet-spot 4K–8K; lost-in-the-middle)
+is not refuted — it is **demoted from a hard rule to a calibration hypothesis**.
+
+**Reality check against code** (ACTPULSE-77, re-verified 2026-07-30):
+`context_budget.max_total_tokens = 7000` has no hard cap and is already raisable, but three
+things bind before it — `llm.max_tokens_per_run = 30000`, and two silent count-caps
+(`context_budget.per_thread_max = 3`, `split.max_chunks_per_message`). `max_output_tokens` is
+hard-clamped to **16384**, which is a *real* gateway ceiling (429-not-413), not a policy choice —
+map-reduce is the answer there, because each map call's output stays small.
+
+**The plan this implies** (Plane children of ACTPULSE-77):
+
+| Issue | Work |
+|---|---|
+| ACTPULSE-78 | Retire the hard-limit language from docs/ADRs (max-2 calls, 3000/7000) |
+| ACTPULSE-79 | Un-cap the evidence path end-to-end + raise defaults |
+| ACTPULSE-80 | Accurate tokenization via `/v1/tokenize` (retire `words*1.3`) — same as **A3** |
+| ACTPULSE-81 | Single large-context extraction: position-aware ordering + collapse scoring passes — overlaps **B3** |
+| ACTPULSE-82 | Map-reduce extraction (chunk → per-chunk constrained extract → citation-gate merge) |
+| ACTPULSE-83 | Adaptive router: single-call ↔ map-reduce threshold |
+| ACTPULSE-84 | Cost/latency/call visibility for unbounded budgets |
+| ACTPULSE-85 | RateBroker for large N — **reverses A4**: the broker becomes load-bearing, not right-sized-down |
+| ACTPULSE-86 | **Calibration gate before raising defaults** (single-large vs map-reduce vs current) |
+
+**Two consequences for the sections above.** (1) **A4 is reversed** — the plan said "right-size
+the RateBroker down"; with map-reduce and a lifted call count, real concurrency arrives and the
+broker becomes load-bearing (ACTPULSE-85). (2) **A1 becomes a prerequisite, not a peer** —
+map-reduce merges many partial extractions, which is only safe when each one is
+schema-conformant by construction. Constrained decoding therefore lands **before** ACTPULSE-82.
+
+**The guard rail.** ACTPULSE-86 is not optional. "Cost is no object" removes the *cost* argument
+for restraint; it does not remove the *correctness* one. Raise a default only when it beats the
+current baseline on the existing replay/gold harness.
 
 ---
 
