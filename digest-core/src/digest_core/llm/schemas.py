@@ -35,7 +35,7 @@ class EvidenceSpan(BaseModel):
     quote: str = Field(description="Verbatim substring of the cited chunk body")
 
 
-# Legacy v1 models
+# v1 — the LIVE digest schema (the one run.py produces today).
 class Item(BaseModel):
     # populate_by_name lets code construct/serialize by the new field names while
     # validation_alias (below) still accepts the OLD email_subject/email_from keys
@@ -107,8 +107,50 @@ class Digest(BaseModel):
     emails_with_actions: int = Field(default=0)
 
 
-# Enhanced v2 models
-class ActionItemV3(BaseModel):
+# ---------------------------------------------------------------------------
+# v3 — the constrained-decoding target (D-A1), not yet on the live path.
+#
+# v3 predates the evidence-span/citation/P2-gate machinery (PR6–PR11): it shipped
+# with only a bare `quote` string. Reviving it as the extraction target without
+# that machinery would regress P2 (Traceability — golden rule #1), so every typed
+# item inherits `_TraceBackbone` below.
+# ---------------------------------------------------------------------------
+
+
+class _TraceBackbone(BaseModel):
+    """Evidence/citation/gate fields grafted onto every v3 item type (A1.1).
+
+    All fields are optional/defaulted and split by who fills them: the extractor
+    emits ``evidence_spans``; ``citations`` and the gate annotations are populated
+    downstream (CitationBuilder + the shadow gate). That keeps a v3 payload valid
+    straight off the model while still carrying the full P2 chain by the time it
+    reaches assemble.
+    """
+
+    evidence_spans: List[EvidenceSpan] = Field(
+        default_factory=list, description="Verbatim source-language spans supporting the item (R2)"
+    )
+    citations: List[Citation] = Field(
+        default_factory=list, description="Evidence citations with validated offsets"
+    )
+    citation_fidelity_ok: Optional[bool] = Field(
+        default=None, description="Spans resolve to offsets in the immutable normalized body"
+    )
+    support_score: Optional[float] = Field(
+        default=None, description="Reranker(span, claim) support score, when scored"
+    )
+    weak_evidence: Optional[bool] = Field(
+        default=None, description="Item lacks offset-verifiable or above-threshold support"
+    )
+    rank_score: Optional[float] = Field(
+        default=None, description="Rule-based actionability score from DigestRanker (0..1)"
+    )
+    seen_before: Optional[bool] = Field(
+        default=None, description="Evidence already backed a delivered item (dedup ledger)"
+    )
+
+
+class ActionItemV3(_TraceBackbone):
     """Action item with neutral fields only."""
 
     title: str = Field(description="Brief action title")
@@ -123,7 +165,7 @@ class ActionItemV3(BaseModel):
     response_channel: Optional[str] = Field(None, description="email/slack/meeting")
 
 
-class DeadlineMeetingV3(BaseModel):
+class DeadlineMeetingV3(_TraceBackbone):
     """Deadline or meeting with neutral fields."""
 
     title: str
@@ -135,7 +177,7 @@ class DeadlineMeetingV3(BaseModel):
     participants: List[str] = Field(default_factory=list, description="Meeting participants")
 
 
-class RiskBlockerV3(BaseModel):
+class RiskBlockerV3(_TraceBackbone):
     """Risk or blocker with neutral fields."""
 
     title: str
@@ -146,7 +188,7 @@ class RiskBlockerV3(BaseModel):
     owners: List[str] = Field(default_factory=list, description="Owners/responsible parties")
 
 
-class FYIItemV3(BaseModel):
+class FYIItemV3(_TraceBackbone):
     """FYI item with neutral fields."""
 
     title: str
@@ -177,6 +219,3 @@ class EnhancedDigestV3(BaseModel):
     # Statistics
     total_emails_processed: int = Field(default=0)
     emails_with_actions: int = Field(default=0)
-
-
-# Hierarchical mode models
