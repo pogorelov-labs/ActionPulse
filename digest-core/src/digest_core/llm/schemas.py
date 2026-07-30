@@ -221,6 +221,33 @@ class FYIItemV3(_TraceBackbone):
 class EnhancedDigestV3(BaseModel):
     """Enhanced digest V3 with neutral fields only - no masking."""
 
+    #: Top-level fields the **extractor must never emit**, for the same reason as
+    #: ``_TraceBackbone.DOWNSTREAM_ONLY`` one level down: the pipeline owns them.
+    #:
+    #: * ``schema_version`` / ``prompt_version`` / ``digest_date`` / ``trace_id`` /
+    #:   ``timezone`` — run metadata stamped by ``run.py``. A model-supplied
+    #:   ``trace_id`` would break correlation; a model-supplied ``digest_date``
+    #:   would silently mis-date the artifact.
+    #: * ``markdown_summary`` — **ADR-001**: markdown is assembled programmatically,
+    #:   never generated. Leaving it in the schema invites the model to write the
+    #:   report, which is the decision ADR-001 exists to prevent.
+    #: * ``total_emails_processed`` / ``emails_with_actions`` — counters the
+    #:   pipeline computes; a model guess here is a fabricated statistic.
+    #:
+    #: What remains is exactly the five typed lists, which *are* the model's job.
+    DOWNSTREAM_ONLY: ClassVar[frozenset] = frozenset(
+        {
+            "schema_version",
+            "prompt_version",
+            "digest_date",
+            "trace_id",
+            "timezone",
+            "markdown_summary",
+            "total_emails_processed",
+            "emails_with_actions",
+        }
+    )
+
     schema_version: str = "3.0"
     prompt_version: str = "mvp.5"
     digest_date: str
