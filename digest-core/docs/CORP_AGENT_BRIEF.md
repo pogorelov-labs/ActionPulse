@@ -38,6 +38,10 @@ survives after the session ends.
    and continue with the rest — a partial result that is written down beats a
    complete result that is not.
 
+   T3 and T3b are the ones that cannot be redone later: they capture the only
+   artifacts that turn corp-only work into offline work. If time runs short,
+   do those first and drop something else.
+
 4. Obey the privacy contract in §2 without exception. It is the reason this is
    allowed to run at all.
 
@@ -73,13 +77,66 @@ it is boring** — "reranker changed nothing" is a result.
 - **Done when:** each source has a real count and any error is captured with its trace_id.
 
 ### T3 · Capture a replayable snapshot (highest leverage — do not skip)
-- `actionpulse run --dump-ingest <path>` and `--record-llm <path>`.
 - **This is the single most valuable artifact a corp session can produce**: it converts
   corp-only work into offline work forever after.
-- ⚠ Snapshots contain **real mail**. They are `.gitignore`d (`*.snapshot.json`, `*-recording.json`)
-  and **must never be committed**. Hand them to the owner out-of-band; record only their
-  *shape* (message count, date range, size) in the report.
-- **Done when:** the owner holds a snapshot + recording, and the report states their shape.
+
+**Capture the snapshot once, then record the LLM twice — once per extraction contract.**
+The second recording is what unblocks A1.7 (flipping `extract.contract` to `v3`), and it can
+*only* be taken here. Without it, the whole A1 programme waits for another corp cycle.
+
+```bash
+# 1. One ingest snapshot, shared by both runs — this is what makes them comparable.
+actionpulse run --dump-ingest ~/ap-snapshot.json
+
+# 2. Baseline: today's live contract.
+DIGEST_EXTRACT_CONTRACT=v1 actionpulse run --force \
+  --replay-ingest ~/ap-snapshot.json --record-llm ~/ap-recording-v1.json
+
+# 3. Candidate: the constrained v3 contract (A1). Same evidence, different contract.
+DIGEST_EXTRACT_CONTRACT=v3 actionpulse run --force \
+  --replay-ingest ~/ap-snapshot.json --record-llm ~/ap-recording-v3.json
+```
+
+Separate `--record-llm` paths on purpose: recordings **append**, so one shared file would
+interleave both runs. (Replay matches on a request hash and the two contracts use different
+prompts, so it would in fact still work — but two files remove the question.)
+
+Record in the report: the **exit code and item count of each run**, and whether the v3 run
+produced any `extract_v3` drop counts in its `*.meta.json` (`dropped_unknown_evidence_id` /
+`dropped_missing_evidence_span`). Those numbers are what the parity analysis explains.
+
+Once the owner has all three files, the comparison runs **offline, with no gateway**:
+
+```bash
+actionpulse eval-contract-parity \
+  --snapshot ~/ap-snapshot.json \
+  --baseline-recording ~/ap-recording-v1.json \
+  --candidate-recording ~/ap-recording-v3.json \
+  --date <the digest date> --json-out parity.json
+```
+
+- ⚠ Snapshots and recordings contain **real mail**. They are `.gitignore`d
+  (`*.snapshot.json`, `*-recording.json`) and **must never be committed**. Hand them to the
+  owner out-of-band; record only their *shape* (message count, date range, size) in the report.
+- ⚠ A `--record-llm` capture from before PR1 is unusable (it stored `uuid4()` evidence ids).
+  These are fresh captures, so that is fine — but do not mix them with an older file.
+- **Done when:** the owner holds one snapshot and **two** recordings, and the report states
+  their shape plus each run's item count.
+
+### T3b · Sanity-check the v3 contract live (new — A1)
+Before trusting the T3 v3 recording, confirm the constrained path actually worked against the
+real gateway. It has **never** run outside mocks: the corp LiteLLM/vLLM stack is the only place
+`response_format: json_schema` passthrough can be verified.
+
+- Did the v3 run exit 0, or did the gateway reject the schema? A **4xx naming `response_format`
+  or `json_schema`** means guided-decoding passthrough is not available on this deployment —
+  record the exact error, it is the single most important negative result this session can bring
+  back. (Fallback route if so: tool-calling. Do not attempt it here; just report.)
+- Compare `llm_request_trace` retry counts between the v1 and v3 runs. v3 should spend **no
+  quality retry** — that is the concrete payoff A1 is claiming, and this is where it is either
+  confirmed or refuted.
+- **Done when:** the report says whether `json_schema` passthrough works on the corp gateway,
+  verbatim error included if not.
 
 ### T4 · EP-14 validation pack (Stream 2 — the headline gap)
 Follow `VISIT_CHECKLIST_EP14.md`. Record for a real run:

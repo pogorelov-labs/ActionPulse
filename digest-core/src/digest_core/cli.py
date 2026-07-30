@@ -1121,6 +1121,51 @@ def eval_prompt(
         raise typer.Exit(1)
 
 
+@app.command("eval-contract-parity", hidden=True)
+def eval_contract_parity(
+    snapshot: str = typer.Option(..., "--snapshot", help="Shared --dump-ingest snapshot"),
+    baseline_recording: str = typer.Option(
+        ..., "--baseline-recording", help="--record-llm capture taken with extract.contract=v1"
+    ),
+    candidate_recording: str = typer.Option(
+        ..., "--candidate-recording", help="--record-llm capture taken with extract.contract=v3"
+    ),
+    digest_date: str = typer.Option(..., "--date", help="Digest date of the capture (YYYY-MM-DD)"),
+    out_dir: str = typer.Option(None, "--out-dir", help="Working dir (default: a temp dir)"),
+    json_out: str = typer.Option(None, "--json-out", help="Write the report as JSON"),
+):
+    """Compare the v1 and v3 extraction contracts over one captured snapshot (A1.6).
+
+    The offline half of the A1.7 decision. A corp session only has to CAPTURE —
+    one ingest snapshot plus one LLM recording per contract (brief task T3) — and
+    this replays both here, forever, with no gateway access.
+
+    Exit 0 when v3 is at parity, 2 when it regressed. Section redistribution and
+    item counts the adapter accounts for are reported as differences/explained,
+    not failures: v3 is *meant* to route differently and to drop items citing an
+    evidence_id the pipeline never issued.
+    """
+    import tempfile
+
+    from digest_core.eval.contract_parity import evaluate_parity
+
+    work_dir = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="contract-parity-"))
+    report = evaluate_parity(
+        snapshot=Path(snapshot),
+        baseline_recording=Path(baseline_recording),
+        candidate_recording=Path(candidate_recording),
+        digest_date=digest_date,
+        out_dir=work_dir,
+    )
+    typer.echo(report.render())
+    if json_out:
+        Path(json_out).write_text(
+            json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        typer.echo(f"report written to {json_out}")
+    raise typer.Exit(0 if report.ok else 2)
+
+
 @app.command("eval-replay", hidden=True)
 def eval_replay(
     corpus_dir: str = typer.Option(
