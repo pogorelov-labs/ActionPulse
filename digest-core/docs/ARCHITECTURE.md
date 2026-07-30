@@ -287,7 +287,13 @@ class EvidenceChunk:
 **Rate limit constraint: 15 RPM (requests per minute)**
 
 Это ключевое ограничение, определяющее архитектуру LLM-вызовов:
-- **Max 2 LLM-вызова на run** (1 primary extraction + опциональный quality retry, см. ADR-008). Типичный run — 1 вызов.
+- **Бюджеты — per-stage, не «max 2 calls per run».** Экстрактор по умолчанию тратит
+  1 вызов (2 с quality-retry); у остальных стадий — свои бюджеты
+  (`llm.stage_call_budgets`, ADR-008 v2), и они default-OFF, поэтому типичный
+  сегодняшний run — **1 вызов**. Это следствие выключенных стадий, а не
+  проектного потолка. Сам потолок на число вызовов **снят** владельцем
+  2026-07-04 (ACTPULSE-77) — см. `REDESIGN_PLAN.md` §0.3.7. Прозу «max 2 calls
+  per run» использовать нельзя: ADR-008 ниже прямо её отменяет.
 - При 15 RPM этого хватает с запасом для single-tenant MVP.
 - Batch of N users: при 15 RPM max ~15 пользователей/мин или ~900/час.
   Для single-tenant MVP — не блокер. Для multi-tenant (Phase 4+) — потребуется
@@ -1304,7 +1310,7 @@ digest-core/
 
 | ID | Component | Issue | Severity | Phase |
 |----|-----------|-------|----------|-------|
-| TD-006 | `llm.cost_limit_per_run` | Нет enforcement | Low | Phase 1 |
+| ~~TD-006~~ | `llm.cost_limit_per_run` | ~~Нет enforcement~~ — **снято** в [#176](https://github.com/pogorelov-labs/ActionPulse/pull/176) (2026-06-19) | — | Closed |
 | TD-008 | `run.py` | Нет `if __name__ == "__main__"` (вход через `cli`) | Low | Phase 1 |
 | TD-009 | `ingest/ews.py` | `NormalizedMessage` на выходе Stage 1 — вводящее имя | Low | Phase 1 |
 | P5 gap | ingest | Падение EWS до LLM без partial report | Medium | По приоритету |

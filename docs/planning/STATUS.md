@@ -1,6 +1,6 @@
 # ActionPulse — Project Status (stream snapshot)
 
-> **As of:** 2026-06-19 · **Companion to:** [`ROADMAP.md`](./ROADMAP.md) (forward plan),
+> **As of:** 2026-07-30 (`origin/main` `bcaa28c`) · **Companion to:** [`ROADMAP.md`](./ROADMAP.md) (forward plan),
 > [`../../digest-core/docs/ARCHITECTURE.md`](../../digest-core/docs/ARCHITECTURE.md) (SoT).
 > This is a point-in-time *snapshot* — progress %s are honest engineering estimates, not
 > instrumented metrics. When a number and the code disagree, trust the code.
@@ -16,6 +16,12 @@ a **single unlock**: one supervised corp-network session (write PC-2, run live, 
 api-mode, harvest reactions, calibrate, flip the flags). That sequence converts most of the dark
 inventory to live **with zero new features** (§5).
 
+> **Correction (2026-07-30).** The paragraph above frames the unlock as *access* to a corp session.
+> That framing is wrong and has cost six weeks: corp sessions **have been run several times**. The
+> unlock is a **round-trip protocol** — a corp run that produces a durable artifact in the repo.
+> See §5 and `CORP_AGENT_BRIEF.md`. Also note the built/live percentages below are **unchanged
+> since 2026-06-19 and unaudited**; treat them as an ordering, not a measurement.
+
 - **Built** = code shipped + tested.
 - **Live (realized)** = actually working for a user today — not behind a default-off flag, and not
   requiring the corp network it has never run on.
@@ -26,7 +32,7 @@ inventory to live **with zero new features** (§5).
 |---|--------|:----:|:----:|----------------|
 | 1 | Capture — EWS + Mattermost + Calendar ingest | 92% | 60% | Three sources built (calendar E1–E3); only the EWS basic path is proven live |
 | 2 | Extract & Trust — the quality loop | 85% | 20% | All trust tiers built but **dark**; `recall_floor=0.0` (inert) |
-| 3 | Remember & Retrieve — store · API · MCP | 96% | 45% | + cross-digest history browser (live offline); store off-by-default, semantic needs corp |
+| 3 | Remember & Retrieve — store · API · MCP · **daemon** | 96% | 45% | + cross-digest history browser (live offline) **+ background ingestion daemon (#209)**; store off-by-default, semantic needs corp |
 | 4 | Deliver + reactions flywheel | 80% | 35% | Webhook live; the flywheel is a finished engine, **never spun** |
 | 5 | Terminal UX · setup · onboarding | 94% | 90% | Most-realized; wizard now collects MM creds too |
 | 6 | Privacy · consent · retention | 82% | 77% | Guardrails strong (+ bearer/PAT log redaction); **PC-2 ADR unwritten** |
@@ -52,6 +58,14 @@ inventory to live **with zero new features** (§5).
 > (#197), full-DM harvest (the 280-char quote cap removed, #198), store init + MCP as wizard steps
 > (#199), plain-language menu + "Settings & tools" / "Message store" submenus (#202/#203), and
 > silent-cap logging (#201). Stream 5 (UX) stays the most-realized; nothing here needed the corp network.
+>
+> **Update (2026-07-30) — see §8.** Four things landed after the snapshot above and one incident
+> happened: the **background ingestion daemon** (#209, ADR-016 — the biggest single change to the
+> product's *shape* since the store), the **B1a dead-code shed** (#208, −2,596 lines), a **nightly
+> CI lane** (#211), and a date-rot fix (#210). The incident: **the nightly then went red for nine
+> consecutive nights, 2026-07-16 → 07-24, and nobody was told.** Root-caused and fixed in
+> [#212](https://github.com/pogorelov-labs/ActionPulse/pull/212). `main` has otherwise been
+> **dormant for 25 days**.
 
 ## 3. Per-stream: done / missing
 
@@ -77,8 +91,16 @@ inventory to live **with zero new features** (§5).
   (retrieve / search / `ask` / summarize / compare / related / history / open-loops / pending / source verbs);
   `actionpulse-mcp` MCP server + macOS AI-CLI installer; `ask`/RAG; carryover + pending sections.
 - **Done (+):** cross-digest **history browser** — `actionpulse history` over past digest artifacts (#175).
+- **Done (+, 2026-07-05):** **background ingestion daemon** (#209, ADR-016) — a macOS launchd agent
+  running `actionpulse daemon tick` on an interval; each tick is the existing **no-LLM** fetch+persist
+  path, corp-aware (MM every tick, EWS only when a DNS probe resolves), single-writer via `flock`, with
+  its own watermark so it never starves the daily digest. Adds `daemon_status` (read-only) and
+  `trigger_ingest` MCP tools. This is what makes the MCP surface *fresh* rather than merely *available*.
 - **Missing:** `store.enabled=False` by default; semantic / `ask` / carryover need store-on + the
   corp gateway. Offline keyword search + history browse are what's live today.
+- **Missing (daemon-specific):** the daemon schedules **ingestion only** — nothing schedules the
+  actual **digest** yet; Linux/systemd parity is deferred; and the daemon has never run for a
+  sustained period, so its interval, staleness reporting and lock behaviour are untested in the field.
 
 ### 4 · Deliver + reactions flywheel — 84 / 35
 - **Done:** webhook delivery (live); api-mode + owner-only channel + post-id capture;
@@ -145,6 +167,18 @@ converts to live. (Defaults verified against `config.py` on 2026-06-19.)
 
 ## 5. The critical path (one corp session)
 
+> **Reframed 2026-07-30.** This section has said "we need one corp session" since 2026-06-19. That
+> diagnosis was **wrong**. Corp sessions *have been run, several times* (owner, 2026-07-30). What
+> has never happened is the **round trip**: no run's results were written back into the repo. Every
+> "Missing" line below is missing *evidence*, not *access*.
+>
+> So the bottleneck is not scheduling — it is that a corp session currently has no defined output
+> artifact. The fix is a **self-contained brief a corp-side agent can execute end-to-end**: pull the
+> current repo, run the suite, execute the validation pack, and write the answers back as a PR or an
+> issue comment. That brief is
+> [`digest-core/docs/CORP_AGENT_BRIEF.md`](../../digest-core/docs/CORP_AGENT_BRIEF.md); it is now the
+> gating deliverable, and it is offline-buildable.
+
 The ~30-point built→live gap is **not spread evenly** — it concentrates in streams 2, 3, 4, which
 share one unlock. In order:
 
@@ -180,6 +214,37 @@ Three PR waves landed this day, all squash-merged to `main`:
   config env-flag dedup · `run.py` snapshot extraction · JSON-list dedup + dead-code deletion.
 - **Phase-A offline batch** (#174–#179) — stream-integrated roadmap · cross-digest history browser ·
   cost-cap (TD-006) · bearer/PAT log redaction · wizard MM-creds · shellcheck CI lane.
+
+## 7a. What changed since 2026-06-21 (added 2026-07-30)
+
+| PR | What | Effect on the picture |
+|----|------|----------------------|
+| [#208](https://github.com/pogorelov-labs/ActionPulse/pull/208) | **B1a dead-code shed** — the abandoned rule-based extraction stack + dead validator, −2,596 lines | First execution of REDESIGN_PLAN §B1. The *rest* of the dead set remains (§B1b). |
+| [#209](https://github.com/pogorelov-labs/ActionPulse/pull/209) | **Background ingestion daemon** (ADR-016) — launchd agent, no-LLM fetch+persist ticks, `daemon_status` / `trigger_ingest` MCP tools | **Changes the product's shape**: ActionPulse stops being a batch job and becomes a background service with a continuously-fresh store. Not yet reflected in the stream table below. |
+| [#210](https://github.com/pogorelov-labs/ActionPulse/pull/210) | Anchored store-hook fixtures to a recent date | Closed the 30-day-TTL date-rot class. |
+| [#211](https://github.com/pogorelov-labs/ActionPulse/pull/211) | **Nightly + manual-dispatch CI** | Catches time-dependent failures on a dormant repo. It worked — see below. |
+| [#212](https://github.com/pogorelov-labs/ActionPulse/pull/212) | Pinned the digest-artifact glob; ignored 176M of corp bulk | Fixes the incident below. |
+
+**The incident (worth recording).** The nightly failed **nine consecutive nights**, 2026-07-16
+through 07-24, then self-healed on 07-25 — with **no commit in the window**. It was not date-rot:
+`test_reader.py` selected its artifact with `glob("digest-*.json")`, which also matches the
+`digest-{date}.idem.json` sidecar `run.py` writes beside it, so the test read whichever entry
+`readdir` returned first. That order is filesystem-dependent, so the failure tracked the CI runner
+image, not the calendar. Production was never affected (`ui/reader.py` already used the precise
+pattern).
+
+Two lessons, both process rather than code:
+1. **The nightly did its job; the notification did not exist.** ACTPULSE-88 ("surface a failing
+   nightly beyond GitHub's default author email") is still in Backlog. Nine silent red nights is
+   the argument for it.
+2. **"Green" was load-bearing and unverified.** A 25-day dormancy plus no alerting means the
+   suite's green status was assumed, not observed.
+
+**Two planning artifacts were nearly lost.** The 2026-07-01 architecture review and the entire
+v0.3 forward roadmap existed **only as uncommitted edits** in a working checkout that was 71
+commits behind `main`, for four weeks. Both are committed as of 2026-07-30
+(`digest-core/docs/audits/ARCH_REVIEW_2026-07.md`, `REDESIGN_PLAN.md` §0.3). This is a repeat —
+the redesign plan had already once "lived only as an untracked local file".
 
 ## 7. Deferred (consciously not done)
 

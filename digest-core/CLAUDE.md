@@ -44,12 +44,21 @@ make docker-run                       # Run with env vars and volume mounts
 
 ```
 1.INGEST (ews.py) → 2.NORMALIZE (html.py, quotes.py) → 3.THREADS (build.py)
-→ 4.EVIDENCE (split.py, BUDGET OWNER ≤3000 tokens) → 5.SELECT (context.py)
+→ 4.EVIDENCE (split.py) → 5.SELECT (context.py)
 → 6.LLM (gateway.py, qwen35-397b-a17b, extractor ≤2 calls; per-stage budgets ADR-008 v2) → 7.ASSEMBLE (jsonout.py, markdown.py)
 → 8.DELIVER (mattermost.py, webhook/bot)
 ```
 
 Full contracts in `docs/ARCHITECTURE.md §4`.
+
+**Token budget:** `context_budget.max_total_tokens`, **default 7000** — enforced *twice*, in
+`evidence/split.py:599` and again in `select/context.py:121` (the duplication is known debt,
+REDESIGN_PLAN §B3). It is a **policy knob, not a hard limit**: the owner lifted the evidence-budget
+and per-run-call ceilings on 2026-07-04 (ACTPULSE-77 / REDESIGN_PLAN §0.3.7). Raise defaults only
+behind a measured win (ACTPULSE-86). Three things bind before the token budget —
+`llm.max_tokens_per_run` (30000), `context_budget.per_thread_max` (3), and
+`split.max_chunks_per_message`. `max_output_tokens` is clamped to **16384**, which *is* a real
+gateway ceiling.
 
 ## Key Files
 
