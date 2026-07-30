@@ -85,6 +85,19 @@ ehthumbs.db
 *.snapshot.json
 *-recording.json
 
+# Corp notebook + diagnostics bundles land in the checkout root during corp
+# sessions and carry real payloads; `export-diagnostics` redacts secrets but the
+# bundles are still session data. Ignored so a stray `git add -A` cannot commit
+# them (they were 176M of untracked bulk one `add` away from the index).
+/ActionPulseCorpNotebook/
+/ActionPulse.zip
+diagnostics-*/
+diagnostics *-*/
+diagnostics-*.tar.gz
+
+# Scratch copies made while editing docs (e.g. REDESIGN_PLAN.md.local-backup)
+*.local-backup
+
 # Runtime state (sync cursor, dedup ledger) — retention via TTL, never commit
 .state/
 

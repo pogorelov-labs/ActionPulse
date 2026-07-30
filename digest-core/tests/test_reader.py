@@ -72,9 +72,12 @@ class TestEnrichment:
 
     def test_replay_run_writes_enriched_artifact(self, monkeypatch, tmp_path):
         assert _run_replay(monkeypatch, tmp_path, None)
-        artifact = json.loads(
-            next((tmp_path / "out").glob("digest-*.json")).read_text(encoding="utf-8")
-        )
+        # Same precise pattern the reader uses (ui/reader.py list_digests): a loose
+        # `digest-*.json` also matches the `digest-{date}.idem.json` idempotency
+        # sidecar, and which one readdir yields first is filesystem-dependent.
+        artifacts = list((tmp_path / "out").glob("digest-????-??-??.json"))
+        assert len(artifacts) == 1, f"expected exactly one digest artifact, got {artifacts}"
+        artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
         items = [item for section in artifact["sections"] for item in section["items"]]
         assert items
         for item in items:
@@ -151,6 +154,9 @@ class TestPureHelpers:
     def test_list_digests_newest_first(self, tmp_path):
         for date in ("2026-06-10", "2026-06-12", "2026-06-11"):
             _write_digest(tmp_path, _digest(date))
+        # run.py drops a `digest-{date}.idem.json` sidecar next to every artifact;
+        # it is not a digest and must never surface in the reader's listing.
+        (tmp_path / "digest-2026-06-12.idem.json").write_text("{}", encoding="utf-8")
         names = [p.name for p in list_digests(tmp_path)]
         assert names == [
             "digest-2026-06-12.json",
