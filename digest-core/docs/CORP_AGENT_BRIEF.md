@@ -78,9 +78,27 @@ it is boring** — "reranker changed nothing" is a result.
 
 ### T1 · Baseline (always, first)
 - `make test` on a clean `origin/main`. Record: pass/skip counts, duration, Python version, OS.
+  (For scale: ~1,680 pass on 2026-07-31. A much lower number means extras are missing.)
 - `uv run actionpulse diagnose`. Record the redacted output verbatim.
 - **Done when:** the suite is green and the environment is captured. If it is *not* green on
   `origin/main`, **stop and report that** — it outranks everything else here.
+
+**Keep the `health` tool in reach for the rest of the session.** It is the one MCP tool that
+can never fail, and it reports which precondition is missing — driver, store key,
+`store.enabled`, an archive, the daemon — with the exact command that fixes each. When T5 or
+T6 misbehaves, call it *before* debugging: ~20 tools fail identically on one missing link, and
+this is what tells you which link.
+
+```bash
+# No MCP client needed — the tool bodies are plain functions.
+uv run python -c "
+from digest_core.ui.menu import load_env_file; load_env_file()
+from digest_core.mcp.server import _tool_health
+import json; print(json.dumps(_tool_health(), indent=2, default=str))"
+```
+
+Paste its `blockers` list into the report if anything is non-empty. It is counts, paths and
+flags only — **no message content** — so it is safe to include verbatim.
 
 > **If the suite is red, check the machine before blaming the code.** `configs/config.yaml` is
 > gitignored, so CI and fresh clones never have one — a failure here can come from *this
@@ -233,10 +251,44 @@ Follow `VISIT_CHECKLIST_EP14.md`. Record for a real run:
 Follow `STORE_VALIDATION_CHECKLIST.md`: `store reembed` against the real gateway, then semantic
 search, `ask`, carryover and pending on real mail. Record latency and result quality.
 
-### T6 · Daemon soak (Stream 3, new — ADR-016)
+Changed 2026-07-31 (ACTPULSE-100) — the checklist's step order now matters:
+
+- **`store.enabled` gates INGESTION, not the archive.** With it off you can still *search* an
+  archive that already exists; what you cannot do is create one.
+- **Reading never creates the archive.** Before any run has written to it,
+  `store stats` / `search` fail with *"no message store at … yet"* instead of silently
+  creating an empty encrypted DB and reporting 0 messages. So do `store init` → enable →
+  **run a digest** → then read. A "no message store" error early in T5 means the ingest step
+  has not happened yet, **not** that the store is broken.
+- `health` (T1) distinguishes *no archive yet* from *archive damaged* — different fixes.
+
+### T6 · Daemon soak (Stream 3 — ADR-016)
 Never exercised in the field. Install it, let it tick for the session, then record: tick count,
-skipped-busy count, EWS DNS-probe outcomes on and off corp, store growth, and whether
-`daemon_status` staleness reporting is truthful.
+skipped-busy count, store growth, and whether `daemon_status` staleness reporting is truthful.
+
+Three things changed on 2026-07-31 — read these before running it, or you will record
+non-results:
+
+- ⚠ **Do NOT record "EWS DNS probe says on-corp" as evidence of anything.** That check was
+  measured off-corp on 2026-07-31: `owa.raiffeisen.ru` **resolves publicly** (195.238.73.196)
+  *and* TCP 443 connects from the open internet, so `daemon status` prints
+  `exchange: on-corp` off-corp too. The probe is a weak corp signal, not a corp test. What is
+  still worth recording is whether an EWS **fetch** actually succeeds — that is the real
+  question the probe was standing in for. (`llm-api.cibaa.raiffeisen.ru` does *not* resolve
+  off-corp, so the gateway is genuinely corp-only.)
+- **`daemon install` now refuses** when no source in `daemon.sources` is configured, rather than
+  scheduling a unit that fails every interval (ACTPULSE-101). The default `daemon.sources` is
+  `mm,ews`; if MM has no `MM_BASE_URL`/`MM_PAT` on this machine it will be **skipped with a
+  warning** and EWS alone will run. That warning is expected — record it, don't chase it.
+  Narrow to `daemon.sources: "ews"` in `configs/config.yaml` if you want a clean log.
+- **Scheduling is no longer launchd-only** (ACTPULSE-99). On a Linux corp host `install` picks a
+  **systemd user timer**; `--backend launchd|systemd|cron` forces one, and `--dry-run` prints the
+  unit without writing it. Record **which backend was chosen** — a systemd timer has never been
+  observed firing on a real Linux host, so that is a genuine first.
+
+A failing tick now writes **one line**, not a traceback, and records `sources_skipped` in
+`var/state/daemon.json`. If a tick fails, `uv run actionpulse daemon status` and the MCP
+`health` tool (see T1) will each name the missing link.
 
 ### T7 · PC-2 — fill the `<TBD>` rows (Stream 6 — the master gate)
 `PC2_DATA_HANDLING.md` is drafted; the `<TBD>` cells need corp-policy answers (which endpoints may
@@ -324,3 +376,10 @@ failure mode this brief exists to stop.
   staging, and prefer explicit paths.
 - **Work from a branch cut from fresh `origin/main`**, never detached `HEAD` (root `CLAUDE.md`,
   "Git Preflight").
+- **The EWS DNS probe is not a corp test.** `owa.raiffeisen.ru` resolves publicly and accepts
+  TCP 443 from the open internet (measured 2026-07-31), so anything reporting `on-corp` from
+  that probe — including `daemon status` — says nothing about where you are. Judge corp access
+  by whether an EWS **fetch** and a **gateway** call succeed. The gateway host does *not*
+  resolve off-corp, so it is the reliable signal.
+- **A read never creates the message store** (ACTPULSE-100). "No message store at … yet" means
+  no run has written one, not that anything is broken.
