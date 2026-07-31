@@ -30,7 +30,7 @@ import urllib.parse
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
-from digest_core.api import GatewayUnavailable, InboxAPI
+from digest_core.api import ApiError, GatewayUnavailable, InboxAPI
 from digest_core.config import Config
 
 _api: Optional[InboxAPI] = None
@@ -38,10 +38,21 @@ _api: Optional[InboxAPI] = None
 
 def _get_api() -> InboxAPI:
     """The process-wide InboxAPI (opened on first use). Raises ApiError if the store
-    is off / the key is unset — surfaced to the client as a tool error, not a crash."""
+    is off / the key is unset — surfaced to the client as a tool error, not a crash.
+
+    The failure is re-raised pointing at ``health``: every read tool here fails
+    *identically* on a missing precondition, so the bare store error tells an agent
+    nothing about which of driver / key / enabled / data is the broken link.
+    """
     global _api
     if _api is None:
-        _api = InboxAPI.open(Config())
+        try:
+            _api = InboxAPI.open(Config())
+        except ApiError as exc:
+            raise ApiError(
+                f"{exc}  —  call the `health` tool for which precondition is missing "
+                "and the exact command that fixes it."
+            ) from exc
     return _api
 
 
@@ -301,6 +312,143 @@ def _tool_fetch_source(source: str, digest_date: str) -> List[Dict[str, Any]]:
     return _records(_get_api().fetch_source(source, digest_date))
 
 
+# health (the one tool that must never fail)
+
+
+def _probe_store() -> Dict[str, Any]:
+    """Inspect the store WITHOUT going through the cached ``_get_api``.
+
+    Deliberately separate: ``_get_api`` memoises a *successful* open, and health has to
+    report the truth right now — including the case where opening is exactly what fails.
+    """
+    from digest_core.store.db import HAS_SQLCIPHER
+
+    out: Dict[str, Any] = {
+        "driver_installed": bool(HAS_SQLCIPHER),
+        "key_set": False,
+        "enabled": False,
+        "db_exists": False,
+        "openable": False,
+        "messages": None,
+    }
+    try:
+        store_cfg = Config().store
+    except Exception as exc:  # a broken config must not take health down with it
+        out["error"] = f"config could not be loaded: {type(exc).__name__}: {exc}"
+        return out
+    out["enabled"] = bool(getattr(store_cfg, "enabled", False))
+    out["key_env"] = getattr(store_cfg, "key_env", "DIGEST_STORE_KEY")
+    try:
+        store_cfg.get_key()
+        out["key_set"] = True
+    except Exception:
+        out["key_set"] = False  # unset key is a *state*, not an error to propagate
+    try:
+        from pathlib import Path
+
+        db = Path(store_cfg.resolved_db_path())
+        out["db_path"] = str(db)
+        out["db_exists"] = db.exists()
+        out["db_size_bytes"] = db.stat().st_size if db.exists() else 0
+    except Exception as exc:
+        out["error"] = f"db path unresolvable: {type(exc).__name__}: {exc}"
+    if out["driver_installed"] and out["key_set"]:
+        try:
+            api = _get_api()
+            stats = api.stats()
+            out["openable"] = True
+            out["messages"] = stats.get("messages")
+            out["newest"] = stats.get("newest")
+            out["oldest"] = stats.get("oldest")
+            out["embeddings"] = stats.get("embeddings")
+        except Exception as exc:
+            out["open_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _tool_health() -> Dict[str, Any]:
+    """Is this server actually able to answer? Never fails — call it first when anything errors.
+
+    Every other tool here is a read projection over the encrypted store, so a missing
+    precondition makes ~20 tools fail identically with no way to tell WHICH link is broken.
+    This reports each link and the exact command that fixes it. Returns counts, paths and
+    flags only — no message content, so it is unaffected by ACTIONPULSE_MCP_REDACT_BODIES.
+    """
+    store = _probe_store()
+    blockers: List[Dict[str, str]] = []
+    if not store["driver_installed"]:
+        blockers.append(
+            {
+                "problem": "SQLCipher driver missing — the store cannot be opened at all.",
+                "fix": "uv sync --extra store   (macOS also needs: brew install sqlcipher openssl@3)",
+            }
+        )
+    if not store["key_set"]:
+        blockers.append(
+            {
+                "problem": f"{store.get('key_env', 'DIGEST_STORE_KEY')} is not set, so the "
+                "encrypted store cannot be decrypted.",
+                "fix": "actionpulse store init   (writes a 0600 key to ~/.config/actionpulse/env)",
+            }
+        )
+    if not store["enabled"]:
+        # Read-path-only: reads work on an existing DB even with ingestion off, so this
+        # is a warning about FRESHNESS, not about the server being broken. Say which.
+        blockers.append(
+            {
+                "problem": "store.enabled is false — nothing new is being ingested, so this "
+                "server can only serve whatever is already in the DB.",
+                "fix": "add `store:\\n  enabled: true` to configs/config.yaml "
+                "(or export DIGEST_STORE_ENABLED=1)",
+            }
+        )
+    if store.get("open_error"):
+        blockers.append(
+            {
+                "problem": f"the store exists but could not be opened: {store['open_error']}",
+                "fix": "usually a wrong/rotated DIGEST_STORE_KEY. `actionpulse store drop` "
+                "starts over (destroys stored history).",
+            }
+        )
+    if store["openable"] and not store["messages"]:
+        blockers.append(
+            {
+                "problem": "the store is open and healthy but EMPTY — every search/list will "
+                "return nothing, which is easy to misread as 'no matches'.",
+                "fix": "run a digest on the corp network to populate it: `actionpulse run` "
+                "(or `actionpulse daemon install` to keep it fresh automatically)",
+            }
+        )
+    try:
+        daemon = _tool_daemon_status()
+    except Exception as exc:
+        daemon = {"error": f"{type(exc).__name__}: {exc}"}
+    if daemon.get("installed") is False:
+        blockers.append(
+            {
+                "problem": "the background ingestion daemon is not installed, so the store is "
+                "only as fresh as the last manual run.",
+                "fix": "actionpulse daemon install   (macOS LaunchAgent)",
+            }
+        )
+    return {
+        # `ok` is deliberately about *serving*, not about being fully set up: a healthy
+        # empty store can answer every query correctly, it just answers "nothing".
+        "ok": bool(store["openable"]),
+        "can_serve_content": bool(store["openable"] and store["messages"]),
+        "store": store,
+        "daemon": {
+            k: daemon.get(k) for k in ("installed", "is_stale", "staleness_days", "last_run")
+        },
+        "exposure": {
+            "redact_bodies": _redact_bodies(),
+            "maintenance_enabled": bool(os.getenv("ACTIONPULSE_MCP_ENABLE_MAINTENANCE")),
+            "fetch_enabled": bool(os.getenv("ACTIONPULSE_MCP_ENABLE_FETCH")),
+        },
+        "blockers": blockers,
+    }
+
+
 # background ingestion daemon (status is always on; trigger_ingest is fetch-gated)
 
 
@@ -361,6 +509,7 @@ def _prompt_catch_up_on_thread(thread_id: str) -> str:
 
 # Tool registry: (function, public name). Read-only + reasoning; always registered.
 _TOOLS = [
+    (_tool_health, "health"),
     (_tool_search, "search"),
     (_tool_get_message, "get_message"),
     (_tool_get_thread, "get_thread"),

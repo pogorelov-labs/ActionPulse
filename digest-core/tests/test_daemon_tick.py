@@ -29,9 +29,20 @@ def _counts(monkeypatch, *pairs):
 
 
 def test_store_disabled_raises(monkeypatch):
+    """A tick with the store off must refuse, not half-run.
+
+    Sets ``enabled = False`` on the config it passes rather than deleting the env
+    override and trusting the default: `configs/config.yaml` is gitignored, so CI
+    never has one and a real machine always does. Once a developer follows the
+    documented setup (`store.enabled: true`), an ambient-default premise silently
+    inverts and this test starts exercising the *enabled* path instead.
+    """
     monkeypatch.delenv("DIGEST_STORE_ENABLED", raising=False)
+    config = Config()
+    config.store.enabled = False
+    assert not config.store.enabled, "the premise this test asserts on"
     with pytest.raises(tick.DaemonError):
-        tick.ingest_once(Config())
+        tick.ingest_once(config)
 
 
 def test_mm_ingests_and_writes_status(monkeypatch):

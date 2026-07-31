@@ -967,10 +967,18 @@ def run_menu(
             return 0
 
 
-def load_env_file(path: Path = ENV_PATH) -> int:
+def load_env_file(path: Optional[Path] = None) -> int:
     """Load ~/.config/actionpulse/env into os.environ for any keys not already
     set, so `actionpulse run` works without manually sourcing the file. Returns
-    the number of keys loaded. Never overrides an explicit env var."""
+    the number of keys loaded. Never overrides an explicit env var.
+
+    ``path`` resolves to ``ENV_PATH`` at CALL time, not at definition time. It used
+    to be a default argument (``path: Path = ENV_PATH``), which bound the real path
+    permanently: a test that redirected ``menu.ENV_PATH`` at a tmp file still had the
+    CLI callback read the developer's actual secrets file and load their real keys
+    into ``os.environ``. Late-binding is what makes that redirection mean anything.
+    """
+    path = path or ENV_PATH
     if not path.exists():
         return 0
     loaded = 0
