@@ -114,6 +114,10 @@ class MarkdownAssembler:
                     # artifact rendered as a raw dict still shows its subject.
                     item_source_subject = item.get("source_subject") or item.get("email_subject")
                     item_weak_evidence = item.get("weak_evidence", False)
+                    item_owners = item.get("owners") or []
+                    item_participants = item.get("participants") or []
+                    item_location = item.get("location")
+                    item_impact = item.get("impact")
                 else:
                     item_title = item.title
                     item_due = item.due
@@ -122,12 +126,31 @@ class MarkdownAssembler:
                     item_source_ref = item.source_ref
                     item_source_subject = getattr(item, "source_subject", None)
                     item_weak_evidence = getattr(item, "weak_evidence", False)
+                    # getattr with a default: a pre-A1.5 artifact deserialized into an
+                    # older Item, or a plain stand-in in a test, has no such attribute.
+                    item_owners = getattr(item, "owners", None) or []
+                    item_participants = getattr(item, "participants", None) or []
+                    item_location = getattr(item, "location", None)
+                    item_impact = getattr(item, "impact", None)
 
                 lines.append(f"### {i}. {item_title}")
 
                 # Add due date if present
                 if item_due:
                     lines.append(f"**{self._s['due_label']}:** {item_due}")
+
+                # A1.5 — facts only the v3 contract extracts. Each is emitted only when
+                # present, so a v1 digest renders byte-identically to before.
+                if item_owners:
+                    lines.append(f"**{self._s['owners_label']}:** {', '.join(item_owners)}")
+                if item_participants:
+                    lines.append(
+                        f"**{self._s['participants_label']}:** {', '.join(item_participants)}"
+                    )
+                if item_location:
+                    lines.append(f"**{self._s['location_label']}:** {item_location}")
+                if item_impact:
+                    lines.append(f"**{self._s['impact_label']}:** {item_impact}")
 
                 # Add confidence only when it adds signal (borderline items, and
                 # never alongside the weak-evidence marker — see labels.py).
