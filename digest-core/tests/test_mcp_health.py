@@ -45,20 +45,68 @@ def test_health_reports_missing_key_without_raising(monkeypatch):
 
 
 def test_health_reports_disabled_store_as_a_freshness_problem(monkeypatch, tmp_path):
-    """`store.enabled: false` does NOT stop reads (the read path never checks it).
+    """`store.enabled: false` does NOT stop reads of an EXISTING archive.
 
-    So health must describe it as "nothing new is being ingested", not "broken" —
-    saying otherwise would send someone chasing a fault that isn't there.
+    That is the ACTPULSE-100 decision: `enabled` gates ingestion, so health must
+    describe it as "nothing new is being ingested", not "broken" — saying otherwise
+    sends someone chasing a fault that isn't there. Needs a real archive, because
+    reading no longer conjures one.
     """
+    from digest_core.api import InboxAPI
+
     monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
+    cfg = Config()
+    cfg.store.db_path = str(tmp_path / "m.db")
+    InboxAPI.open(cfg).close()  # create the archive while ingestion is on
+    monkeypatch.setenv("DIGEST_STORE_DB_PATH", str(tmp_path / "m.db"))
     monkeypatch.setenv("DIGEST_STORE_ENABLED", "0")
+
     health = server._tool_health()
     assert health["store"]["enabled"] is False
-    text = _blocker_text(health)
-    assert "ingest" in text.lower()
-    # It opened fine despite being "disabled" — that asymmetry is the point.
+    assert "ingest" in _blocker_text(health).lower()
+    # It opened fine despite ingestion being off — that is the point of the decision.
     assert health["store"]["openable"] is True
     assert health["ok"] is True
+
+
+def test_reading_never_creates_an_archive(monkeypatch, tmp_path):
+    """The ACTPULSE-100 invariant, asserted on the FILESYSTEM.
+
+    Checking a blocker's wording is not enough: `_probe_store` reads `db_exists` before
+    it tries to open, so a reader that creates the database still produces the right
+    message while leaving a new encrypted file behind. Only looking at the path
+    afterwards catches that — which is exactly what a mutation of the MCP call site
+    proved, by passing every other test in this file.
+    """
+    db = tmp_path / "must-not-appear.db"
+    monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
+    monkeypatch.setenv("DIGEST_STORE_DB_PATH", str(db))
+
+    server._tool_health()  # the tool an agent always calls first
+    assert not db.exists(), "health created an encrypted store just by being asked"
+
+    with pytest.raises(Exception):
+        server._tool_stats()  # a plain read tool
+    assert not db.exists(), "a read tool created an encrypted store"
+    assert not list(tmp_path.glob("*.db*")), "no WAL/SHM sidecars either"
+
+
+def test_health_separates_no_archive_yet_from_broken(monkeypatch, tmp_path):
+    """ "Nothing here yet" and "this is damaged" have different fixes.
+
+    Since reading never creates an archive, a fresh install sits in the first state
+    until a run writes something — and must not be reported as a fault.
+    """
+    monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
+    monkeypatch.setenv("DIGEST_STORE_DB_PATH", str(tmp_path / "absent.db"))
+
+    health = server._tool_health()
+    assert health["store"]["db_exists"] is False
+    text = _blocker_text(health)
+    assert "no message archive exists yet" in text
+    assert "actionpulse run" in text
+    # Not described as damage — no wrong-key advice for a database that isn't there.
+    assert "store drop" not in text
 
 
 def test_health_survives_an_unopenable_store(monkeypatch, tmp_path):
@@ -82,9 +130,20 @@ def test_health_survives_an_unopenable_store(monkeypatch, tmp_path):
 
 
 def test_health_flags_an_empty_store_as_a_trap(monkeypatch, tmp_path):
-    """An empty store answers every query with "nothing" — indistinguishable from
-    "no matches" unless something says so. That is a no-silent-caps issue."""
+    """An empty archive answers every query with "nothing" — indistinguishable from
+    "no matches" unless something says so. That is a no-silent-caps issue.
+
+    Distinct from the no-archive-at-all case above: here the file exists and opens,
+    it just has no rows, which is the state a fresh run leaves behind.
+    """
+    from digest_core.api import InboxAPI
+
     monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
+    cfg = Config()
+    cfg.store.db_path = str(tmp_path / "m.db")
+    InboxAPI.open(cfg).close()  # exists, opens, empty
+    monkeypatch.setenv("DIGEST_STORE_DB_PATH", str(tmp_path / "m.db"))
+
     health = server._tool_health()
     assert health["ok"] is True  # it CAN serve...
     assert health["can_serve_content"] is False  # ...but has nothing to serve

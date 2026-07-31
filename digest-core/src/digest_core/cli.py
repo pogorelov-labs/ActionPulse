@@ -487,15 +487,12 @@ def _open_store_or_exit():
     if not HAS_SQLCIPHER:
         typer.echo(f"{FAIL} {INSTALL_HINT}", err=True)
         raise typer.Exit(1)
-    if not cfg.enabled:
-        typer.echo(
-            f"{FAIL} Message store is off. Run `actionpulse store init`, set store.enabled: "
-            "true (or DIGEST_STORE_ENABLED=1), then run a digest.",
-            err=True,
-        )
-        raise typer.Exit(1)
+    # No `enabled` gate here. `store.enabled` means "keep ingesting", not "the archive
+    # exists" (ACTPULSE-100) — pausing ingestion must not cost you access to history you
+    # already collected. create=False keeps the other half of the promise: reading never
+    # brings a new encrypted database into existence, and says so if there is none.
     try:
-        return MessageStore.open(cfg)
+        return MessageStore.open(cfg, create=False)
     except (StoreError, ValueError) as exc:
         typer.echo(f"{FAIL} {exc}", err=True)
         raise typer.Exit(1)

@@ -635,13 +635,11 @@ def _open_store_for_menu(console: Console):
     if not HAS_SQLCIPHER:
         console.print(f"  [ap.warn]⚠[/] {INSTALL_HINT}")
         return None
-    if not cfg.enabled:
-        console.print(
-            "  [ap.warn]⚠[/] Store is off — enable it via Settings → Run the setup wizard."
-        )
-        return None
+    # See cli._open_store_or_exit: `enabled` gates INGESTION, so an existing archive
+    # stays readable with it off (ACTPULSE-100). create=False means a menu action never
+    # creates one; StoreError below carries the "run a digest first" message.
     try:
-        return MessageStore.open(cfg)
+        return MessageStore.open(cfg, create=False)
     except (StoreError, ValueError) as exc:
         console.print(f"  [ap.err]✗[/] {exc}")
         return None

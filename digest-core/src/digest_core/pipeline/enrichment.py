@@ -535,7 +535,7 @@ def _enrich_digest_from_store(ctx: RunContext, digest: Digest) -> None:
         # the owner aliases from Config — the same source the ranker uses).
         pending: list = []
         loops: list = []
-        with InboxAPI.open(ctx.config) as api:
+        with InboxAPI.open(ctx.config, create=False) as api:
             if cfg.pending:
                 pending = api.pending(
                     now=ref,

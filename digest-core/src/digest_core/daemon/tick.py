@@ -162,7 +162,7 @@ def _store_counts(config: Config) -> Tuple[Optional[int], Dict[str, int]]:
     from digest_core.api import InboxAPI
 
     try:
-        with InboxAPI.open(config) as api:
+        with InboxAPI.open(config, create=False) as api:
             s = api.stats()
         return int(s.get("messages", 0)), dict(s.get("by_source", {}))
     except Exception:  # noqa: BLE001 - counts are advisory; a read failure must not fail the tick

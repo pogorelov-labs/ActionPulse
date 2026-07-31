@@ -200,6 +200,13 @@ actionpulse store purge --ttl-days 30 --yes   # apply TTL now; `store drop` dele
   body is redacted (`[DM content redacted at rest]`) and not chunked/embedded/searchable.
 - **Key loss = data loss.** A lost/rotated `DIGEST_STORE_KEY` makes the DB unreadable;
   `store drop` is the only recovery.
+- **`store.enabled` gates INGESTION, not the archive (ACTPULSE-100).** With it off,
+  `search` / the menu / the MCP still read an existing archive — pausing ingestion must
+  not cost you history you already collected. What no read path does is *create* one:
+  readers pass `MessageStore.open(..., create=False)`, so a question never leaves a new
+  encrypted database behind (it used to: `mkdir(parents=True)` + open created a DB as a
+  side effect of a message count). Only the ingest path creates. `health` reports "no
+  archive yet" separately from "damaged" — different states, different fixes.
 - **Replay has no raw body** — `--replay-ingest` snapshots are already normalized, so
   replayed rows store `body_raw == body_normalized`.
 
