@@ -236,9 +236,7 @@ class TestSharedConfigPolicy:
 
         # ...and it is genuinely delegating, not carrying its own copy.
         calls = []
-        monkeypatch.setattr(
-            type(cfg.ews), "config_gaps", lambda self, **kw: calls.append(kw) or []
-        )
+        monkeypatch.setattr(type(cfg.ews), "config_gaps", lambda self, **kw: calls.append(kw) or [])
         ingest._check_configured()  # no gaps reported -> must now pass
         assert calls, "_check_configured must go through config_gaps"
 
