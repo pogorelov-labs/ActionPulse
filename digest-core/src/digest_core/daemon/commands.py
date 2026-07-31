@@ -1,16 +1,20 @@
-"""``actionpulse daemon`` — install / control the background ingestion LaunchAgent.
+"""``actionpulse daemon`` — install / control the scheduled background ingestion tick.
 
-The LaunchAgent runs ``actionpulse daemon tick`` on an interval to keep the encrypted store
-fresh (Mattermost every tick; Exchange when on-corp). ``install`` / ``uninstall`` / ``start``
-/ ``stop`` are macOS launchd operations (macOS-gated; ``install --dry-run`` prints the plist
-anywhere); ``tick`` / ``status`` / ``logs`` work everywhere. The plist carries no secrets —
-the tick self-loads the store key from ``~/.config/actionpulse/env`` like the MCP server.
+A scheduled ``actionpulse daemon tick`` keeps the encrypted store fresh (Mattermost every
+tick; Exchange when on-corp) without an open session. The scheduler is chosen per host —
+launchd (macOS), a systemd **user** timer (Linux), or a marked cron block as the fallback
+(ACTPULSE-99) — and every subcommand routes to whichever backend is actually installed, so
+a host that gained systemd after a cron install can still remove its cron entry.
+
+``tick`` / ``status`` / ``logs`` work everywhere and always did. No backend writes a secret
+into its unit: the tick self-loads the store key from ``~/.config/actionpulse/env`` like the
+MCP server, and every backend appends to the same ``var/logs/daemon.*.log`` pair so
+``daemon logs`` reads one place.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 from typing import Optional, Tuple
 
 import typer
@@ -19,7 +23,7 @@ from digest_core.config import Config
 from digest_core.ui.glyphs import FAIL, OK, WARN
 
 daemon_app = typer.Typer(
-    help="Background ingestion daemon — keep the store fresh without an open session (macOS)."
+    help="Background ingestion daemon — keep the store fresh without an open session."
 )
 
 
@@ -39,6 +43,22 @@ def _store_ready() -> Tuple[bool, str]:
     return True, ""
 
 
+def _render_unit(backend, minutes: int) -> str:
+    """The unit text a backend would write — for `--dry-run`.
+
+    Each backend names its own renderer (a plist is bytes, a systemd unit is two files, a
+    cron block is one line), so this is the one place that knows the difference.
+    """
+    if backend.NAME == "launchd":
+        return backend.render_plist(minutes).decode()
+    if backend.NAME == "systemd":
+        return (
+            f"--- {backend.service_path().name} ---\n{backend.render_service()}\n"
+            f"--- {backend.timer_path().name} ---\n{backend.render_timer(minutes)}"
+        )
+    return backend.render(minutes)
+
+
 def _reachability_word(ews_reachable: Optional[bool]) -> str:
     if ews_reachable is None:
         return "n/a"
@@ -51,7 +71,8 @@ def daemon_status_cmd() -> None:
     from digest_core.daemon import status
 
     s = status.summarize()
-    typer.echo(f"LaunchAgent: {'installed' if s.get('installed') else 'not installed'}")
+    where = f" ({s['scheduler_backend']})" if s.get("scheduler_backend") else ""
+    typer.echo(f"Scheduler: {'installed' if s.get('installed') else 'not installed'}{where}")
     if not s.get("last_run"):
         typer.echo("  never run yet — `actionpulse daemon install` (or `daemon tick` to try now)")
         return
@@ -79,22 +100,39 @@ def daemon_install_cmd(
         None, "--interval", help="Minutes between ticks (default: config daemon.interval_minutes)."
     ),
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show the plist, write nothing."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the unit, write nothing."),
+    backend_name: Optional[str] = typer.Option(
+        None,
+        "--backend",
+        help="Force a scheduler: launchd | systemd | cron (default: best for this host).",
+    ),
 ) -> None:
-    """Install (and load) the launchd LaunchAgent. macOS only (`--dry-run` works anywhere)."""
-    from digest_core.daemon import launchd
+    """Install the scheduled tick using this host's scheduler (launchd/systemd/cron)."""
+    from digest_core.daemon import scheduler
     from digest_core.daemon import tick as tick_mod
 
     cfg = Config()
     minutes = interval or cfg.daemon.interval_minutes
+    try:
+        backend = scheduler.select(backend_name)
+    except ValueError as exc:
+        # A typo in a flag is a user error, not a crash. Same reasoning as the tick's
+        # one-line failure (ACTPULSE-101): a traceback here tells the reader nothing
+        # they can act on and buries the list of valid names.
+        typer.echo(f"{FAIL} {exc}")
+        raise typer.Exit(1)
+    if backend is None:
+        typer.echo(
+            f"{FAIL} no supported scheduler found (looked for launchd, systemd --user, cron)."
+        )
+        typer.echo("    `actionpulse daemon tick` still works; schedule it however you prefer.")
+        raise typer.Exit(1)
     if dry_run:
-        typer.echo(f"Would write: {launchd.plist_path()}")
-        typer.echo(f"Launch command: {' '.join(launchd.tick_command())}")
-        typer.echo(launchd.render_plist(minutes).decode())
+        typer.echo(f"Backend: {backend.NAME}")
+        typer.echo(f"Launch command: {' '.join(scheduler.tick_command())}")
+        typer.echo(backend.describe(minutes))
+        typer.echo(_render_unit(backend, minutes))
         return
-    if sys.platform != "darwin":
-        typer.echo(f"{FAIL} `daemon install` is macOS-only for now. Try `--dry-run`.")
-        raise typer.Exit(0)
     ready, msg = _store_ready()
     if not ready:
         typer.echo(f"{FAIL} {msg}")
@@ -111,23 +149,28 @@ def daemon_install_cmd(
         for source, reason in sorted(skipped.items()):
             typer.echo(f"{WARN} {source} will be skipped every tick — {reason}")
     if not yes:
-        typer.echo(f"This installs a launchd LaunchAgent that ingests every {minutes} min:")
-        typer.echo(f"  plist:   {launchd.plist_path()}")
-        typer.echo(f"  command: {' '.join(launchd.tick_command())}")
+        typer.echo(f"This schedules a tick every {minutes} min via {backend.NAME}:")
+        typer.echo("  " + backend.describe(minutes).replace("\n", "\n  "))
+        typer.echo(f"  command: {' '.join(scheduler.tick_command())}")
         typer.echo(
             f"  sources: {', '.join(cfg.daemon.source_list())}  (MM every tick; EWS when on-corp)"
         )
-        typer.echo("The plist carries no secrets; `actionpulse daemon uninstall` reverses it.")
+        typer.echo("The unit carries no secrets; `actionpulse daemon uninstall` reverses it.")
         if not typer.confirm("Install the background ingestion agent?", default=False):
             typer.echo("No changes.")
             raise typer.Exit(0)
-    res = launchd.install(minutes)
+    res = backend.install(minutes)
     bak = f"  (backup: {res.backup.name})" if res.backup else ""
-    typer.echo(f"{OK} {res.action}{bak} — {res.plist}")
+    typer.echo(f"{OK} {res.action}{bak} — {res.unit}  [{res.backend}]")
     typer.echo(
-        f"  {'loaded' if res.loaded else 'already loaded / enabled'};"
-        f" runs every {minutes} min + at login."
+        f"  {'loaded' if res.loaded else 'already loaded / enabled'}; runs every {minutes} min"
+        + ("." if backend.NAME == "cron" else " + at boot/login.")
     )
+    # No silent caps: cron cannot express every interval, so say when it did something
+    # other than what was asked for.
+    note = getattr(backend, "schedule_for", lambda _m: (None, None))(minutes)[1]
+    if note:
+        typer.echo(f"  {WARN} {note}")
     typer.echo("  Check: `actionpulse daemon status`  ·  logs: `actionpulse daemon logs`")
 
 
@@ -135,47 +178,60 @@ def daemon_install_cmd(
 def daemon_uninstall_cmd(
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
 ) -> None:
-    """Unload + remove the LaunchAgent (leaves a timestamped .bak)."""
-    from digest_core.daemon import launchd
+    """Remove the scheduled tick (leaves a timestamped .bak where there is a file)."""
+    from digest_core.daemon import scheduler
 
-    if not launchd.is_installed():
+    # Whichever backend actually HAS a unit, not whichever we would pick now: a host that
+    # gained systemd after a cron install must still be able to remove the cron entry.
+    backend = scheduler.installed_backend()
+    if backend is None:
         typer.echo("Not installed.")
         raise typer.Exit(0)
-    if not yes and not typer.confirm("Remove the background ingestion agent?", default=False):
+    if not yes and not typer.confirm(
+        f"Remove the background ingestion agent ({backend.NAME})?", default=False
+    ):
         typer.echo("No changes.")
         raise typer.Exit(0)
-    res = launchd.uninstall()
+    res = backend.uninstall()
     bak = f"  (backup: {res.backup.name})" if res.backup else ""
-    typer.echo(f"{OK} {res.action}{bak} — {res.plist}")
+    typer.echo(f"{OK} {res.action}{bak} — {res.unit}  [{res.backend}]")
 
 
 @daemon_app.command("start")
 def daemon_start_cmd() -> None:
-    """Load the agent and kick a run now (macOS)."""
-    from digest_core.daemon import launchd
+    """Enable the schedule and run one tick now."""
+    from digest_core.daemon import scheduler
 
-    if sys.platform != "darwin":
-        typer.echo(f"{FAIL} macOS only.")
-        raise typer.Exit(0)
-    if not launchd.is_installed():
+    backend = scheduler.installed_backend()
+    if backend is None:
         typer.echo(f"{FAIL} not installed — run `actionpulse daemon install` first.")
         raise typer.Exit(1)
-    kicked = launchd.start()
-    typer.echo(
-        f"{OK} kicked a run now" if kicked else f"{OK} agent loaded (kickstart not confirmed)"
-    )
+    if backend.start():
+        typer.echo(f"{OK} kicked a run now  [{backend.NAME}]")
+        return
+    # cron has no "run now", and launchctl kickstart can decline — either way the user
+    # asked for a tick, so give them one instead of a shrug.
+    typer.echo(f"  {backend.NAME} cannot trigger a run itself; running one tick inline…")
+    daemon_tick_cmd(sources=None)
 
 
 @daemon_app.command("stop")
 def daemon_stop_cmd() -> None:
-    """Unload the agent (reloads on next install/login) (macOS)."""
-    from digest_core.daemon import launchd
+    """Stop the schedule (the unit stays on disk; `start` re-enables it)."""
+    from digest_core.daemon import scheduler
 
-    if sys.platform != "darwin":
-        typer.echo(f"{FAIL} macOS only.")
+    backend = scheduler.installed_backend()
+    if backend is None:
+        typer.echo("Not installed.")
         raise typer.Exit(0)
-    launchd.stop()
-    typer.echo(f"{OK} stopped (unloaded). Re-enable with `actionpulse daemon start`.")
+    if backend.NAME == "cron":
+        typer.echo(
+            f"{WARN} cron has no enable/disable — stopping means removing the entry."
+            " Use `actionpulse daemon uninstall`."
+        )
+        raise typer.Exit(0)
+    backend.stop()
+    typer.echo(f"{OK} stopped  [{backend.NAME}]. Re-enable with `actionpulse daemon start`.")
 
 
 @daemon_app.command("logs")

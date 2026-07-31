@@ -57,18 +57,23 @@ def staleness_seconds(record: Dict[str, Any], *, now: Optional[datetime] = None)
 def summarize(*, now: Optional[datetime] = None) -> Dict[str, Any]:
     """Load the status and annotate it for display.
 
-    Adds ``installed`` (is the LaunchAgent present), ``staleness_seconds`` /
+    Adds ``installed`` (is a scheduled unit present, on any backend) plus
+    ``scheduler_backend``, ``staleness_seconds`` /
     ``staleness_days``, and ``is_stale`` (no successful tick for > 2 intervals, or > 2h
     when the interval is unknown). Never raises — a missing file yields a sensible
     "never run / not installed" shape.
     """
-    from digest_core.daemon import launchd  # lazy: keep import-time deps minimal
+    from digest_core.daemon import scheduler  # lazy: keep import-time deps minimal
 
     record = load() or {}
     stale = staleness_seconds(record, now=now)
     interval_min = record.get("interval_minutes")
     out: Dict[str, Any] = dict(record)
-    out["installed"] = launchd.is_installed()
+    # Any backend counts as installed — a systemd timer on Linux is as installed as a
+    # LaunchAgent on macOS (ACTPULSE-99). `scheduler_backend` names which one.
+    backend = scheduler.installed_backend()
+    out["installed"] = backend is not None
+    out["scheduler_backend"] = backend.NAME if backend is not None else None
     out["staleness_seconds"] = stale
     out["staleness_days"] = round(stale / 86400, 2) if stale is not None else None
     if stale is None:
