@@ -31,9 +31,14 @@ Known lossiness, stated rather than hidden
   float. The mapping below uses the midpoints of the bands the v1 prompt already
   documents, so a v3 digest sorts and badges like a v1 one — but the model can no
   longer express 0.83 vs 0.87.
-* ``owners`` / ``participants`` / ``location`` / ``impact`` have no home on the v1
-  ``Item`` yet, so they are not carried. Adding them is a follow-up; nothing here
-  depends on their absence.
+* ``severity`` is consumed rather than carried: it decides whether a risk leads the
+  digest (URGENT) or reads as informational (FYI), so the routing already encodes it.
+* ``description`` / ``response_channel`` / ``category`` / the ``*_label`` date variants
+  are still dropped — no reader surface asks for them yet.
+
+``owners`` / ``participants`` / ``location`` / ``impact`` **are** carried as of A1.5;
+they have fields on ``Item`` and the markdown renders them. Carrying them onto a model
+nobody displays would not have been carrying them.
 """
 
 from __future__ import annotations
@@ -84,7 +89,19 @@ def v3_to_digest(
     dropped_unknown_evidence: List[str] = []
     dropped_no_span: List[str] = []
 
-    def add(key: str, *, title: str, evidence_id: str, confidence: str, spans, due=None) -> None:
+    def add(
+        key: str,
+        *,
+        title: str,
+        evidence_id: str,
+        confidence: str,
+        spans,
+        due=None,
+        owners: Sequence[str] = (),
+        participants: Sequence[str] = (),
+        location: str | None = None,
+        impact: str | None = None,
+    ) -> None:
         chunk = by_evidence_id.get(evidence_id)
         if chunk is None:
             # The model cited an evidence_id we never issued. v1 would have carried
@@ -106,6 +123,14 @@ def v3_to_digest(
                 # Pipeline-authoritative: the chunk we issued, not what the model echoed.
                 source_ref=dict(chunk.source_ref),
                 evidence_spans=[span.model_dump() for span in spans],
+                # A1.5: the per-section facts v3 extracts that v1 cannot express.
+                # `or None` on the lists is deliberate — an empty list would survive
+                # exclude_none and change the artifact shape for items that have no
+                # owners, which is most of them.
+                owners=list(owners) or None,
+                participants=list(participants) or None,
+                location=location or None,
+                impact=impact or None,
             )
         )
 
@@ -117,10 +142,12 @@ def v3_to_digest(
             confidence=item.confidence,
             spans=item.evidence_spans,
             due=item.due_date,
+            owners=item.owners or (),
         )
 
-    # Someone else owns the work; for this recipient it is information. `owners` has
-    # no home on the v1 Item yet, so it is not carried (see module docstring).
+    # Someone else owns the work; for this recipient it is information — and WHO owns
+    # it is the whole reason the item is worth reading, so carrying `owners` matters
+    # most here. Without it these were indistinguishable from unowned FYI notes.
     for item in v3.others_actions:
         add(
             FYI,
@@ -129,6 +156,7 @@ def v3_to_digest(
             confidence=item.confidence,
             spans=item.evidence_spans,
             due=item.due_date,
+            owners=item.owners or (),
         )
 
     for meeting in v3.deadlines_meetings:
@@ -141,6 +169,8 @@ def v3_to_digest(
             confidence="high",
             spans=meeting.evidence_spans,
             due=meeting.date_time,
+            participants=meeting.participants or (),
+            location=meeting.location,
         )
 
     for risk in v3.risks_blockers:
@@ -151,6 +181,8 @@ def v3_to_digest(
             evidence_id=risk.evidence_id,
             confidence="high" if (risk.severity or "").strip().lower() == "high" else "medium",
             spans=risk.evidence_spans,
+            owners=risk.owners or (),
+            impact=risk.impact,
         )
 
     for note in v3.fyi:

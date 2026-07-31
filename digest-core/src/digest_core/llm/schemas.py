@@ -66,6 +66,35 @@ class Item(BaseModel):
     evidence_spans: List[EvidenceSpan] = Field(
         default_factory=list, description="Verbatim source-language spans supporting the item"
     )
+    # A1.5 — the richer per-section facts the v3 contract extracts. The v3 schema has
+    # typed lists whose members carry more than a title (an action has owners, a
+    # meeting has participants and a location, a risk has an impact); flattening to
+    # this one Item used to discard them, so the constrained contract was strictly
+    # more informative than what the reader ever saw.
+    #
+    # All four default to None rather than to an empty list, on purpose: ASSEMBLE writes
+    # `model_dump(exclude_none=True)`, so None DISAPPEARS from the artifact while `[]`
+    # would not. That keeps a v1 digest — which cannot produce any of these — byte-identical
+    # to before, so no PIPELINE_VERSION bump and no forced rebuild for a contract that is
+    # still default-off. (Measured, not assumed: with `= []` every v1 artifact gained
+    # `owners`/`participants` keys.)
+    #
+    # They are also not part of any extraction schema: the only projection target is
+    # EnhancedDigestV3 (gateway.build_extraction_response_format), so adding them here
+    # cannot change what any model is asked for.
+    owners: Optional[List[str]] = Field(
+        default=None,
+        description="Who owns the action/risk, as named in the evidence (v3 contract)",
+    )
+    participants: Optional[List[str]] = Field(
+        default=None, description="Meeting participants as named in the evidence (v3)"
+    )
+    location: Optional[str] = Field(
+        default=None, description="Meeting location as named in the evidence (v3)"
+    )
+    impact: Optional[str] = Field(
+        default=None, description="Stated consequence of a risk/blocker (v3)"
+    )
     citations: List[Citation] = Field(
         default_factory=list, description="Evidence citations with validated offsets"
     )
