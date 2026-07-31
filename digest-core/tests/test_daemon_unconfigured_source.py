@@ -211,15 +211,36 @@ class TestSharedConfigPolicy:
         assert tick.source_config_gaps(cfg, "ews") == with_secret
 
     def test_ews_ingest_uses_the_same_policy(self, monkeypatch):
-        """Proves the shared path is wired, not just present."""
+        """Proves the shared path is wired, not just present.
+
+        Built with ``__new__`` rather than ``EWSIngest(...)`` on purpose: the real
+        constructor sets up a TLS context, and on a machine without
+        ``configs/config.yaml`` (i.e. CI) ``verify_ca`` defaults to
+        ``/etc/ssl/corp-ca.pem``, which does not exist — so constructing one raises
+        FileNotFoundError before reaching the method under test. This test is about
+        one thing: that ``_check_configured`` delegates to ``config_gaps``.
+        """
         from digest_core.ingest.ews import EWSIngest
 
         cfg = Config()
         cfg.ews.endpoint = ""
         cfg.ews.user_upn = ""
+        cfg.ews.user_login = ""
+        cfg.ews.user_domain = ""
         monkeypatch.delenv(cfg.ews.password_env, raising=False)
+
+        ingest = EWSIngest.__new__(EWSIngest)
+        ingest.config = cfg.ews
         with pytest.raises(ValueError, match="EWS is not configured"):
-            EWSIngest(cfg.ews)._check_configured()
+            ingest._check_configured()
+
+        # ...and it is genuinely delegating, not carrying its own copy.
+        calls = []
+        monkeypatch.setattr(
+            type(cfg.ews), "config_gaps", lambda self, **kw: calls.append(kw) or []
+        )
+        ingest._check_configured()  # no gaps reported -> must now pass
+        assert calls, "_check_configured must go through config_gaps"
 
     def test_configured_source_reports_no_gaps(self, monkeypatch):
         cfg = _config(monkeypatch, ews=True, mm=True)
