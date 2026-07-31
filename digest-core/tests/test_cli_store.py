@@ -70,6 +70,11 @@ def test_search_reports_when_there_is_no_archive_yet(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path))
     monkeypatch.setenv("DIGEST_STORE_ENABLED", "0")
+    # State the premise: a key IS present, only the archive is missing. Without this the
+    # test passes locally for the wrong reason — the CLI callback loads the developer's
+    # real ~/.config/actionpulse/env — and fails in CI, which has no key, on a different
+    # error entirely.
+    monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
     r = runner.invoke(app, ["search", "anything"])
     assert r.exit_code == 1
     assert "no message store" in r.output.lower()
