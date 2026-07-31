@@ -358,17 +358,10 @@ class EWSIngest:
         One root cause ("nothing is configured") deserves one message that names the
         YAML keys and env vars the reader can actually act on.
         """
-        missing = []
-        if not (self.config.endpoint or "").strip():
-            missing.append("ews.endpoint (or the EWS_ENDPOINT env var)")
-        identity_ok = (self.config.user_upn or "").strip() or (
-            (self.config.user_login or "").strip() and (self.config.user_domain or "").strip()
-        )
-        if not identity_ok:
-            missing.append(
-                "ews.user_upn (or both ews.user_login and ews.user_domain) "
-                "— env: EWS_USER_UPN / EWS_USER_LOGIN / EWS_USER_DOMAIN"
-            )
+        # The policy itself lives on EWSConfig, because the background daemon needs the
+        # same answer to decide whether to SKIP this source rather than crash its tick
+        # (ACTPULSE-101). Two copies of "is EWS configured?" would drift.
+        missing = self.config.config_gaps()
         if not missing:
             return
         raise ValueError(

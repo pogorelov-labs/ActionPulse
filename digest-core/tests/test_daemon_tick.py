@@ -19,6 +19,19 @@ def _store_on(tmp_path, monkeypatch):
     monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path))  # status + lock live in tmp
     monkeypatch.setenv("DIGEST_STORE_ENABLED", "1")
     monkeypatch.setenv("DIGEST_STORE_KEY", "ab" * 32)
+    # Both sources fully configured. This file tests ROUTING (MM every tick, EWS gated
+    # by reachability) with `_run_ingest` mocked, so it needs sources that pass the
+    # is-it-configured gate added for ACTPULSE-101 — otherwise every case here would
+    # exercise the skip path instead of the behaviour it names.
+    #
+    # Set explicitly rather than inherited: `configs/config.yaml` is gitignored, so a
+    # real machine supplies ews.endpoint and CI does not. Leaving it ambient would make
+    # these tests mean different things in the two places (the #233 lesson).
+    monkeypatch.setenv("EWS_ENDPOINT", "https://ews.corp/EWS/Exchange.asmx")
+    monkeypatch.setenv("EWS_USER_UPN", "me@corp")
+    monkeypatch.setenv("EWS_PASSWORD", "pw")
+    monkeypatch.setenv("MM_BASE_URL", "https://mm.corp")
+    monkeypatch.setenv("MM_PAT", "tok")
     yield
 
 

@@ -58,6 +58,9 @@ class TickResult:
     skipped: Optional[str] = None  # "locked" | "busy" — another writer held the store
     sources_attempted: List[str] = field(default_factory=list)
     sources_ingested: List[str] = field(default_factory=list)
+    #: source -> why it could not run (unconfigured). Recorded, never silent: a source
+    #: quietly missing from a "successful" tick is how a store goes stale unnoticed.
+    sources_skipped: Dict[str, str] = field(default_factory=dict)
     ews_reachable: Optional[bool] = None  # None → no EWS/calendar source requested
     messages_total: Optional[int] = None
     messages_added: Optional[int] = None
@@ -77,12 +80,52 @@ class TickResult:
             "skipped": self.skipped,
             "sources_attempted": self.sources_attempted,
             "sources_ingested": self.sources_ingested,
+            "sources_skipped": self.sources_skipped,
             "ews_reachable": self.ews_reachable,
             "messages_total": self.messages_total,
             "messages_added": self.messages_added,
             "by_source": self.by_source,
             "error": self.error,
         }
+
+
+def source_config_gaps(config: Config, source: str) -> List[str]:
+    """Why ``source`` cannot run here — empty list means it is usable.
+
+    Delegates to the config objects that own each source's settings, so this never
+    becomes a second, drifting copy of "is it set up?" (see ``EWSConfig.config_gaps``).
+    An unknown source is reported as usable: ``canonical_source`` already rejects typos
+    loudly, and inventing a gap here would silently swallow a source we simply do not
+    know how to validate.
+    """
+    # include_secrets=True: the daemon is asking "will a tick actually do work?", which
+    # a complete YAML config with no exported password would answer wrongly.
+    if source in MM_SOURCE_NAMES:
+        return config.mm_source.config_gaps(include_secrets=True)
+    # ews + calendar both ride the EWS identity
+    return config.ews.config_gaps(include_secrets=True)
+
+
+def _partition_configured(config: Config, requested: List[str]) -> Tuple[List[str], Dict[str, str]]:
+    """Split requested sources into (usable, {source: reason-it-was-skipped})."""
+    usable: List[str] = []
+    skipped: Dict[str, str] = {}
+    for source in requested:
+        gaps = source_config_gaps(config, source)
+        if gaps:
+            skipped[source] = "not configured: " + "; ".join(gaps)
+        else:
+            usable.append(source)
+    return usable, skipped
+
+
+def _unconfigured_message(skipped: Dict[str, str]) -> str:
+    """One actionable line for 'no source can run', naming each source's gaps."""
+    parts = [f"{source} — {reason}" for source, reason in sorted(skipped.items())]
+    return (
+        "no configured source to ingest from. " + " | ".join(parts) + ". "
+        "Run `actionpulse setup`, or narrow daemon.sources to the source you use."
+    )
 
 
 def _ews_host(config: Config) -> Optional[str]:
@@ -202,9 +245,18 @@ def ingest_once(
                 TickResult(ok=True, skipped="locked", interval_minutes=interval), write=False
             )
 
+        # Drop sources that are not configured at all. This is deliberately checked
+        # BEFORE reachability: "you never set this up" is a more basic condition than
+        # "the network is not there", and until ACTPULSE-101 it was the only one that
+        # hard-crashed — the tick raised out of _build_mm_adapter / EWS identity and
+        # launchd logged a ~178-line traceback every interval, forever.
+        usable, skipped = _partition_configured(config, requested)
+        if skipped:
+            logger.info("daemon_tick_skip_unconfigured", skipped=sorted(skipped))
+
         # MM every tick; corp sources (ews/calendar) only when the EWS host resolves.
-        mm = [s for s in requested if s in MM_SOURCE_NAMES]
-        corp = [s for s in requested if s not in MM_SOURCE_NAMES]
+        mm = [s for s in usable if s in MM_SOURCE_NAMES]
+        corp = [s for s in usable if s not in MM_SOURCE_NAMES]
         ews_reachable: Optional[bool] = None
         effective = list(mm)
         if corp:
@@ -218,9 +270,19 @@ def ingest_once(
         result = TickResult(
             sources_attempted=requested,
             sources_ingested=effective,
+            sources_skipped=skipped,
             ews_reachable=ews_reachable,
             interval_minutes=interval,
         )
+
+        # Nothing is configured — the tick can never do work in this state, so say so
+        # once, clearly, instead of pretending success. DaemonError (not a raw
+        # ValueError) so the CLI renders one line rather than a traceback.
+        if requested and not usable:
+            result.ok = False
+            result.error = _unconfigured_message(skipped)
+            _finalize(result)
+            raise DaemonError(result.error)
 
         before, _ = _store_counts(config)
         if effective:

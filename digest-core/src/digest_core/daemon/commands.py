@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 import typer
 
 from digest_core.config import Config
-from digest_core.ui.glyphs import FAIL, OK
+from digest_core.ui.glyphs import FAIL, OK, WARN
 
 daemon_app = typer.Typer(
     help="Background ingestion daemon — keep the store fresh without an open session (macOS)."
@@ -83,6 +83,7 @@ def daemon_install_cmd(
 ) -> None:
     """Install (and load) the launchd LaunchAgent. macOS only (`--dry-run` works anywhere)."""
     from digest_core.daemon import launchd
+    from digest_core.daemon import tick as tick_mod
 
     cfg = Config()
     minutes = interval or cfg.daemon.interval_minutes
@@ -98,6 +99,17 @@ def daemon_install_cmd(
     if not ready:
         typer.echo(f"{FAIL} {msg}")
         raise typer.Exit(1)
+    # Refuse to schedule a unit that cannot possibly succeed. Installing one is how you
+    # get a failure every 30 minutes forever, which trains you to ignore the log
+    # (ACTPULSE-101) — the same "red nobody reads" trap as the nine silent CI nights.
+    usable, skipped = tick_mod._partition_configured(cfg, cfg.daemon.source_list())
+    if not usable:
+        typer.echo(f"{FAIL} {tick_mod._unconfigured_message(skipped)}")
+        typer.echo("    Nothing would be ingested, so the agent is not being installed.")
+        raise typer.Exit(1)
+    if skipped:
+        for source, reason in sorted(skipped.items()):
+            typer.echo(f"{WARN} {source} will be skipped every tick — {reason}")
     if not yes:
         typer.echo(f"This installs a launchd LaunchAgent that ingests every {minutes} min:")
         typer.echo(f"  plist:   {launchd.plist_path()}")
@@ -200,6 +212,16 @@ def daemon_tick_cmd(
     except tick.DaemonError as exc:
         typer.echo(f"{FAIL} {exc}")
         raise typer.Exit(1)
+    except Exception as exc:  # noqa: BLE001 - see below
+        # This process is launchd's, and its stderr is a LOG FILE, not a terminal. A
+        # Rich traceback there is ~178 lines that repeat every interval forever
+        # (ACTPULSE-101). The status file already carries the error for `daemon status`
+        # and the MCP `health` tool, so one line is the right amount of output here.
+        typer.echo(f"{FAIL} tick failed: {type(exc).__name__}: {exc}")
+        raise typer.Exit(1)
+    if result.sources_skipped:
+        for source, reason in sorted(result.sources_skipped.items()):
+            typer.echo(f"  skipped {source} — {reason}")
     if result.skipped:
         typer.echo(f"skipped ({result.skipped}) — another writer holds the store; will retry.")
         return
