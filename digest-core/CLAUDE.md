@@ -225,18 +225,35 @@ actionpulse mcp install                  # consented, macOS; `mcp uninstall` rev
 - **Key never in client config**: the server self-loads `DIGEST_STORE_KEY` from
   `~/.config/actionpulse/env`; the installer writes no secret. CI: `test-mcp` lane.
 
-## Background ingestion daemon (opt-in, macOS launchd)
+## Background ingestion daemon (opt-in; launchd / systemd / cron)
 
 Keeps the store fresh **without** an interactive session so the MCP tools / CLI read current
-data (not just the last manual `run`). A LaunchAgent runs `daemon tick` — the no-LLM
-fetch+persist path (`run --dry-run`'s engine) — on an interval. ADR-016.
+data (not just the last manual `run`). A scheduled `daemon tick` — the no-LLM fetch+persist
+path (`run --dry-run`'s engine) — runs on an interval. ADR-016.
 
 ```bash
-actionpulse daemon install            # write + load the LaunchAgent (macOS; --dry-run anywhere)
-actionpulse daemon status             # last/next run · counts · exchange on/off-corp · staleness
-actionpulse daemon tick               # run one tick now (what the agent invokes each interval)
+actionpulse daemon install            # schedule it (--dry-run anywhere; --backend to force one)
+actionpulse daemon status             # backend · last/next run · counts · on/off-corp · staleness
+actionpulse daemon tick               # run one tick now (what the scheduler invokes each interval)
 actionpulse daemon start|stop|logs|uninstall
 ```
+
+- **Three backends, picked per host (ACTPULSE-99):** launchd (macOS) → systemd **user**
+  timer (Linux) → a marked cron block (fallback). Only *scheduling* was ever macOS-bound;
+  the tick itself was always portable. `uninstall`/`start`/`stop` route to whichever backend
+  is **actually installed**, so a host that gained systemd after a cron install can still
+  remove its cron entry. `--backend launchd|systemd|cron` forces one.
+- **Same invariants everywhere:** no secret in the unit (the tick self-loads the store key),
+  an absolute `uv` path (schedulers give a minimal/absent PATH), and both stdout and stderr
+  appended to `var/logs/daemon.*.log` so `daemon logs` reads one place on every platform.
+- **cron is the fallback for a reason** — its minute field is a pattern within the hour, not
+  an interval, and its hour field is 0-23. Only divisors of 60 are exact; anything ≥24h
+  becomes daily at midnight. `schedule_for()` returns the expression **and a note**, and the
+  CLI prints it — no silent rounding. cron also has no run-at-boot (launchd `RunAtLoad`,
+  systemd `OnBootSec`).
+- **Rendering is pure and platform-independent** — a macOS box renders a systemd unit and CI
+  renders a plist — so the interesting logic is covered on every runner instead of hiding
+  behind skips that never execute. Tests: `test_daemon_schedulers.py`.
 
 - **Corp-aware**: MM every tick; EWS only when the EWS host DNS-resolves (off-corp ticks skip
   it, exit 0). `flock` = single writer; the daemon keeps its **own** watermark (`state/daemon`)

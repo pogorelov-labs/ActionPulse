@@ -12,32 +12,28 @@ from __future__ import annotations
 
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from digest_core import paths
+from digest_core.daemon.scheduler import (
+    AGENT_PATH as _AGENT_PATH,
+)
+from digest_core.daemon.scheduler import (
+    LABEL,
+    SchedulerResult,
+    log_paths,
+    write_atomic,
+)
+from digest_core.daemon.scheduler import (
+    tick_command as _shared_tick_command,
+)
 from digest_core.mcp.jsonfile import backup
 
-#: LaunchAgent label (reverse-DNS) — also the plist basename and launchctl service name.
-LABEL = "ai.actionpulse.ingest"
-
-#: PATH handed to the agent (launchd's default is minimal). Common tool locations so the
-#: resolved ``uv`` can find its managed interpreter. No secrets.
-_AGENT_PATH = ":".join(
-    [
-        str(Path.home() / ".local" / "bin"),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ]
-)
+#: This backend's name in the scheduler registry (ACTPULSE-99).
+NAME = "launchd"
 
 
 def plist_path() -> Path:
@@ -51,16 +47,22 @@ def is_installed() -> bool:
 
 
 def tick_command() -> List[str]:
-    """Absolute exec argv for one tick. Prefer ``uv run --project <root>`` (matches the MCP
-    entry) with an **absolute** ``uv`` — launchd has no PATH. Fall back to an installed
-    ``actionpulse``, then this interpreter's ``-m digest_core.cli``."""
-    uv = shutil.which("uv")
-    if uv:
-        return [uv, "run", "--project", str(paths.PROJECT_ROOT), "actionpulse", "daemon", "tick"]
-    direct = shutil.which("actionpulse")
-    if direct:
-        return [direct, "daemon", "tick"]
-    return [sys.executable, "-m", "digest_core.cli", "daemon", "tick"]
+    """Absolute exec argv for one tick — shared with every backend (see scheduler.py)."""
+    return _shared_tick_command()
+
+
+def is_supported() -> bool:
+    """launchd is macOS-only."""
+    return sys.platform == "darwin"
+
+
+def unit_path() -> Path:
+    """Registry-uniform alias for :func:`plist_path`."""
+    return plist_path()
+
+
+def describe(interval_minutes: int) -> str:
+    return f"launchd LaunchAgent every {interval_minutes} min\n  plist: {plist_path()}"
 
 
 def render_plist(interval_minutes: int, *, command: Optional[List[str]] = None) -> bytes:
@@ -69,7 +71,7 @@ def render_plist(interval_minutes: int, *, command: Optional[List[str]] = None) 
     ``StartInterval`` (floor 60s) fires the tick every ``interval_minutes``; ``RunAtLoad``
     also fires once on load/login. Stdout/stderr go to ``var/logs/daemon.*`` (the tick logs
     counts only, never bodies). ``command`` overrides the resolved argv (tests)."""
-    logs = paths.logs_dir()
+    out_log, err_log = log_paths()
     doc = {
         "Label": LABEL,
         "ProgramArguments": command or tick_command(),
@@ -77,27 +79,18 @@ def render_plist(interval_minutes: int, *, command: Optional[List[str]] = None) 
         "RunAtLoad": True,
         "ProcessType": "Background",
         "LowPriorityIO": True,
-        "StandardOutPath": str(logs / "daemon.out.log"),
-        "StandardErrorPath": str(logs / "daemon.err.log"),
+        "StandardOutPath": str(out_log),
+        "StandardErrorPath": str(err_log),
         "WorkingDirectory": str(paths.PROJECT_ROOT),
         "EnvironmentVariables": {"PATH": _AGENT_PATH},
     }
     return plistlib.dumps(doc)
 
 
-@dataclass
-class LaunchdResult:
-    action: str  # installed | updated | already_current | uninstalled | not_present
-    plist: Path
-    backup: Optional[Path] = None
-    loaded: bool = False
-
-
-def _write_atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / (path.name + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)
+#: Kept as the historical name so existing imports/tests keep working. The shared type
+#: names the written file ``unit`` (not ``plist``) because the CLI now handles three
+#: backends through one result.
+LaunchdResult = SchedulerResult
 
 
 def install(
@@ -111,26 +104,28 @@ def install(
     prev = path.read_bytes() if existed else None
     if prev == new:
         loaded = _bootstrap() if load else False
-        return LaunchdResult("already_current", path, loaded=loaded)
+        return SchedulerResult("already_current", path, loaded=loaded, backend=NAME)
     bak = backup(path) if existed else None
-    _write_atomic(path, new)
+    write_atomic(path, new)
     loaded = False
     if load:
         if existed:
             _bootout()  # reload cleanly after an update
         loaded = _bootstrap()
-    return LaunchdResult("updated" if existed else "installed", path, backup=bak, loaded=loaded)
+    return SchedulerResult(
+        "updated" if existed else "installed", path, backup=bak, loaded=loaded, backend=NAME
+    )
 
 
 def uninstall() -> LaunchdResult:
     """Unload (macOS) and remove the plist, leaving a byte-exact ``.bak``."""
     path = plist_path()
     if not path.exists():
-        return LaunchdResult("not_present", path)
+        return SchedulerResult("not_present", path, backend=NAME)
     _bootout()
     bak = backup(path)
     path.unlink()
-    return LaunchdResult("uninstalled", path, backup=bak)
+    return SchedulerResult("uninstalled", path, backup=bak, backend=NAME)
 
 
 # -- launchctl (macOS only; every call is a no-op / False elsewhere) -----------
