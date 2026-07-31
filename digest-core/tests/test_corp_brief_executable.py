@@ -123,3 +123,86 @@ class TestBriefIsAgentExecutable:
     def test_the_deliverable_directory_exists(self):
         """'A session that produces no file here did not happen.'"""
         assert (REPO / "digest-core/docs/corp-runs").is_dir()
+
+
+class TestEveryCommandTheBriefNamesExists:
+    """A corp session gets one shot, so a stale command in here costs a whole cycle.
+
+    This brief ages against the code by design — it is written offline and executed
+    weeks later, somewhere the author cannot watch. Between 2026-07-30 and 07-31 alone,
+    21 commits landed and three of them changed surfaces the brief drives (the store's
+    open semantics, the daemon's install refusal, the scheduler backends). Checking the
+    commands by hand found that drift once; this makes the check automatic.
+    """
+
+    #: Typer sub-apps: `daemon install`, not `daemon`. Kept explicit so a NEW group
+    #: silently added to the CLI does not quietly narrow what this test inspects.
+    GROUPS = {"daemon", "store", "mcp"}
+
+    @classmethod
+    def _named_commands(cls) -> set[tuple[str, ...]]:
+        """Every command the brief tells the agent to run, in either style it uses.
+
+        Two forms, because the brief genuinely writes both: the full
+        ``uv run actionpulse daemon status``, and a bare backticked ``daemon install``
+        in prose. Matching only the prefixed form parsed **4** commands out of a
+        document that names a dozen — under-counting a guard is how the thing it
+        guards drifts anyway (the same shape as the run.py importer check that missed
+        ``import digest_core.run as run_module``).
+        """
+        text = _brief()
+        found: set[tuple[str, ...]] = set()
+
+        def add(cmd: str, sub: str | None) -> None:
+            if cmd in cls.GROUPS:
+                if sub:
+                    found.add((cmd, sub))
+            else:
+                found.add((cmd,))
+
+        for m in re.finditer(r"actionpulse\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?", text):
+            add(m.group(1), m.group(2))
+        # Backticked bare invocations: `daemon install`, `store reembed`. Anchored on a
+        # known group so ordinary prose in backticks cannot be mistaken for a command.
+        for m in re.finditer(r"`(" + "|".join(sorted(cls.GROUPS)) + r")\s+([a-z][a-z-]*)`", text):
+            add(m.group(1), m.group(2))
+        return found
+
+    @staticmethod
+    def _registered() -> set[tuple[str, ...]]:
+        """Every command path the CLI actually exposes, read from the Typer app."""
+        import typer
+
+        from digest_core.cli import app
+
+        paths: set[tuple[str, ...]] = set()
+
+        def walk(t: "typer.Typer", prefix: tuple[str, ...]) -> None:
+            for info in t.registered_commands:
+                name = info.name or (info.callback.__name__.replace("_", "-"))
+                paths.add(prefix + (name,))
+            for group in t.registered_groups:
+                gname = group.name or ""
+                if group.typer_instance is not None:
+                    walk(group.typer_instance, prefix + (gname,))
+
+        walk(app, ())
+        return paths
+
+    def test_no_command_in_the_brief_has_been_renamed_or_removed(self):
+        named = self._named_commands()
+        registered = self._registered()
+        # Prose words that follow "actionpulse" but are not commands.
+        prose = {("commands",), ("inside",), ("is",), ("and",), ("to",), ("as",)}
+        unknown = {c for c in named - registered if c not in prose}
+        assert not unknown, (
+            f"the brief tells a corp agent to run commands that do not exist: "
+            f"{sorted(unknown)}. Registered: {sorted(registered)}"
+        )
+
+    def test_the_check_actually_sees_something(self):
+        """Anchor: guards against both sets being empty and the test passing vacuously."""
+        named = self._named_commands()
+        assert len(named) >= 8, f"parsed too few commands from the brief: {named}"
+        assert ("run",) in named or ("diagnose",) in named
+        assert ("daemon", "install") in self._registered()

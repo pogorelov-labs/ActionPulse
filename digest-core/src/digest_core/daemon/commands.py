@@ -259,7 +259,7 @@ def daemon_tick_cmd(
         None, "--sources", help="Comma-separated override (default: config daemon.sources)."
     ),
 ) -> None:
-    """Run one ingestion tick now — this is what the LaunchAgent invokes each interval."""
+    """Run one ingestion tick now — what the scheduler invokes each interval."""
     from digest_core.daemon import tick
 
     src = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
