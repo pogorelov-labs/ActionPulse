@@ -241,6 +241,15 @@ actionpulse daemon start|stop|logs|uninstall
 - **Corp-aware**: MM every tick; EWS only when the EWS host DNS-resolves (off-corp ticks skip
   it, exit 0). `flock` = single writer; the daemon keeps its **own** watermark (`state/daemon`)
   so it never starves the daily digest. Embed stays off on ticks (`daemon.embed` to opt in on-corp).
+- **Unconfigured ≠ unreachable (ACTPULSE-101).** A source with missing settings/secrets is
+  **skipped and recorded** (`sources_skipped` in `var/state/daemon.json`), not crashed on — the
+  tick used to raise a ~178-line traceback into the log every interval, forever. If *no* source is
+  configured the tick fails once with a single actionable line (a `DaemonError`, never a
+  traceback — its stderr is a log file, not a terminal), and **`daemon install` refuses outright**
+  rather than scheduling a unit that can only fail. "Is this source configured?" is answered by
+  `EWSConfig.config_gaps()` / `MattermostSourceConfig.config_gaps()`, shared with
+  `EWSIngest._check_configured` so the two cannot drift; `include_secrets=True` is the daemon-only
+  broadening ("will a tick do work?" vs "are the settings complete?").
 - **Config** `DaemonConfig` (`daemon.interval_minutes`/`sources`/`embed`, `DIGEST_DAEMON_*`); needs
   `store.enabled`. Status file: `var/state/daemon.json` (counts + timestamps only). Plist carries
   no secrets (tick self-loads the key) + absolute `uv` path. MCP: `daemon_status` (always on) +

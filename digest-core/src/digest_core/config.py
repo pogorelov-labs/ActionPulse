@@ -244,6 +244,42 @@ class EWSConfig(BaseModel):
             raise ValueError(f"Environment variable {self.password_env} not set")
         return password
 
+    def config_gaps(self, *, include_secrets: bool = False) -> List[str]:
+        """Every missing EWS setting, named in this project's own keys/env vars.
+
+        The single source of truth for "can EWS run?", shared by two callers that must
+        NOT drift apart:
+
+        * ``EWSIngest._check_configured`` — fails the connection with one message
+          listing everything missing (ACTPULSE-97);
+        * the background daemon — **skips** the source instead of crashing the tick
+          (ACTPULSE-101), and passes ``include_secrets=True``.
+
+        ``include_secrets`` is the whole distinction between them. Settings live in YAML
+        and are a *configuration* question; the password is ENV-only and is checked at
+        use by ``get_password`` with its own message. The daemon has to answer the
+        broader "will this actually run?", but folding the secret into the default would
+        change ``_check_configured``'s contract — it reports settings, and a machine with
+        a complete config but an unexported password is correctly configured.
+
+        Empty list means usable. Duplicating this policy in the daemon is exactly how the
+        two would diverge, so it lives here with the fields it describes.
+        """
+        gaps: List[str] = []
+        if not (self.endpoint or "").strip():
+            gaps.append("ews.endpoint (or the EWS_ENDPOINT env var)")
+        identity_ok = (self.user_upn or "").strip() or (
+            (self.user_login or "").strip() and (self.user_domain or "").strip()
+        )
+        if not identity_ok:
+            gaps.append(
+                "ews.user_upn (or both ews.user_login and ews.user_domain) "
+                "— env: EWS_USER_UPN / EWS_USER_LOGIN / EWS_USER_DOMAIN"
+            )
+        if include_secrets and not os.getenv(self.password_env):
+            gaps.append(f"${self.password_env} (secrets are ENV-only)")
+        return gaps
+
     def get_ntlm_username(self) -> str:
         """Get username for NTLM authentication (login@domain format)."""
         if self.user_login and self.user_domain:
@@ -752,6 +788,19 @@ class MattermostSourceConfig(BaseModel):
         if not token:
             raise ValueError(f"Environment variable {self.token_env} not set")
         return token
+
+    def config_gaps(self, *, include_secrets: bool = False) -> List[str]:
+        """Every missing Mattermost-SOURCE setting (see ``EWSConfig.config_gaps``).
+
+        Note this is the *ingest* identity, not the delivery webhook: a machine can
+        deliver digests to Mattermost and still have no MM source configured.
+        """
+        gaps: List[str] = []
+        if not self.get_base_url():
+            gaps.append(f"mm_source.base_url (or the ${self.base_url_env} env var)")
+        if include_secrets and not os.getenv(self.token_env, ""):
+            gaps.append(f"${self.token_env} (secrets are ENV-only)")
+        return gaps
 
 
 class DeliverConfig(BaseModel):
