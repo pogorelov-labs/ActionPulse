@@ -105,15 +105,22 @@ class InboxAPI:
         self._backend_client: Any = None  # lazily built EmbeddingsClient (gateway)
 
     @classmethod
-    def open(cls, config: Optional[Config] = None) -> "InboxAPI":
+    def open(cls, config: Optional[Config] = None, *, create: bool = True) -> "InboxAPI":
         """Open the encrypted store from ``config.store``.
 
+        ``create=False`` is the read posture (ACTPULSE-100): open an existing archive,
+        but never bring one into existence. Every caller that only *reads* — the MCP
+        server, the CLI, the menu, the daemon's counters, the carryover enrichment —
+        passes it, so none of them can leave a new encrypted database behind as a side
+        effect of a question.
+
         Raises ``ApiError`` when the store is off / the driver is missing / the key is
-        wrong (wrapping ``StoreError`` and the ``ValueError`` from an unset key).
+        wrong / a missing archive may not be created (wrapping ``StoreError`` and the
+        ``ValueError`` from an unset key).
         """
         config = config or Config()
         try:
-            store = MessageStore.open(config.store)
+            store = MessageStore.open(config.store, create=create)
         except (StoreError, ValueError) as exc:
             raise ApiError(str(exc)) from exc
         return cls(store, config)

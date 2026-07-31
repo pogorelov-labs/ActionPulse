@@ -47,7 +47,9 @@ def _get_api() -> InboxAPI:
     global _api
     if _api is None:
         try:
-            _api = InboxAPI.open(Config())
+            # create=False: an MCP question must never leave a new encrypted
+            # database behind (ACTPULSE-100).
+            _api = InboxAPI.open(Config(), create=False)
         except ApiError as exc:
             raise ApiError(
                 f"{exc}  —  call the `health` tool for which precondition is missing "
@@ -392,20 +394,32 @@ def _tool_health() -> Dict[str, Any]:
             }
         )
     if not store["enabled"]:
-        # Read-path-only: reads work on an existing DB even with ingestion off, so this
-        # is a warning about FRESHNESS, not about the server being broken. Say which.
+        # Read-path-only: reads work on an existing archive even with ingestion off, so
+        # this is a warning about FRESHNESS, not about the server being broken (the
+        # ACTPULSE-100 decision). Say which.
         blockers.append(
             {
                 "problem": "store.enabled is false — nothing new is being ingested, so this "
-                "server can only serve whatever is already in the DB.",
+                "server can only serve whatever is already in the archive.",
                 "fix": "add `store:\\n  enabled: true` to configs/config.yaml "
                 "(or export DIGEST_STORE_ENABLED=1)",
             }
         )
-    if store.get("open_error"):
+    if store["db_exists"] is False and store["key_set"] and store["driver_installed"]:
+        # Distinct from "broken": there is simply nothing here yet. Reading never creates
+        # an archive (ACTPULSE-100), so this state persists until a run does.
         blockers.append(
             {
-                "problem": f"the store exists but could not be opened: {store['open_error']}",
+                "problem": "no message archive exists yet — reading does not create one, so "
+                "every query will fail until a run writes the first messages.",
+                "fix": "run a digest on the corp network: `actionpulse run` "
+                "(or `actionpulse daemon install` to keep it fresh automatically)",
+            }
+        )
+    elif store.get("open_error"):
+        blockers.append(
+            {
+                "problem": f"the archive exists but could not be opened: {store['open_error']}",
                 "fix": "usually a wrong/rotated DIGEST_STORE_KEY. `actionpulse store drop` "
                 "starts over (destroys stored history).",
             }

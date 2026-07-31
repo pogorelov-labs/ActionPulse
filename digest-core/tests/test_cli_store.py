@@ -62,12 +62,38 @@ def test_store_init_generates_and_detects_key(tmp_path, monkeypatch):
 
 
 @needs_driver
-def test_search_reports_when_store_off(monkeypatch, tmp_path):
+def test_search_reports_when_there_is_no_archive_yet(monkeypatch, tmp_path):
+    """Exit 1 with something actionable — but the reason is "no archive", not "off".
+
+    Reading never creates an archive (ACTPULSE-100), so this message has to name the
+    thing that would: running a digest.
+    """
     monkeypatch.setenv("ACTIONPULSE_HOME", str(tmp_path))
     monkeypatch.setenv("DIGEST_STORE_ENABLED", "0")
     r = runner.invoke(app, ["search", "anything"])
     assert r.exit_code == 1
-    assert "store is off" in r.output.lower()
+    assert "no message store" in r.output.lower()
+    assert "run a digest" in r.output.lower()
+
+
+@needs_driver
+def test_search_works_on_an_existing_archive_with_ingestion_off(monkeypatch, tmp_path):
+    """The point of the ACTPULSE-100 decision: `store.enabled` gates INGESTION.
+
+    Pausing ingestion must not cost you access to history you already collected — the
+    CLI used to refuse outright, which made an archive you owned unreadable for no
+    reason. This is the case that could not exist before.
+    """
+    # Build an archive while ingestion is ON...
+    _enable(monkeypatch, tmp_path)
+    _seed([_msg("a@corp", "the quarterly budget review")])
+
+    # ...then turn ingestion off and read it.
+    monkeypatch.setenv("DIGEST_STORE_ENABLED", "0")
+    # --keyword: offline mode, so this asserts the STORE opened, not gateway reachability.
+    r = runner.invoke(app, ["search", "budget", "--keyword"])
+    assert r.exit_code == 0, r.output
+    assert "budget" in r.output.lower()
 
 
 @needs_driver

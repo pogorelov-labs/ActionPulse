@@ -39,17 +39,37 @@ class MessageStore:
         self.config = config
 
     @classmethod
-    def open(cls, config: Any) -> "MessageStore":
-        """Open (creating if needed) the encrypted store described by ``config``.
+    def open(cls, config: Any, *, create: bool = True) -> "MessageStore":
+        """Open the encrypted store described by ``config``.
+
+        ``create=False`` opens an existing archive but refuses to bring one into
+        existence — **the read posture** (ACTPULSE-100). Creating a file full of
+        corporate mail as a side effect of something asking for a message count is a
+        surprise no reader wants, and it used to happen: every read path called this
+        with the default and ``mkdir(parents=True)`` did the rest.
+
+        Writers (the ingest path) keep the ``True`` default: a first run has to start
+        the archive somewhere.
+
+        Note this is deliberately NOT keyed off ``config.enabled``. That flag means
+        "keep ingesting", not "the archive exists" — turning ingestion off must not cost
+        you access to history you already collected. Creation is a property of what the
+        CALLER is doing, not of whether ingestion is currently on.
 
         Raises ``StoreError`` with an actionable message when the driver is
-        missing or the key is wrong; ``ValueError`` when ``DIGEST_STORE_KEY`` is
-        unset (surfaced from ``StoreConfig.get_key``).
+        missing, the key is wrong, or a missing database may not be created;
+        ``ValueError`` when ``DIGEST_STORE_KEY`` is unset (from ``StoreConfig.get_key``).
         """
         if not HAS_SQLCIPHER:
             raise StoreError(INSTALL_HINT)
         key = config.get_key()
         path = Path(config.resolved_db_path()).expanduser()
+        if not path.exists() and not create:
+            raise StoreError(
+                f"no message store at {path} yet. Enable the store "
+                "(store.enabled: true / DIGEST_STORE_ENABLED=1) and run a digest to "
+                "start the archive; reading alone will not create one."
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         existed = path.exists()
         conn = connect(str(path))

@@ -1227,6 +1227,13 @@ class RetentionConfig(BaseModel):
 class StoreConfig(BaseModel):
     """Persistent encrypted message store (opt-in; default OFF).
 
+    **``enabled`` gates INGESTION, not the archive** (ACTPULSE-100). Turning it off
+    stops new messages being written; it does NOT make history you already collected
+    unreadable — the CLI, menu and MCP all still search an existing archive. What no
+    read path will do is *create* one: ``MessageStore.open(..., create=False)`` is the
+    read posture, so asking a question can never leave a new encrypted database behind.
+
+
     A SQLCipher-encrypted SQLite archive of fetched messages for ALL sources, with
     FTS5 keyword + brute-force-cosine semantic hybrid search. Its 30-day TTL is a
     SEPARATE retention domain from the plaintext ``var/out`` artifacts
