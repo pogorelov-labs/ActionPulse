@@ -19,7 +19,13 @@ _API_ONLY = {"checkpoint"}  # a SQLite WAL checkpoint — operator plumbing, not
 # MCP tools that are deliberately NOT InboxAPI verbs: they belong to the background-ingestion
 # DAEMON layer (digest_core.daemon), not the store facade. `daemon_status` reads the status
 # file; `trigger_ingest` runs a fetch+persist tick (routes through daemon.tick, not InboxAPI).
-_MCP_ONLY = {"daemon_status", "trigger_ingest"}
+#
+# `health` is MCP-only for a different reason: it reports whether this SERVER can serve at
+# all — driver, key, store, freshness — which is a question about the deployment, not about
+# the inbox. It must also answer when InboxAPI cannot even be opened, so it deliberately
+# probes *outside* the facade; making it an InboxAPI verb would put it behind the very
+# thing it exists to diagnose.
+_MCP_ONLY = {"daemon_status", "trigger_ingest", "health"}
 
 
 def _api_verbs() -> set[str]:

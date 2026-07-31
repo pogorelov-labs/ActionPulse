@@ -158,7 +158,9 @@ def test_build_app_registers_read_reason_and_source_tools():
     assert "history" in tools  # cross-digest history is a first-class tool (C1 facade parity)
     assert {"list_containers", "get_reactions"} <= tools  # corp source reads always on
     assert "daemon_status" in tools  # background-ingestion status is always on (read-only)
-    assert len(tools) == 21  # 19 read/reason (incl. daemon_status) + 2 source; maint + fetch OFF
+    assert "health" in tools  # the always-answerable diagnostic (never gated)
+    assert len(tools) == 22  # 20 read/reason (incl. health, daemon_status) + 2 source;
+    #                          maintenance + fetch stay OFF
     assert "sweep_ttl" not in tools and "fetch_source" not in tools
     assert "trigger_ingest" not in tools  # the persisting tick is fetch-gated
 
@@ -179,4 +181,4 @@ def test_gated_tools_only_behind_flags(monkeypatch):
         "fetch_source",
         "trigger_ingest",
     } <= tools
-    assert len(tools) == 27  # 21 + 4 maintenance + fetch_source + trigger_ingest
+    assert len(tools) == 28  # 22 + 4 maintenance + fetch_source + trigger_ingest
